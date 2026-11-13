@@ -1,0 +1,179 @@
+# Working on this repository
+
+> KI-generierte Inhalte können fehlerhaft sein; bitte keine personenbezogenen Daten in dieses Repository eingeben. AI-generated content can contain errors; verify against the hardware before trusting a claim here.
+
+This is the operating manual for anyone, human or agent, who touches this tree. The hardware
+is live and shared. A mistake on it costs a reset at best and a reboot at worst, so read
+sections 1 to 3 before running anything.
+
+Every claim carries its evidence: **[M date]** measured on this hardware, **[S]** from
+source, a datasheet or a header in the repo, **[B]** read out of a binary, **[?]**
+unverified. A number without a tag is a mistake; treat it as [?].
+
+## 1. What this repository is
+
+3DScanner: a 3D scanner built from an Orbbec Gemini 2 L RGB-D camera and a Jetson Orin Nano
+(docs/HARDWARE.md). It is a full rewrite of CUDA_3D, the user's GPU point-cloud library
+written for Intel RealSense (its history ends at 5e568d9). The rewrite starts from a list of
+requirements the user checks (ROADMAP.md); until then the tree is CUDA_3D as it was, made to
+build here and given the Orbbec camera, and serves as the reference for what the rewrite keeps.
+
+The tree today: `src/` is one library, `gca_lib`; `src/camera/` puts each camera behind
+`gca::device`, and `orbbec_device` delivers depth aligned to color, so the GPU code sees one
+resolution and one set of intrinsics. The programs in `apps/` each open the camera
+themselves; there is no daemon. RealSense and PCL are optional (CMake finds them or leaves
+them out); PCL code is for comparison only.
+
+## 2. Before you run anything
+
+**Check the machine state.** These read only:
+
+    lsusb -t                                   # the camera, its bus and speed (5000M = USB 3)
+    pgrep -af 'orbbec|ob_|realsense'           # a program holding the camera
+    journalctl -k --since -10min | grep -iE 'usb|uvc|nvgpu'
+
+`dmesg` is closed to the user [M 2026-11-13]; `journalctl -k` works (group `adm`).
+
+**Root.** Nothing in the daily work: the udev rule gives the user the camera
+(docs/HARDWARE.md, "Permissions"), and tools/fetch_deps.sh puts the SDK and Eigen in the user's
+home. An `apt install` or a new udev rule goes to the user as a command to run. Ask the user for
+the password when one is needed; never write it into a file, a script, a command line or a
+commit.
+
+**One writer.** The program that opens the camera through OrbbecSDK claims its USB interfaces;
+a second program cannot open it then [?]. Nothing locks it: check with `pgrep` above before
+starting one.
+
+**Privacy.** Data recorded on the hardware (pictures, sound, logs with names) stays in a
+scratch directory outside the repository; `.gitignore` keeps its file types out of the tree.
+
+**Build as the user, never as root.** An install builds nothing as root.
+
+## 3. What each command does to the hardware
+
+The left column looks diagnostic and often is not.
+
+| command | what it actually does |
+|---|---|
+| `tools/build.sh`, `tools/verify.sh`, `tools/run_mutant.sh` | no hardware access |
+| `tools/fetch_deps.sh` | no hardware access; downloads into `~/.local/share/3dscanner` |
+| `build/apps/orbbec_viewer --list` | opens the camera, reads its info and stream profiles, starts no stream [S: orbbec_device.cpp]; what OrbbecSDK sends on open is unverified [?] |
+| `build/apps/orbbec_viewer [--frames N]` | streams color and depth with depth-to-color alignment; sets no option of the camera [S]; `s`, or the last of N frames headless, writes `cloud_NNN.ply`, `.color.png`, `.depth.png` into the current directory: run it in a scratch directory |
+| any program using OrbbecSDK | writes `Log/OrbbecSDK.log.txt` into the current directory [M 2026-11-13]; closing it hands the camera back to uvcvideo, which logs the enumeration lines again (docs/HARDWARE.md) |
+| OrbbecSDK's examples, OrbbecViewer | not built here; `ob_device_firmware_update`, `ob_device_optional_depth_presets_update`, `ob_multi_devices_firmware_update` and OrbbecViewer's firmware and preset pages WRITE the camera's flash |
+
+**Standing authorisations.** The hardware steps the user allows agents in general, each with
+its date and its conditions. None yet: until a line is here, every hardware step waits for
+the user's words in the conversation.
+
+**Stop conditions.** On any of these, run nothing more on the hardware and tell the user:
+
+* a kernel log line that docs/HARDWARE.md, "Kernel log", lists as harmful, or one it does
+  not list at all;
+* a process that stops answering (a wedged thread, a call that does not return);
+* a failed health check;
+* the camera leaves the bus while streaming (`USB disconnect` in the kernel log), or
+  `orbbec_viewer` prints `No frames received from Orbbec camera for 5s!`;
+* a GPU fault (`nvgpu` or `Xid` in the kernel log, a CUDA error from a program).
+
+## 4. Build and verify
+
+| command | what | when |
+|---|---|---|
+| `tools/build.sh` | the incremental build, warnings included | while working |
+| `tools/verify.sh` | the one offline check: the build, every test, the checkers of CODING_STANDARDS.md, "Tools"; no hardware, no root; it also passes in a copy of the tree without `.git` | at the end of every change, before every commit |
+| `tools/run_mutant.sh <patch>...` | whether `tools/verify.sh` catches a deliberate mistake: a scratch copy of the working tree, each patch applied in turn | to show a new rule, refusal or branch bites |
+
+A test touches no hardware: what it needs from the hardware comes from a simulation or a
+recording. The tests (`tests/`, run by ctest) need the GPU and no camera. No frozen files yet.
+
+## 5. Which numbers may be changed
+
+From the hardware or a source, changed only with new evidence written above them:
+
+* depth unit: read from each depth frame (`DepthFrame::getValueScale()`, mm per value);
+  1 mm is the Orbbec default [S: OrbbecSDK].
+* `GCA_CUDA_ARCHITECTURES` 87: the Orin's compute capability 8.7 [S: CUDA documentation].
+
+Free choices: the stream size 640x400 at 30 fps [?: a choice; it exists on USB 2], the depth range 0.15 m to
+3.0 m in `apps/orbbec_viewer.cpp` [?: a choice], every filter radius and voxel size in
+`apps/app.cpp` (tuned for RealSense in CUDA_3D [?]).
+
+## 6. Traps
+
+* **The camera is on USB 2 although every port is USB 3.2.** The board's four ports sit on a
+  Realtek USB 3.2 hub that shows up twice: `0bda:0489` on bus 2 (10000M) and its USB 2 half
+  `0bda:5489` on bus 1 (480M). A device whose USB 3 link does not come up lands on bus 1, and
+  the SuperSpeed side logs nothing at all. Two cables gave this in three ports; a third cable
+  gives 5000M on bus 2 [M 2026-11-13]: a USB-C cable that charges and carries USB 2 may still
+  lack the USB 3 lines. After plugging in, check `lsusb -t` for 5000M.
+* **Gemini 2 L depth defaults to RLE** (compressed) [S: OrbbecSDKConfig.xml, `Gemini2L`],
+  and on USB 2 Y14 and RLE are the only depth formats [M 2026-11-13]. `orbbec_device` asks for
+  Y16, Z16, Y14, RLE in that order and refuses at start a depth frame that does not arrive as
+  16 bit; Y14 arrives as 16 bit [M 2026-11-13].
+* **Thrust's `make_pair` forwards its arguments since CUDA 12.x's Thrust 2.x**:
+  `thrust::make_pair<float, float3>(a, b)` no longer compiles with lvalues; construct
+  `thrust::pair<float, float3>(a, b)` [M 2026-11-13, CUDA 12.6].
+* **The point-cloud kernel deprojects pixel u at u - 0.5**
+  (`cuda_point_cloud_factory.cu`, `depth_uv`), half a pixel off the pinhole model with the
+  principal point the SDK reports, about 1 mm at 1 m with fx = 500 [S]. Pinned as is by
+  `tests/test_point_cloud_from_rgbd.cpp`; whether it is right for Orbbec intrinsics is open.
+
+## 7. How the code is written
+
+[CODING_STANDARDS.md](CODING_STANDARDS.md) holds the style guide of each language and the
+checkers; these are the rules no checker holds.
+
+1. **A file starts with SPDX, then its name and an overview of what its module does**, and
+   nothing else; a module is one source file and its header. C and C++: `/// @file <name>`.
+   A script puts its SPDX line under the shebang, then `# <name> - <overview>`. A trap, an
+   ownership rule or a cache note goes into the comment of the function it concerns.
+2. **Every function's comment states its purpose, every parameter and its return value**:
+   a public function in its header above its declaration, a file-local one above its
+   definition. C and C++: a `///` comment whose first sentence is the purpose, one `@param`
+   for each parameter, even one whose name looks obvious, and `@return` for every function
+   that returns a value. Shell: the Google Shell Style Guide's function comment. Python: the
+   Google Python Style Guide's docstring. A fact in a comment carries the same tags as the
+   documents.
+3. **`main()` is a composition of named steps.** Options, setup, the loop and the report are
+   separate functions.
+4. **One copy.** Each shared thing lives in one place, the lowest layer that needs it.
+
+   | concern | home |
+   |---|---|
+   | a camera behind one interface | `src/camera/camera_device.hpp` (`gca::device`) |
+   | Orbbec: profiles, alignment, color decoding | `src/camera/orbbec_device.*` |
+   | frames and camera parameters on the GPU | `src/cuda_container/` |
+   | point clouds: creation, filters, normals, search | `src/geometry/` |
+   | registration (colored ICP) | `src/registration/` |
+   | CUDA math, console colors, GPU checks | `src/util/` |
+
+5. **Log lines are an interface.** A tool that reads a program's output holds the strings
+   it reads: before a log line, a refusal or a dump key changes, grep the tools and tests
+   for it and change the reader with it.
+6. **No speculative generality.** No stubs, no second implementation, no parameter with one
+   value at every call site. Dead code is deleted, not commented out. An experiment without
+   a measured benefit is removed and its finding kept in the document that owns it.
+7. **Better numerics replace the old path.** A change that keeps the result but improves
+   conditioning or exactness becomes the one path, proven within a stated tolerance; it is
+   no switch.
+8. **Nothing shipped from arithmetic alone.** A value enters a description or tuning file
+   with the measurement that produced it written above it.
+
+## 8. Where things are documented
+
+| document | holds |
+|---|---|
+| `CLAUDE.md` | the one-page entry point: what this is, §3's rules in short, where to go next |
+| `README.md` | what the tree is, its layout, how to build, install and run it |
+| `ROADMAP.md` | what to do next, in order, with a definition of done and who can do each step |
+| `docs/HARDWARE.md` | the board: platform, connections, permissions, kernel log lines |
+| `CODING_STANDARDS.md` | the style guides, what they leave to this tree, the checkers |
+| `GLOSSARY.md`, `docs/adr/` | the project's terms; the decisions in force and why (created as they are resolved) |
+| `docs/agents/` | how the workflow skills in `.claude/skills/` find the tracker and the domain docs |
+
+Rules for these documents: each opens with the notice line above; plain, concise English,
+present tense, current truth only, history in git. One fact lives in one document and the
+others link to it. Every number carries a tag. When something turns out wrong, state what
+is right and drop the retraction. A claim carried over from an older document is checked
+against the tree first, above all one that says something is missing.

@@ -1,37 +1,14 @@
-# Prerequisites
-*.d
+# The tracker's working files (docs/agents/issue-tracker.md)
+.scratch/
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# The build folder
+# Build output
 build/
+
+# Data recorded on the hardware stays out of the tree (AGENTS.md §2, "Privacy"):
+# orbbec_viewer's snapshots.
+cloud_*.ply
+cloud_*.png
+
+# Editor state
 .vscode/
-.cache
+.cache/
