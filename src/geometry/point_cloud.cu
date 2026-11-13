@@ -478,6 +478,7 @@ std::shared_ptr<point_cloud> point_cloud::create_from_rgbd(const gca::cuda_depth
     return pc;
 }
 
+#ifdef GCA_WITH_PCL
 std::shared_ptr<point_cloud> point_cloud::create_from_pcl(
     const pcl::PointCloud<pcl::PointXYZRGB> &pcl_pc)
 {
@@ -502,6 +503,7 @@ std::shared_ptr<point_cloud> point_cloud::create_from_pcl(
 
     return pc;
 }
+#endif
 
 thrust::device_vector<gca::index_t> point_cloud::nn_search(const gca::point_cloud &query_pc,
                                                            const gca::point_cloud &reference_pc,

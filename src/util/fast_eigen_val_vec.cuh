@@ -125,9 +125,9 @@ __forceinline__ __device__ auto fast_eigen_compute_3x3_symm(const float3x3 &A)
     if (abs_max_coeff == 0.0f)
     {
         // A is the zero matrix.
-        auto eval_evec_1 = thrust::make_pair<float, float3>(0.0f, {1.0f, 0.0f, 0.0f});
-        auto eval_evec_2 = thrust::make_pair<float, float3>(0.0f, {0.0f, 1.0f, 0.0f});
-        auto eval_evec_3 = thrust::make_pair<float, float3>(0.0f, {0.0f, 0.0f, 1.0f});
+        auto eval_evec_1 = thrust::pair<float, float3>(0.0f, {1.0f, 0.0f, 0.0f});
+        auto eval_evec_2 = thrust::pair<float, float3>(0.0f, {0.0f, 1.0f, 0.0f});
+        auto eval_evec_3 = thrust::pair<float, float3>(0.0f, {0.0f, 0.0f, 1.0f});
 
         return thrust::make_tuple(eval_evec_1, eval_evec_2, eval_evec_3);
     }
@@ -173,9 +173,9 @@ __forceinline__ __device__ auto fast_eigen_compute_3x3_symm(const float3x3 &A)
             auto evec_2 = __compute_eigenvector_2(A_, evec_3, eval_2);
             auto evec_1 = cross(evec_2, evec_3);
 
-            auto eval_evec_1 = thrust::make_pair<float, float3>(eval_1 * abs_max_coeff, evec_1);
-            auto eval_evec_2 = thrust::make_pair<float, float3>(eval_2 * abs_max_coeff, evec_2);
-            auto eval_evec_3 = thrust::make_pair<float, float3>(eval_3 * abs_max_coeff, evec_3);
+            auto eval_evec_1 = thrust::pair<float, float3>(eval_1 * abs_max_coeff, evec_1);
+            auto eval_evec_2 = thrust::pair<float, float3>(eval_2 * abs_max_coeff, evec_2);
+            auto eval_evec_3 = thrust::pair<float, float3>(eval_3 * abs_max_coeff, evec_3);
 
             return thrust::make_tuple(eval_evec_1, eval_evec_2, eval_evec_3);
         }
@@ -186,9 +186,9 @@ __forceinline__ __device__ auto fast_eigen_compute_3x3_symm(const float3x3 &A)
             auto evec_2 = __compute_eigenvector_2(A_, evec_1, eval_2);
             auto evec_3 = cross(evec_1, evec_2);
 
-            auto eval_evec_1 = thrust::make_pair<float, float3>(eval_1 * abs_max_coeff, evec_1);
-            auto eval_evec_2 = thrust::make_pair<float, float3>(eval_2 * abs_max_coeff, evec_2);
-            auto eval_evec_3 = thrust::make_pair<float, float3>(eval_3 * abs_max_coeff, evec_3);
+            auto eval_evec_1 = thrust::pair<float, float3>(eval_1 * abs_max_coeff, evec_1);
+            auto eval_evec_2 = thrust::pair<float, float3>(eval_2 * abs_max_coeff, evec_2);
+            auto eval_evec_3 = thrust::pair<float, float3>(eval_3 * abs_max_coeff, evec_3);
 
             return thrust::make_tuple(eval_evec_1, eval_evec_2, eval_evec_3);
         }
@@ -196,9 +196,9 @@ __forceinline__ __device__ auto fast_eigen_compute_3x3_symm(const float3x3 &A)
     else
     {
         // A is diagonal.
-        auto eval_evec_1 = thrust::make_pair<float, float3>(A.m11, {1.0f, 0.0f, 0.0f});
-        auto eval_evec_2 = thrust::make_pair<float, float3>(A.m22, {0.0f, 1.0f, 0.0f});
-        auto eval_evec_3 = thrust::make_pair<float, float3>(A.m33, {0.0f, 0.0f, 1.0f});
+        auto eval_evec_1 = thrust::pair<float, float3>(A.m11, {1.0f, 0.0f, 0.0f});
+        auto eval_evec_2 = thrust::pair<float, float3>(A.m22, {0.0f, 1.0f, 0.0f});
+        auto eval_evec_3 = thrust::pair<float, float3>(A.m33, {0.0f, 0.0f, 1.0f});
 
         return thrust::make_tuple(eval_evec_1, eval_evec_2, eval_evec_3);
     }

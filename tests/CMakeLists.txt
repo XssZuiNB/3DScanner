@@ -1,0 +1,3 @@
+add_executable(test_point_cloud_from_rgbd test_point_cloud_from_rgbd.cpp)
+target_link_libraries(test_point_cloud_from_rgbd PRIVATE gca_lib)
+add_test(NAME point_cloud_from_rgbd COMMAND test_point_cloud_from_rgbd)

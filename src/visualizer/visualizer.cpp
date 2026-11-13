@@ -39,9 +39,10 @@ void visualizer::threadsafe_pop(std::shared_ptr<gca::point_cloud> &pc)
 {
     std::unique_lock<std::mutex> lock(m_mutex);
     m_cond_var.wait(lock, [this] { return !m_data_queue.empty() || !m_running; });
-    if (m_running) {
-     pc = m_data_queue.front();
-    m_data_queue.pop();
+    if (m_running)
+    {
+        pc = m_data_queue.front();
+        m_data_queue.pop();
     }
 }
 

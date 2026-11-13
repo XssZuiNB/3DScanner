@@ -81,7 +81,7 @@ struct compute_cumulant_functor
 
 struct compute_normal_functor
 {
-    compute_normal_functor(){};
+    compute_normal_functor() {};
 
     __device__ float3
     operator()(const thrust::tuple<mat9x1, thrust::pair<gca::index_t, gca::counter_t>> &tuple) const
