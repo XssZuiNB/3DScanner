@@ -478,6 +478,14 @@ std::shared_ptr<point_cloud> point_cloud::create_from_rgbd(const gca::cuda_depth
     return pc;
 }
 
+std::shared_ptr<point_cloud> point_cloud::create_from_points(
+    const std::vector<gca::point_t> &points)
+{
+    auto pc = std::make_shared<point_cloud>();
+    pc->m_points.assign(points.begin(), points.end());
+    return pc;
+}
+
 #ifdef GCA_WITH_PCL
 std::shared_ptr<point_cloud> point_cloud::create_from_pcl(
     const pcl::PointCloud<pcl::PointXYZRGB> &pcl_pc)

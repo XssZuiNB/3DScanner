@@ -5,12 +5,15 @@
 /// must give one point per pixel at the plane's depth, with the color converted from BGR8.
 /// Needs the GPU, no camera.
 
+#include "check.hpp"
 #include "cuda_container/cuda_container.hpp"
 #include "geometry/point_cloud.hpp"
 
 #include <cmath>
-#include <cstdio>
 #include <vector>
+
+using gca_test::check;
+using gca_test::check_summary;
 
 namespace
 {
@@ -18,20 +21,6 @@ constexpr uint32_t frame_width = 640;
 constexpr uint32_t frame_height = 480;
 constexpr float depth_scale_m = 0.001f; ///< meters per raw unit, the Orbbec default [S]
 constexpr gca::intrinsics intrinsics = {500.0f, 500.0f, 319.5f, 239.5f};
-
-int g_failures = 0;
-
-/// Records a failed check.
-/// @param ok the condition.
-/// @param what what was checked, printed on failure.
-void check(bool ok, const char *what)
-{
-    if (!ok)
-    {
-        std::fprintf(stderr, "FAIL: %s\n", what);
-        g_failures++;
-    }
-}
 
 /// Builds the point cloud of a uniform plane.
 /// @param depth_raw the raw depth value of every pixel.
@@ -90,7 +79,5 @@ int main()
 {
     test_plane_in_range();
     test_plane_out_of_range();
-    if (g_failures == 0)
-        std::printf("test_point_cloud_from_rgbd: all checks passed\n");
-    return g_failures == 0 ? 0 : 1;
+    return check_summary("test_point_cloud_from_rgbd");
 }

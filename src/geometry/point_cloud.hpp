@@ -104,6 +104,13 @@ public:
                                                          float threshold_min_in_meter = 0.0f,
                                                          float threshold_max_in_meter = 10.0f);
 
+    /// Uploads host points into a new cloud, the counterpart of download(). Every point keeps
+    /// its coordinates, color and property as given, in the given order; the cloud has no
+    /// normals and no cached bounds (estimate_normals() and the bound getters compute them).
+    /// @param points the points.
+    /// @return the new cloud.
+    static std::shared_ptr<point_cloud> create_from_points(const std::vector<gca::point_t> &points);
+
 #ifdef GCA_WITH_PCL
     static std::shared_ptr<point_cloud> create_from_pcl(
         const pcl::PointCloud<pcl::PointXYZRGB> &pcl_pc);
