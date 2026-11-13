@@ -36,3 +36,8 @@ Once per machine, as root: the Orbbec udev rule, from the SDK
 
     <repo>/build/apps/orbbec_viewer --list     # device and stream profiles
     <repo>/build/apps/orbbec_viewer            # color | depth | overlay; s saves a PLY, q quits
+
+## License
+
+[0BSD](LICENSE). The workflow skills in `.claude/skills/` are MIT
+(`.claude/skills/LICENSE-mattpocock-skills`).

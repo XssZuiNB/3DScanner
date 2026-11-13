@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: TODO(template)
+# SPDX-License-Identifier: 0BSD
 #
 # verify.sh - the one offline check: the build, every test and the checkers of
 # CODING_STANDARDS.md, "Tools" (AGENTS.md §4).

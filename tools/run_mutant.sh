@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: TODO(template)
+# SPDX-License-Identifier: 0BSD
 #
 # run_mutant.sh - whether tools/verify.sh catches a deliberate mistake.
 #

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: TODO(template)
+// SPDX-License-Identifier: 0BSD
 /// @file orbbec_device.cpp
 /// The Orbbec camera behind gca::device: profile selection, depth-to-color alignment and
 /// color decoding to BGR8 (see orbbec_device.hpp).

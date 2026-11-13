@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: TODO(template)
+# SPDX-License-Identifier: 0BSD
 #
 # fetch_deps.sh - downloads the dependencies the build takes from outside the
 # tree into GCA_DEPS_DIR (default ~/.local/share/3dscanner): OrbbecSDK v2 for

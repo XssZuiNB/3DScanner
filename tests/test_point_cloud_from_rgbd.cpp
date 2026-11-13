@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: TODO(template)
+// SPDX-License-Identifier: 0BSD
 /// @file test_point_cloud_from_rgbd.cpp
 /// Offline test of gca::point_cloud::create_from_rgbd() with depth aligned to color (identity
 /// extrinsics, shared intrinsics), the setup orbbec_device delivers: a synthetic flat plane

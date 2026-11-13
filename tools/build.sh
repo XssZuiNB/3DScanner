@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: TODO(template)
+# SPDX-License-Identifier: 0BSD
 #
 # build.sh - the incremental build agents run while they work (AGENTS.md §4):
 # configures build/ on first use, then builds every target with warnings.

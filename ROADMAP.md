@@ -7,11 +7,7 @@ What to do next, in order. Each step has a definition of done and says who can d
 go), **decision** (the user's). A finished step is deleted; its outcome goes into the
 document that owns the fact.
 
-## 1. Open decisions (decision)
-
-* The license: the SPDX line every file starts with (`TODO(template)` in each new file).
-
-## 2. The rewrite's requirements (decision)
+## 1. The rewrite's requirements (decision)
 
 The rewrite starts with its list of requirements, which the user checks. `/grill-with-docs`
 on the scanner: what it scans (objects, rooms), how the camera moves (hand, turntable), what

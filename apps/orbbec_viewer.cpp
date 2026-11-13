@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: TODO(template)
+// SPDX-License-Identifier: 0BSD
 /// @file orbbec_viewer.cpp
 /// Live test of the Orbbec camera: grabs aligned RGB-D frames, builds the point cloud on the GPU,
 /// reports frame rate and timings once a second and shows color | depth | overlay. 's' saves

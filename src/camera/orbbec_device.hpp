@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: TODO(template)
+// SPDX-License-Identifier: 0BSD
 /// @file orbbec_device.hpp
 /// The Orbbec RGB-D camera (Gemini 2 L) behind the gca::device interface, through OrbbecSDK v2.
 /// Depth is aligned to the color camera, so both share one resolution and one set of
