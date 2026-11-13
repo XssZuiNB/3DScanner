@@ -1,6 +1,6 @@
 #pragma once
 
-#include "util/console_color.hpp"
+#include "types/console_color.hpp"
 
 #include <cuda.h>
 #include <cuda_runtime.h>

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: 0BSD
-/// @file little_3x3_ldlt_solve.cuh
+/// @file ldlt_3x3.cuh
 /// The solution of a small symmetric positive definite 3x3 system in device code, by an LDL^T
 /// factorization without pivoting.
 

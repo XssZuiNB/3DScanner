@@ -1,7 +1,7 @@
 #pragma once
 
-#include "cuda_container/cuda_container.hpp"
 #include "geometry/type.hpp"
+#include "gpu/cuda_container.hpp"
 
 #include <memory>
 #include <vector>

@@ -1,11 +1,11 @@
 #include "color_icp.hpp"
 
+#include "geometry/float3_ops.cuh"
 #include "geometry/geometry_util.cuh"
 #include "registration/cuda_color_icp_build_least_square.cuh"
 #include "registration/cuda_compute_color_gradient.cuh"
 #include "registration/eigen_solver.hpp"
-#include "util/console_color.hpp"
-#include "util/float3_ops.cuh"
+#include "types/console_color.hpp"
 
 #include <cuda.h>
 #include <cuda_runtime.h>

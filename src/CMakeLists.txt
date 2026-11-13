@@ -1,104 +1,99 @@
-find_package(CUDAToolkit REQUIRED)
-find_package(OpenCV REQUIRED)
+# One library per directory, each linking only the ones below it; types is header only:
+#   types <- camera (OrbbecSDK, OpenCV)
+#   types <- gpu (CUDA runtime) <- geometry (Eigen) <- registration
+# Every library includes from src/ ("gpu/cuda_container.hpp"); types carries that directory.
 
-# Downloaded dependencies live outside the tree (tools/fetch_deps.sh).
-if(DEFINED ENV{GCA_DEPS_DIR})
-    set(_gca_deps_default "$ENV{GCA_DEPS_DIR}")
-else()
-    set(_gca_deps_default "$ENV{HOME}/.local/share/3dscanner")
-endif()
-set(GCA_DEPS_DIR "${_gca_deps_default}" CACHE PATH "Directory of tools/fetch_deps.sh's downloads")
+# ---------------------------------------------------------------- types (header only)
+# The plain camera-parameter structs and the console colors, which camera and gpu both use.
+add_library(types INTERFACE)
+target_include_directories(types INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(types INTERFACE cxx_std_17)
 
-# ---------------------------------------------------------------- Eigen (header only)
-# The library uses Eigen in device code. nvcc compiles it without --expt-relaxed-constexpr
-# [M 2026-11-13: nvcc 12.6, Eigen 3.4.0; no error, no warning, every test passes], so the
-# flag is not set. Eigen 3.4.0 makes nvcc warn #20012-D 16 times in each translation unit
-# that includes it unless the CUDA toolkit's include directory is a system one, which linking
-# CUDA::cudart makes it [M 2026-11-13: nvcc 12.6].
-# The code needs Eigen 3.4 (Eigen::Vector<T, N>), and the measurements above are on 3.4.0.
-find_package(Eigen3 3.4 QUIET NO_MODULE)
-if(NOT TARGET Eigen3::Eigen)
-    set(GCA_EIGEN_DIR "${GCA_DEPS_DIR}/eigen-3.4.0" CACHE PATH "Eigen source dir")
-    if(NOT EXISTS "${GCA_EIGEN_DIR}/Eigen/Core")
-        message(FATAL_ERROR "Eigen3 not found. Run tools/fetch_deps.sh, install libeigen3-dev or set GCA_EIGEN_DIR.")
-    endif()
-    # A source copy states its version only in Macros.h; accept 3.4 or a later 3.x, as
-    # find_package above does [S: Eigen 3.4.0's CMakeLists.txt, SameMajorVersion].
-    file(STRINGS "${GCA_EIGEN_DIR}/Eigen/src/Core/util/Macros.h" _gca_eigen_defines
-        REGEX "^#define EIGEN_(WORLD|MAJOR)_VERSION [0-9]+$")
-    string(REGEX REPLACE ".*EIGEN_WORLD_VERSION ([0-9]+).*" "\\1" _gca_eigen_world "${_gca_eigen_defines}")
-    string(REGEX REPLACE ".*EIGEN_MAJOR_VERSION ([0-9]+).*" "\\1" _gca_eigen_major "${_gca_eigen_defines}")
-    if(NOT _gca_eigen_world STREQUAL "3" OR NOT _gca_eigen_major GREATER_EQUAL 4)
-        message(FATAL_ERROR "Eigen 3.4 needed; ${GCA_EIGEN_DIR} holds ${_gca_eigen_world}.${_gca_eigen_major}. Run tools/fetch_deps.sh or set GCA_EIGEN_DIR.")
-    endif()
-    add_library(Eigen3::Eigen INTERFACE IMPORTED)
-    set_target_properties(Eigen3::Eigen PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${GCA_EIGEN_DIR}")
-    message(STATUS "Using bundled Eigen: ${GCA_EIGEN_DIR}")
-endif()
-
-# ---------------------------------------------------------------- Camera backends
-option(GCA_WITH_ORBBEC "Build Orbbec camera support (OrbbecSDK v2)" ON)
+# ---------------------------------------------------------------- camera
 if(GCA_WITH_ORBBEC)
-    if(NOT OrbbecSDK_DIR)
-        file(GLOB _ob_sdk_dirs "${GCA_DEPS_DIR}/OrbbecSDK_v2*/lib")
-        if(NOT _ob_sdk_dirs)
-            message(FATAL_ERROR "OrbbecSDK not found in ${GCA_DEPS_DIR}. Run tools/fetch_deps.sh.")
-        endif()
-        list(GET _ob_sdk_dirs 0 _ob_sdk_dir)
-        set(OrbbecSDK_DIR "${_ob_sdk_dir}" CACHE PATH "OrbbecSDK cmake config dir")
-    endif()
-    find_package(OrbbecSDK REQUIRED)
+    add_library(
+        camera
+        STATIC
+        camera/camera_device.hpp
+        camera/orbbec_device.cpp
+        camera/orbbec_device.hpp
+    )
+    target_link_libraries(
+        camera
+        PUBLIC
+        types
+        opencv_core
+        ob::OrbbecSDK
+        PRIVATE
+        opencv_imgcodecs
+        opencv_imgproc
+    )
 endif()
 
-message(STATUS "GCA: Orbbec=${GCA_WITH_ORBBEC}")
-
-# ---------------------------------------------------------------- Sources
-set(CAMERA_SRC camera/camera_device.hpp camera/camera_param.hpp)
-if(GCA_WITH_ORBBEC)
-    list(APPEND CAMERA_SRC camera/orbbec_device.cpp camera/orbbec_device.hpp)
-endif()
-
-file(GLOB CUDA_CONTAINER_SRC "cuda_container/*.hpp" "cuda_container/*.cu" "cuda_container/*.cuh")
-file(GLOB GEOMETRY_SRC "geometry/*.cpp" "geometry/*.hpp" "geometry/*.cu" "geometry/*.cuh")
-file(GLOB REGISTRATION_SRC
-    "registration/*.cpp" "registration/*.hpp" "registration/*.cu" "registration/*.cuh")
-file(GLOB UTIL_SRC "util/*.cpp" "util/*.hpp" "util/*.cu" "util/*.cuh")
-
+# ---------------------------------------------------------------- gpu
 add_library(
-    gca_lib
-    SHARED
-    ${CAMERA_SRC}
-    ${CUDA_CONTAINER_SRC}
-    ${GEOMETRY_SRC}
-    ${REGISTRATION_SRC}
-    ${UTIL_SRC}
+    gpu
+    STATIC
+    gpu/cuda_camera_param_container.cu
+    gpu/cuda_color_frame_container.cu
+    gpu/cuda_container.hpp
+    gpu/cuda_depth_frame_container.cu
+    gpu/cuda_frame.cuh
+    gpu/cuda_util.cuh
+    gpu/gpu_check.cu
+    gpu/gpu_check.hpp
 )
+# PUBLIC: the headers hold thrust and CUDA types.
+target_link_libraries(gpu PUBLIC types CUDA::cudart)
 
-target_compile_features(gca_lib PUBLIC cxx_std_17)
-
-target_include_directories(
-    gca_lib
-    PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${OpenCV_INCLUDE_DIRS}
+# ---------------------------------------------------------------- geometry
+add_library(
+    geometry
+    STATIC
+    geometry/cuda_estimate_normals.cu
+    geometry/cuda_estimate_normals.cuh
+    geometry/cuda_nn_search.cu
+    geometry/cuda_nn_search.cuh
+    geometry/cuda_point_cloud_factory.cu
+    geometry/cuda_point_cloud_factory.cuh
+    geometry/cuda_voxel_grid_down_sample.cu
+    geometry/cuda_voxel_grid_down_sample.cuh
+    geometry/float3_eigen.cuh
+    geometry/float3_ops.cuh
+    geometry/geometry_util.cuh
+    geometry/point_cloud.cu
+    geometry/point_cloud.hpp
+    geometry/symmetric_eigen_3x3.cuh
+    geometry/type.hpp
 )
+target_link_libraries(geometry PUBLIC gpu Eigen3::Eigen)
 
-target_link_libraries(
-    gca_lib
-    PUBLIC
-    CUDA::cudart
-    ${OpenCV_LIBS}
-    Eigen3::Eigen
+# ---------------------------------------------------------------- registration
+add_library(
+    registration
+    STATIC
+    registration/color_icp.cu
+    registration/color_icp.hpp
+    registration/cuda_color_icp_build_least_square.cu
+    registration/cuda_color_icp_build_least_square.cuh
+    registration/cuda_compute_color_gradient.cu
+    registration/cuda_compute_color_gradient.cuh
+    registration/eigen_solver.hpp
+    registration/ldlt_3x3.cuh
 )
+target_link_libraries(registration PUBLIC geometry Eigen3::Eigen)
 
-if(GCA_WITH_ORBBEC)
-    target_link_libraries(gca_lib PUBLIC ob::OrbbecSDK)
-    target_compile_definitions(gca_lib PUBLIC GCA_WITH_ORBBEC)
-endif()
-
+# Separable compilation stays off: no device function or variable is used outside the
+# translation unit that defines it, so nothing needs a device link [M 2026-11-13: every test
+# passes; the colored-ICP fixture's rotation error prints 0.000224 deg instead of 0.000225, every
+# other printed value is equal]. It guards nothing more [M 2026-11-13: nvcc 12.6 probes]: a
+# __host__ __device__ function calling a host-only one draws warning #20011-D (#20014-D when the
+# callee's body is visible) in either mode, and the device code drops the call, device link or
+# not; a __host__ __device__ function left undefined stops ptxas without it, nvlink with it.
 set_target_properties(
-    gca_lib
+    gpu
+    geometry
+    registration
     PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
     CUDA_ARCHITECTURES "${GCA_CUDA_ARCHITECTURES}"
 )

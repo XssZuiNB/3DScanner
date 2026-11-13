@@ -1,7 +1,7 @@
-#include "cuda_container/cuda_container.hpp"
+#include "gpu/cuda_container.hpp"
 
-#include "cuda_container/cuda_frame.cuh"
-#include "util/cuda_util.cuh"
+#include "gpu/cuda_frame.cuh"
+#include "gpu/cuda_util.cuh"
 
 #include <cuda_runtime_api.h>
 

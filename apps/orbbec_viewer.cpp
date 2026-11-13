@@ -9,10 +9,10 @@
 /// headless, saves the last one.
 
 #include "camera/orbbec_device.hpp"
-#include "cuda_container/cuda_container.hpp"
 #include "geometry/point_cloud.hpp"
-#include "util/console_color.hpp"
-#include "util/gpu_check.hpp"
+#include "gpu/cuda_container.hpp"
+#include "gpu/gpu_check.hpp"
+#include "types/console_color.hpp"
 
 #include <chrono>
 #include <csignal>
@@ -22,7 +22,10 @@
 #include <iostream>
 #include <string>
 
-#include <opencv2/opencv.hpp>
+#include <opencv2/core.hpp>
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 namespace
 {
@@ -162,7 +165,10 @@ void report_if_due(frame_stats &stats, size_t points)
 /// @param opt the options.
 void run_loop(gca::orbbec_device &cam, const options &opt)
 {
-    gca::cuda_camera_param cu_param(cam);
+    gca::cuda_camera_param cu_param(cam.get_depth_intrinsics(), cam.get_color_intrinsics(),
+                                    cam.get_depth_to_color_extrinsics(), cam.get_width(),
+                                    cam.get_height(), cam.get_depth_scale(),
+                                    cam.get_depth_frame_format(), cam.get_color_frame_format());
     gca::cuda_color_frame gpu_color(cam.get_width(), cam.get_height());
     gca::cuda_depth_frame gpu_depth(cam.get_width(), cam.get_height());
     frame_stats stats;

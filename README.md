@@ -11,7 +11,7 @@ its RealSense SLAM demo: https://youtu.be/5NcDEhguzGU). Agents start at [CLAUDE.
 
 | directory | what |
 |---|---|
-| `src/` | the library `gca_lib`: `camera/` (Orbbec behind `gca::device`), `cuda_container/`, `geometry/`, `registration/`, `util/` |
+| `src/` | one library per directory: `types/` (camera parameters and console colors, header only), `camera/` (Orbbec behind `gca::device`), `gpu/`, `geometry/`, `registration/` |
 | `apps/` | `orbbec_viewer` (camera test, live point cloud) |
 | `tests/` | offline tests, run by ctest; they need the GPU, no camera |
 | `tools/` | fetch the dependencies, build, verify (AGENTS.md §4) |

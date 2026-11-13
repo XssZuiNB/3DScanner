@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: 0BSD
-/// @file fast_eigen_val_vec.cuh
+/// @file symmetric_eigen_3x3.cuh
 /// The closed-form eigendecomposition of a symmetric 3x3 matrix in device code, after D. Eberly,
 /// "A Robust Eigensolver for 3 x 3 Symmetric Matrices", Geometric Tools,
 /// https://www.geometrictools.com/Documentation/RobustEigenSymmetric3x3.pdf: the matrix scaled

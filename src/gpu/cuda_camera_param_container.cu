@@ -1,18 +1,10 @@
-#include "cuda_container/cuda_container.hpp"
-#include "util/cuda_util.cuh"
+#include "gpu/cuda_container.hpp"
+#include "gpu/cuda_util.cuh"
 
 #include <cuda_runtime_api.h>
 
 namespace gca
 {
-cuda_camera_param::cuda_camera_param(const device &device)
-    : cuda_camera_param(device.get_depth_intrinsics(), device.get_color_intrinsics(),
-                        device.get_depth_to_color_extrinsics(), device.get_width(),
-                        device.get_height(), device.get_depth_scale(),
-                        device.get_depth_frame_format(), device.get_color_frame_format())
-{
-}
-
 cuda_camera_param::cuda_camera_param(const gca::intrinsics &depth_intrin,
                                      const gca::intrinsics &color_intrin,
                                      const gca::extrinsics &depth2color_extrin,

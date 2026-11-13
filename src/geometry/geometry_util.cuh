@@ -1,7 +1,7 @@
 #pragma once
 
+#include "geometry/float3_eigen.cuh"
 #include "geometry/type.hpp"
-#include "util/float3_eigen.cuh"
 
 #include <cfloat>
 

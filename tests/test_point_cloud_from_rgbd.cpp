@@ -6,8 +6,8 @@
 /// Needs the GPU, no camera.
 
 #include "check.hpp"
-#include "cuda_container/cuda_container.hpp"
 #include "geometry/point_cloud.hpp"
+#include "gpu/cuda_container.hpp"
 
 #include <cmath>
 #include <vector>

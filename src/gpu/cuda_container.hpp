@@ -1,8 +1,7 @@
 #pragma once
 
-#include "camera/camera_device.hpp"
-#include "camera/camera_param.hpp"
-#include "cuda_container/cuda_frame.cuh"
+#include "gpu/cuda_frame.cuh"
+#include "types/camera_param.hpp"
 
 #include <thrust/device_vector.h>
 
@@ -55,8 +54,6 @@ private:
 class cuda_camera_param
 {
 public:
-    cuda_camera_param(const device &device);
-
     cuda_camera_param(const gca::intrinsics &depth_intrin, const gca::intrinsics &color_intrin,
                       const gca::extrinsics &depth2color_extrin, const uint32_t width,
                       const uint32_t height, const float depth_scale,

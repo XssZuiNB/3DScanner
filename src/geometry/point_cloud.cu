@@ -4,9 +4,9 @@
 #include "geometry/cuda_nn_search.cuh"
 #include "geometry/cuda_point_cloud_factory.cuh"
 #include "geometry/cuda_voxel_grid_down_sample.cuh"
+#include "geometry/float3_ops.cuh"
 #include "geometry/geometry_util.cuh"
-#include "util/console_color.hpp"
-#include "util/float3_ops.cuh"
+#include "types/console_color.hpp"
 
 #include <memory>
 #include <vector>

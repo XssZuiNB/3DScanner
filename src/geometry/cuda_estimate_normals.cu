@@ -1,11 +1,11 @@
 #include "cuda_estimate_normals.cuh"
 
 #include "geometry/cuda_nn_search.cuh"
+#include "geometry/float3_eigen.cuh"
+#include "geometry/float3_ops.cuh"
+#include "geometry/symmetric_eigen_3x3.cuh"
 #include "geometry/type.hpp"
-#include "util/cuda_util.cuh"
-#include "util/fast_eigen_val_vec.cuh"
-#include "util/float3_eigen.cuh"
-#include "util/float3_ops.cuh"
+#include "gpu/cuda_util.cuh"
 
 #include <Eigen/Core>
 #include <cuda.h>

@@ -1,9 +1,9 @@
 #pragma once
 
-#include "camera/camera_param.hpp"
-#include "cuda_container/cuda_container.hpp"
 #include "geometry/type.hpp"
-#include "util/cuda_util.cuh"
+#include "gpu/cuda_container.hpp"
+#include "gpu/cuda_util.cuh"
+#include "types/camera_param.hpp"
 
 #include <memory>
 

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "camera/camera_param.hpp"
-#include "util/cuda_util.cuh"
+#include "gpu/cuda_util.cuh"
+#include "types/camera_param.hpp"
 
 #include <cuda_runtime_api.h>
 #include <thrust/copy.h>

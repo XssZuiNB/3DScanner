@@ -1,7 +1,7 @@
 #include "cuda_color_icp_build_least_square.cuh"
 
-#include "util/float3_eigen.cuh"
-#include "util/float3_ops.cuh"
+#include "geometry/float3_eigen.cuh"
+#include "geometry/float3_ops.cuh"
 
 #include <Eigen/Core>
 #include <thrust/device_vector.h>

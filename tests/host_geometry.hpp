@@ -125,7 +125,7 @@ inline bool positive_on_every_axis(const vec3 &p)
 /// Returns the tests' plane's unit normal, pointing away from the camera (n_z > 0) so that the
 /// code has to flip it, and tilted off every axis, which keeps the eigensolver clear of a bug [S].
 /// An axis-aligned plane has a diagonal covariance, whose eigenvalues the eigensolver returns in
-/// the diagonal's order (fast_eigen_val_vec.cuh, solve_symmetric_eigen_3x3()), not sorted;
+/// the diagonal's order (symmetric_eigen_3x3.cuh, solve_symmetric_eigen_3x3()), not sorted;
 /// compute_normal_functor's strict < then picks a wrong eigenvector if the smallest eigenvalue
 /// ties another.
 /// @return the normal.

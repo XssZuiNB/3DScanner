@@ -1,9 +1,9 @@
 #include "cuda_compute_color_gradient.cuh"
 
 #include "geometry/cuda_nn_search.cuh"
-#include "util/float3_eigen.cuh"
-#include "util/float3_ops.cuh"
-#include "util/little_3x3_ldlt_solve.cuh"
+#include "geometry/float3_eigen.cuh"
+#include "geometry/float3_ops.cuh"
+#include "registration/ldlt_3x3.cuh"
 
 #include <Eigen/Core>
 #include <thrust/device_vector.h>

@@ -9,6 +9,8 @@
 #include <string>
 
 #include <libobsensor/hpp/TypeHelper.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 namespace gca
 {
