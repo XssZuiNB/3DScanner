@@ -9,21 +9,13 @@ document that owns the fact.
 
 ## 1. Clean up the CUDA_3D tree (agent)
 
-The inventory is done: `.scratch/cleanup/inventory.md`, read by the user 2026-11-13. Decided
-by the user the same day, in this order, each step done when `tools/verify.sh` passes:
-
-1. **Dead code:** delete `apps/test_color_icp.cpp`, `scripts/`, `graph.png`,
-   `data/cloud_bin_*.pcd`, `src/visualizer/`, `src/movement_detection/`,
-   `src/geometry/cuda_clustering.*` with its `point_cloud` wrappers, the unused functions and
-   classes the inventory lists (the unused part of `math.cuh` among them), RealSense
-   (`realsense_device.*`, `apps/app.cpp`) and PCL support, and the CMake settings nothing
-   needs. `data/frag_115.ply` and `frag_116.ply` stay as the fixture of a future colored-ICP
-   test.
-2. **Directory layout** (decision, then agent): a layout for the scanner, checked by the user,
-   the files moved.
-3. **The rules for the code that stays** (agent): AGENTS.md §7 for `orbbec_device`,
-   `orbbec_viewer`, the test and the tools, and a compiler warning set. The rest gets the rules
-   when the rewrite replaces it.
+Spec: `.scratch/cleanup/spec.md`, from the inventory (`.scratch/cleanup/inventory.md`) and
+the user's decisions of 2026-11-13. In order, each step done when `tools/verify.sh` passes:
+offline tests on the library's public API; the dead code, RealSense and PCL deleted
+(`data/frag_115.ply` and `frag_116.ply` stay as fixtures); `src/util/math.cuh` replaced by
+Eigen and the tree's own `float3` operators; one static library per module; AGENTS.md §7
+and a warning set for the code that stays. Done when, on the user's go, `orbbec_viewer` still
+runs at 30 fps with the timings of docs/HARDWARE.md.
 
 ## 2. The rewrite's requirements (decision)
 
