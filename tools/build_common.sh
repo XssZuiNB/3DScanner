@@ -19,7 +19,8 @@
 #   - MemAvailable when idle: about 4.3 to 4.5 GB of 7.4 GiB;
 #   - at -j3 MemAvailable fell to 1.69 GB at its lowest, with no swap used;
 #   - a -j6 clean build of Eigen-heavy CUDA code froze the board at about
-#     19:56 (reset reason SYS_RESET_N, no log line, pstore empty).
+#     19:56; it hung until the user cut the power (reset reason SYS_RESET_N,
+#     no log line, pstore empty).
 # Six jobs of such peaks need about 4.5 to 5.5 GB, derived from the peaks
 # above, not measured. The kernel has no PSI (CONFIG_PSI is not set), so
 # systemd-oomd cannot run; swap was only zram, which lives in the same RAM;
