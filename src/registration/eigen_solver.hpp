@@ -1,6 +1,5 @@
 #pragma once
 
-#include "util/eigen_disable_bad_warnings.hpp"
 #include "util/math.cuh"
 
 #include <Eigen/Core>
@@ -14,18 +13,6 @@ using Vector6f = Eigen::Matrix<float, 6, 1>;
 using Matrix6d = Eigen::Matrix<double, 6, 6>;
 using Vector6d = Eigen::Matrix<double, 6, 1>;
 } // namespace Eigen
-
-static Eigen::Matrix4f transform_vec6f_to_mat4f(const Eigen::Vector6f &input)
-{
-    Eigen::Matrix4f output;
-    output.setIdentity();
-    output.block<3, 3>(0, 0) = (Eigen::AngleAxisf(input(2), Eigen::Vector3f::UnitZ()) *
-                                Eigen::AngleAxisf(input(1), Eigen::Vector3f::UnitY()) *
-                                Eigen::AngleAxisf(input(0), Eigen::Vector3f::UnitX()))
-                                   .matrix();
-    output.block<3, 1>(0, 3) = input.block<3, 1>(3, 0);
-    return output;
-}
 
 static Eigen::Matrix4f transform_vec6d_to_mat4f(const Eigen::Vector6d &input)
 {
@@ -41,35 +28,25 @@ static Eigen::Matrix4f transform_vec6d_to_mat4f(const Eigen::Vector6d &input)
 
 namespace gca
 {
-template <bool IF_USE_DOUBLE = false> mat4x4 solve_JTJ_JTr(const mat6x6 &JTJ, const mat6x1 &JTr)
+inline mat4x4 solve_JTJ_JTr(const mat6x6 &JTJ, const mat6x1 &JTr)
 {
     // JTJ is Symmetric Matrix. Therefore, eventhough Eigen matrix is column-major and mine is
     // Row-major, it can also work.
     Eigen::Matrix6f JTJ_f(JTJ.ptr());
     Eigen::Vector6f JTr_f(JTr.ptr());
 
-    Eigen::Matrix4f SE3_matrix_eigen;
+    Eigen::Matrix6d JTJ_d(JTJ_f.cast<double>());
+    Eigen::Vector6d JTr_d(JTr_f.cast<double>());
 
-    if constexpr (IF_USE_DOUBLE)
+    // equation 21 in paper of color icp
+    Eigen::LDLT<Eigen::Matrix6d> ldlt(JTJ_d);
+    if (ldlt.info() != Eigen::Success)
     {
-        Eigen::Matrix6d JTJ_d(JTJ_f.cast<double>());
-        Eigen::Vector6d JTr_d(JTr_f.cast<double>());
-
-        // equation 21 in paper of color icp
-        Eigen::LDLT<Eigen::Matrix6d> ldlt(JTJ_d);
-        if (ldlt.info() != Eigen::Success)
-        {
-            return mat4x4::get_identity();
-        }
-
-        Eigen::Vector6d se3_vec(ldlt.solve(-JTr_d));
-        SE3_matrix_eigen = transform_vec6d_to_mat4f(se3_vec);
+        return mat4x4::get_identity();
     }
-    else
-    {
-        Eigen::Vector6f se3_vec(JTJ_f.ldlt().solve(-JTr_f));
-        SE3_matrix_eigen = transform_vec6f_to_mat4f(se3_vec);
-    }
+
+    Eigen::Vector6d se3_vec(ldlt.solve(-JTr_d));
+    Eigen::Matrix4f SE3_matrix_eigen = transform_vec6d_to_mat4f(se3_vec);
 
     mat4x4 SE3_matrix;
 

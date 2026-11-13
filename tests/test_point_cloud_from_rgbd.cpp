@@ -30,8 +30,8 @@ std::vector<gca::point_t> plane_cloud(uint16_t depth_raw, const uint8_t bgr[3])
 {
     gca::extrinsics identity{};
     identity.rotation[0] = identity.rotation[4] = identity.rotation[8] = 1.0f;
-    const gca::cuda_camera_param param(intrinsics, intrinsics, identity, identity, frame_width,
-                                       frame_height, depth_scale_m);
+    const gca::cuda_camera_param param(intrinsics, intrinsics, identity, frame_width, frame_height,
+                                       depth_scale_m);
 
     const std::vector<uint16_t> depth(frame_width * frame_height, depth_raw);
     std::vector<uint8_t> color(frame_width * frame_height * 3);

@@ -9,7 +9,6 @@
 
 // CUDA
 #include <thrust/device_vector.h>
-#include <thrust/host_vector.h>
 
 namespace gca
 {
@@ -25,15 +24,7 @@ public:
 
     bool align();
 
-    std::pair<thrust::device_vector<float>, float> get_abs_residual();
-
-    std::pair<thrust::host_vector<float>, float> get_abs_residual_host();
-
     const mat4x4 &get_final_transformation_matrix() const;
-    float get_RSME() const;
-
-    std::shared_ptr<const gca::point_cloud> get_transformed_source_point_cloud() const;
-
     ~color_icp() = default;
 
 private:
@@ -59,6 +50,5 @@ private:
     bool m_color_gradient_done;
 
     mat4x4 m_transformation_matrix;
-    float m_RMSE;
 };
 } // namespace gca

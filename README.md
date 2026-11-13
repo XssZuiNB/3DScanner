@@ -11,7 +11,7 @@ its RealSense SLAM demo: https://youtu.be/5NcDEhguzGU). Agents start at [CLAUDE.
 
 | directory | what |
 |---|---|
-| `src/` | the library `gca_lib`: `camera/` (Orbbec behind `gca::device`), `cuda_container/`, `geometry/`, `registration/`, `movement_detection/`, `util/` |
+| `src/` | the library `gca_lib`: `camera/` (Orbbec behind `gca::device`), `cuda_container/`, `geometry/`, `registration/`, `util/` |
 | `apps/` | `orbbec_viewer` (camera test, live point cloud) |
 | `tests/` | offline tests, run by ctest; they need the GPU, no camera |
 | `tools/` | fetch the dependencies, build, verify (AGENTS.md §4) |
@@ -42,6 +42,5 @@ Once per machine, as root: the Orbbec udev rule, from the SDK
 
 * `src/util/math.cuh` comes from VoxelHashing and is CC BY-NC-SA 3.0: attribution,
   **non-commercial**, share-alike. The rewrite replaces it (ROADMAP.md).
-* `src/util/eigen_disable_bad_warnings.hpp` derives from Eigen and is MPL-2.0.
 * The workflow skills in `.claude/skills/` are MIT (`.claude/skills/LICENSE-mattpocock-skills`).
 * `data/`: Open3D test data [?], license unchecked.

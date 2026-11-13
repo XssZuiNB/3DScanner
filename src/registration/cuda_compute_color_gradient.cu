@@ -78,13 +78,10 @@ struct compute_color_gradient_functor
         // Because this color gradient should be on the tangent plane of the point
         // This term makes convergence faster!
         AtA += (knn - 1) * (knn - 1) * n_mat * n_mat.get_transpose();
-        // Atb += (knn - 1) * n_mat; // This makes slower convergence...
         AtA(0, 0) += 1.0e-6f;
         AtA(1, 1) += 1.0e-6f;
         AtA(2, 2) += 1.0e-6f;
 
-        // inverse is numerically unstable, could cause problem sometimes, dont use!
-        // return (AtA.get_inverse() * Atb);
         return ldlt_3x3(AtA).solve(Atb);
     }
 };

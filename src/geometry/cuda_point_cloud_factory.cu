@@ -26,41 +26,6 @@ __forceinline__ __device__ static float __gaussian_square(float x_square, float 
     return expf(-x_square / (sigma * sigma));
 }
 
-__forceinline__ __device__ static float __bilateral_filter(const uint16_t *input,
-                                                           uint32_t input_width,
-                                                           uint32_t input_height, int index_x,
-                                                           int index_y, int filter_radius,
-                                                           float sigma_space, float sigma_depth)
-{
-    float sum_weight = 0.0f;
-    float sum = 0.0f;
-
-    auto depth_value = __ldg(&input[index_y * input_width + index_x]);
-
-    for (int dy = -filter_radius; dy <= filter_radius; ++dy)
-    {
-        for (int dx = -filter_radius; dx <= filter_radius; ++dx)
-        {
-            int nx = index_x + dx;
-            int ny = index_y + dy;
-
-            if (nx < 0 || nx >= input_width || ny < 0 || ny >= input_height)
-            {
-                continue;
-            }
-
-            auto neighbor = __ldg(&input[ny * input_width + nx]);
-            float weight = __gaussian_square((dx * dx + dy * dy), sigma_space) *
-                           __gaussian(abs(depth_value - neighbor), sigma_depth);
-
-            sum_weight += weight;
-            sum += weight * neighbor;
-        }
-    }
-
-    return sum / sum_weight;
-}
-
 __forceinline__ __device__ static float __bilateral_filter(
     const uint16_t *input, uint32_t input_width, uint32_t input_height, int index_x, int index_y,
     uint16_t this_depth_data, int filter_radius, float sigma_space, float sigma_depth)

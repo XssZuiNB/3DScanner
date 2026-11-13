@@ -9,8 +9,6 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
-#include <thrust/pair.h>
-#include <thrust/reduce.h>
 
 namespace gca
 {
@@ -24,7 +22,6 @@ color_icp::color_icp(size_t maximum_iterations, float max_correspondence_distanc
     , m_search_radius_color_gradient(search_radius_color_gradient)
     , m_color_gradient_done(false)
     , m_transformation_matrix(mat4x4::get_identity())
-    , m_RMSE(0.0f)
 {
 }
 
@@ -32,7 +29,6 @@ void color_icp::set_source_point_cloud(const std::shared_ptr<const gca::point_cl
 {
     m_color_icp_done = false;
     m_transformation_matrix.set_identity();
-    m_RMSE = 0.0f;
 
     m_source_pc = std::make_shared<gca::point_cloud>(*new_pc);
 }
@@ -42,7 +38,6 @@ void color_icp::set_target_point_cloud(const std::shared_ptr<const gca::point_cl
     m_color_icp_done = false;
     m_color_gradient_done = false;
     m_transformation_matrix.set_identity();
-    m_RMSE = 0.0f;
 
     m_target_pc = new_pc;
 }
@@ -86,68 +81,6 @@ bool color_icp::compute_color_gradient_target()
     return true;
 }
 
-/* result.first is a device vector of residual for each point, result.second is the average*/
-std::pair<thrust::device_vector<float>, float> color_icp::get_abs_residual()
-{
-    if (!m_source_pc)
-    {
-        std::cout << YELLOW << "Need a source point cloud! Invalid result returned!" << std::endl;
-        return std::make_pair(thrust::device_vector<float>(), 0.0f);
-    }
-
-    if (!m_target_pc)
-    {
-        std::cout << YELLOW << "Need a target point cloud! Invalid result returned!" << std::endl;
-        return std::make_pair(thrust::device_vector<float>(), 0.0f);
-    }
-
-    if (!m_target_pc->has_normals())
-    {
-        std::cout << YELLOW
-                  << "Need to estimate normals of target point cloud! Invalid result returned!"
-                  << std::endl;
-        return std::make_pair(thrust::device_vector<float>(), 0.0f);
-    }
-
-    if (!compute_color_gradient_target())
-    {
-        std::cout << YELLOW << "Compute color gradient failed! Invalid result returned!"
-                  << std::endl;
-        return std::make_pair(thrust::device_vector<float>(), 0.0f);
-    }
-
-    auto n_points = m_source_pc->points_number();
-    auto nn_src_tgt = gca::point_cloud::nn_search(*m_source_pc, *m_target_pc, m_max_corr_dist);
-    thrust::device_vector<float> result_rg_plus_rc(n_points);
-
-    auto err = cuda_compute_abs_residual_color_icp(
-        result_rg_plus_rc, m_source_pc->get_points(), m_target_pc->get_points(),
-        m_target_pc->get_normals(), m_target_pc_color_gradient, nn_src_tgt, m_color_icp_lambda);
-
-    if (err != ::cudaSuccess)
-    {
-        check_cuda_error(err, __FILE__, __LINE__);
-        std::cout << YELLOW << "Compute residual failed! Invalid result returned!" << std::endl;
-        return std::make_pair(thrust::device_vector<float>(), 0.0f);
-    }
-
-    float mean =
-        thrust::reduce(result_rg_plus_rc.begin(), result_rg_plus_rc.end(), 0.0f) / n_points;
-    return std::make_pair(std::move(result_rg_plus_rc), mean);
-}
-
-std::pair<thrust::host_vector<float>, float> color_icp::get_abs_residual_host()
-{
-    auto device_result = get_abs_residual();
-    if (device_result.first.size() == 0)
-    {
-        return std::make_pair(thrust::host_vector<float>(), 0.0f);
-    }
-
-    thrust::host_vector<float> host_residual_each_point(device_result.first);
-    return std::make_pair(std::move(host_residual_each_point), device_result.second);
-}
-
 bool color_icp::align()
 {
     if (m_color_icp_done)
@@ -181,7 +114,6 @@ bool color_icp::align()
 
     mat6x6 JTJ;
     mat6x1 JTr;
-    float RMSE;
 
     for (size_t i = 0; i < m_max_iter; i++)
     {
@@ -192,7 +124,7 @@ bool color_icp::align()
         }
 
         auto err = cuda_build_gauss_newton_color_icp(
-            JTJ, JTr, RMSE, m_source_pc->get_points(), m_target_pc->get_points(),
+            JTJ, JTr, m_source_pc->get_points(), m_target_pc->get_points(),
             m_target_pc->get_normals(), m_target_pc_color_gradient, nn_src_tgt, m_color_icp_lambda);
         if (err != ::cudaSuccess)
         {
@@ -202,11 +134,7 @@ bool color_icp::align()
             return false;
         }
 
-        // Use Levenberg-Marquardt?
-        // mat6x6 lm_coef = 0.01f * (mat6x6::get_identity() * JTJ);
-        // JTJ += lm_coef;
-
-        auto this_transformation_matrix = solve_JTJ_JTr<true>(JTJ, JTr);
+        auto this_transformation_matrix = solve_JTJ_JTr(JTJ, JTr);
 
         m_source_pc->transform(this_transformation_matrix);
 
@@ -228,7 +156,6 @@ bool color_icp::align()
         }
     }
 
-    m_RMSE = RMSE / m_source_pc->points_number();
     m_color_icp_done = true;
     return true;
 }
@@ -240,24 +167,5 @@ const mat4x4 &color_icp::get_final_transformation_matrix() const
         std::cout << YELLOW << "Color ICP is not done yet! Identity Matrix returned!" << std::endl;
     }
     return m_transformation_matrix;
-}
-
-float color_icp::get_RSME() const
-{
-    if (!m_color_icp_done)
-    {
-        std::cout << YELLOW << "Color ICP is not done yet! 0.0f returned!" << std::endl;
-    }
-    return m_RMSE;
-}
-
-std::shared_ptr<const gca::point_cloud> color_icp::get_transformed_source_point_cloud() const
-{
-    if (!m_color_icp_done)
-    {
-        std::cout << YELLOW << "Color ICP is not done yet! Invalid point cloud returned!"
-                  << std::endl;
-    }
-    return m_source_pc;
 }
 } // namespace gca

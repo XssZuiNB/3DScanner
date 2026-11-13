@@ -33,10 +33,4 @@ __forceinline__ ::cudaError_t cuda_search_radius_neighbors(
                                         result_pair_neighbors_begin_idx_and_count, points, points,
                                         min_bound, max_bound, search_radius);
 }
-
-::cudaError_t cuda_grid_radius_outliers_removal(
-    thrust::device_vector<gca::point_t> &result_points,
-    const thrust::device_vector<gca::point_t> &src_points, const float3 min_bound,
-    const float3 max_bound, const float grid_cell_side_len, const float radius,
-    const gca::counter_t min_neighbors_in_radius);
 } // namespace gca

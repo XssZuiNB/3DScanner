@@ -23,26 +23,6 @@ public:
 
     __forceinline__ __device__ mat3x1 solve(const mat3x1 &b)
     {
-        // Ly = b
-        /*
-        mat3x1 y;
-        y(0) = b(0);
-        y(1) = b(1) - L(1, 0) * y(0);
-        y(2) = b(2) - L(2, 0) * y(0) - L(2, 1) * y(1);
-
-        // Dz = y
-        mat3x1 z;
-        z(0) = y(0) / D(0, 0);
-        z(1) = y(1) / D(1, 1);
-        z(2) = y(2) / D(2, 2);
-
-        // L^Tx = z
-        mat3x1 x;
-        x(2) = z(2);
-        x(1) = z(1) - L(2, 1) * x(2);
-        x(0) = z(0) - L(1, 0) * x(1) - L(2, 0) * x(2);
-        */
-
         // This version uses less register, good for cuda!
         mat3x1 x;
         x(0) = b(0);

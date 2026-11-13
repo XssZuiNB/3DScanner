@@ -22,10 +22,9 @@ runs at 30 fps with the timings of docs/HARDWARE.md.
 The rewrite starts with its list of requirements, which the user checks. `/grill-with-docs`
 on the scanner: what it scans (objects, rooms), how the camera moves (hand, turntable), what
 it delivers (point cloud, mesh, which format), accuracy and speed, where it runs and who
-works it, and which parts of CUDA_3D carry over (its algorithms, `gca::device`, the
-`movement_detection/` module). Fixed already: `src/util/math.cuh` is
-CC BY-NC-SA 3.0 (README.md, "License") and is replaced, not carried over. Done when the user
-has checked the list and `/to-spec` has turned it into a spec.
+works it, and which parts of CUDA_3D carry over (its algorithms and `gca::device`). Fixed already:
+`src/util/math.cuh` is CC BY-NC-SA 3.0 (README.md, "License") and is replaced, not carried
+over. Done when the user has checked the list and `/to-spec` has turned it into a spec.
 
 ## Candidates, once measured
 
