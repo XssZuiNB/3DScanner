@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: CC-BY-NC-SA-3.0
+// Copyright (c) 2014 by Matthias Niessner and Michael Zollhoefer (VoxelHashing).
+// Not covered by this tree's 0BSD license; see README.md, "License".
 // From the original VoxelHashing implementation by Niessner et al.
 // https://github.com/niessner/VoxelHashing/blob/master/DepthSensingCUDA/Source/cuda_SimpleMatrixUtil.h
 #pragma once

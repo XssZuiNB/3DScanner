@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+// Derived from Eigen's DisableStupidWarnings.h; not covered by this tree's 0BSD license.
 /* FOR NEW VERSION OF EIGEN, THIS FILE IS NOT REQUIRED */
 /* See:
  * https://gitlab.com/libeigen/eigen/-/blob/master/Eigen/src/Core/util/DisableStupidWarnings.h#L76-96

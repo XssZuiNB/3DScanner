@@ -7,14 +7,29 @@ What to do next, in order. Each step has a definition of done and says who can d
 go), **decision** (the user's). A finished step is deleted; its outcome goes into the
 document that owns the fact.
 
-## 1. The rewrite's requirements (decision)
+## 1. Clean up the CUDA_3D tree (agent, decisions)
+
+Before the rewrite, in this order, each step done when `tools/verify.sh` passes:
+
+1. **Inventory** (agent): every module of `src/` and `apps/`: purpose, live callers, tests,
+   flaws, a keep / rewrite / drop suggestion. Done when `.scratch/cleanup/inventory.md` has
+   every module and the user has read it.
+2. **Dead code** (decision, then agent): the deletion list from the inventory, checked by the
+   user, deleted.
+3. **Directory layout** (decision, then agent): a layout for the scanner, checked by the user,
+   the files moved.
+4. **The rules for the old code** (agent): AGENTS.md §7 for what is left: headers, function
+   comments, `main()` split into steps, a warning set.
+
+## 2. The rewrite's requirements (decision)
 
 The rewrite starts with its list of requirements, which the user checks. `/grill-with-docs`
 on the scanner: what it scans (objects, rooms), how the camera moves (hand, turntable), what
 it delivers (point cloud, mesh, which format), accuracy and speed, where it runs and who
 works it, and which parts of CUDA_3D carry over (its algorithms, `gca::device`, the
-`movement_detection/` module, `scripts/`, `graph.png`). Done when the user has checked the
-list and `/to-spec` has turned it into a spec.
+`movement_detection/` module, `scripts/`, `graph.png`). Fixed already: `src/util/math.cuh` is
+CC BY-NC-SA 3.0 (README.md, "License") and is replaced, not carried over. Done when the user
+has checked the list and `/to-spec` has turned it into a spec.
 
 ## Candidates, once measured
 
