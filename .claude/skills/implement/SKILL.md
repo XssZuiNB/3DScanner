@@ -41,7 +41,11 @@ Ask once, with what is needed, why, and the exact command or the choices. Record
 
 **Review by the change's risk**, always by someone who did not write it; you fix what the review finds:
 
-- a small change with a mechanical proof (under about 100 changed lines besides regenerated frozen files, adding no rule, refusal, branch, thread, lock or wire field; or documents only): the orchestrator's check. It reads the whole diff, runs `tools/verify.sh` and confirms the ticket's proof: the frozen-file diff exactly as the test seam names it, the comparison, the mutant. Run alone, the user's look before the commit is that check;
+- a small change with a mechanical proof (under about 100 changed lines besides regenerated frozen files, adding no rule, refusal, branch, thread, lock or wire field): the orchestrator's check;
+- a deletion proven by the build and by a grep for every deleted name, whatever its line count, adding no rule, refusal, branch, thread, lock or wire field: the orchestrator's check;
+- documents only: the orchestrator's check.
 - everything else: one fresh reviewer (`two-axis-review`) on the ticket's model, handed the results already run and the change's risk points, so it builds nothing and reads only what settles a point. Run alone, call the Skill tool with "two-axis-review" once done; it reviews in a fresh context.
 
-When the tier is in doubt, the fresh reviewer. The user commits, and the ticket's `Status:` becomes `done` when the user accepts the change. In a run the user asked to continue on its own, the orchestrator sets `done` and commits each checked ticket locally, one commit per ticket whose subject starts with `Ticket <ticket-slug>:`, never pushing; small related tickets may go to one implementer, each still its own commit.
+The orchestrator's check reads the whole diff, confirms the ticket's proof (the frozen-file diff exactly as the test seam names it, the comparison, the mutant, the greps) and asks the passed-tree check of `tools/verify.sh` (AGENTS.md §4) whether the working tree as it is has passed, instead of running verify again. A change after that pass needs a new pass. Run alone, the user's look before the commit is that check.
+
+When the tier is in doubt, the fresh reviewer. The user commits, and the ticket's `Status:` becomes `done` when the user accepts the change. In a run the user asked to continue on its own, the orchestrator sets `done` and commits each checked ticket locally once the passed-tree check says yes, one commit per ticket whose subject starts with `Ticket <ticket-slug>:`, never pushing; small related tickets may go to one implementer, each still its own commit.
