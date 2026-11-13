@@ -5,3 +5,11 @@ add_test(NAME point_cloud_from_rgbd COMMAND test_point_cloud_from_rgbd)
 add_executable(test_point_cloud_geometry test_point_cloud_geometry.cpp)
 target_link_libraries(test_point_cloud_geometry PRIVATE gca_lib)
 add_test(NAME point_cloud_geometry COMMAND test_point_cloud_geometry)
+
+add_executable(test_ply_reader test_ply_reader.cpp)
+target_link_libraries(test_ply_reader PRIVATE gca_lib)
+add_test(NAME ply_reader COMMAND test_ply_reader)
+
+add_executable(test_color_icp test_color_icp.cpp)
+target_link_libraries(test_color_icp PRIVATE gca_lib)
+add_test(NAME color_icp COMMAND test_color_icp "${PROJECT_SOURCE_DIR}/data/frag_116.ply")

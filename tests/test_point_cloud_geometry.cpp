@@ -9,104 +9,38 @@
 
 #include "check.hpp"
 #include "geometry/point_cloud.hpp"
+#include "host_geometry.hpp"
 
 #include <cmath>
-#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
 
+using gca_test::add_scaled;
+using gca_test::angle_deg;
 using gca_test::check;
+using gca_test::check_max_error;
 using gca_test::check_summary;
-using gca_test::check_within;
+using gca_test::distance;
+using gca_test::dot;
+using gca_test::float_step;
+using gca_test::make_plane_grid;
+using gca_test::make_point;
+using gca_test::make_rigid_transform;
+using gca_test::max_error;
+using gca_test::normalized;
+using gca_test::plane_grid_point;
+using gca_test::plane_normal;
+using gca_test::rigid_transform;
+using gca_test::rotate_direction;
+using gca_test::scale;
+using gca_test::to_mat4x4;
+using gca_test::to_vec3;
+using gca_test::transform_point;
+using gca_test::vec3;
 
 namespace
 {
-/// One float step (ulp) between 1 and 2, FLT_EPSILON: the largest rounding step of a coordinate
-/// below 2 m, of a unit normal's components and of a color in [0, 1] [S: float32 ulp].
-constexpr double float_step = std::numeric_limits<float>::epsilon();
-
-/// A vector in double, for the analytic values.
-struct vec3
-{
-    double x;
-    double y;
-    double z;
-};
-
-/// Returns a + s * b.
-/// @param a the first vector.
-/// @param s the factor of b.
-/// @param b the second vector.
-/// @return a + s * b.
-vec3 add_scaled(const vec3 &a, double s, const vec3 &b)
-{
-    return {a.x + s * b.x, a.y + s * b.y, a.z + s * b.z};
-}
-
-/// Returns the vector scaled by a factor.
-/// @param s the factor.
-/// @param a the vector.
-/// @return s * a.
-vec3 scale(double s, const vec3 &a)
-{
-    return {s * a.x, s * a.y, s * a.z};
-}
-
-/// Returns the dot product.
-/// @param a the first vector.
-/// @param b the second vector.
-/// @return a . b.
-double dot(const vec3 &a, const vec3 &b)
-{
-    return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-/// Returns the cross product.
-/// @param a the first vector.
-/// @param b the second vector.
-/// @return a x b.
-vec3 cross(const vec3 &a, const vec3 &b)
-{
-    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
-}
-
-/// Returns the vector scaled to unit length.
-/// @param a the vector, not zero.
-/// @return a / |a|.
-vec3 normalized(const vec3 &a)
-{
-    return scale(1.0 / std::sqrt(dot(a, a)), a);
-}
-
-/// Returns the distance between two points.
-/// @param a the first point.
-/// @param b the second point.
-/// @return |a - b|.
-double distance(const vec3 &a, const vec3 &b)
-{
-    const vec3 d = add_scaled(a, -1.0, b);
-    return std::sqrt(dot(d, d));
-}
-
-/// Returns the angle between two directions.
-/// @param a the first direction, not zero.
-/// @param b the second direction, not zero.
-/// @return the angle in degrees, 0 to 180.
-double angle_deg(const vec3 &a, const vec3 &b)
-{
-    const vec3 c = cross(a, b);
-    return std::atan2(std::sqrt(dot(c, c)), dot(a, b)) * 180.0 / M_PI;
-}
-
-/// Converts a float3 to double.
-/// @param a the float3.
-/// @return a in double.
-vec3 to_vec3(const float3 &a)
-{
-    return {a.x, a.y, a.z};
-}
-
 /// Returns a point's color as a vector.
 /// @param point the point.
 /// @return (r, g, b).
@@ -115,96 +49,24 @@ vec3 color_of(const gca::point_t &point)
     return {point.color.r, point.color.g, point.color.b};
 }
 
-/// The largest of a set of errors, and whether every error was finite. A NaN or infinite value
-/// downloaded from the GPU makes its error non-finite, which a maximum alone would drop.
-struct max_error
-{
-    double max = 0.0;
-    bool all_finite = true;
-
-    /// Adds one error.
-    /// @param error the error.
-    void add(double error)
-    {
-        if (std::isfinite(error))
-            max = std::fmax(max, error);
-        else
-            all_finite = false;
-    }
-};
-
-/// Checks that every error was finite and that the largest is within the tolerance, and prints
-/// the largest.
-/// @param what what was measured.
-/// @param errors the errors.
-/// @param tolerance the largest error that passes.
-void check_max_error(const std::string &what, const max_error &errors, double tolerance)
-{
-    check(errors.all_finite, (what + ": every value finite").c_str());
-    check_within(what.c_str(), errors.max, tolerance);
-}
-
-/// Builds a point to upload with create_from_points(). Every point the test builds is positive
-/// on every axis: today's max bound starts at FLT_MIN (geometry_util.cuh:81, 92), so a cloud
-/// with no positive coordinate on an axis gets a wrong bound. No cloud comes from
-/// create_from_rgbd(), whose default minimum depth 0 makes NaN points [S].
-/// @param p the coordinates in meters, rounded to float.
-/// @param color the color.
-/// @return the point, property inactive like the points create_from_rgbd() keeps.
-gca::point_t make_point(const vec3 &p, const gca::color3 &color)
-{
-    gca::point_t point{};
-    point.coordinates =
-        make_float3(static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z));
-    point.color = color;
-    point.property = gca::point_property::inactive;
-    return point;
-}
-
 /// The plane's center in meters.
 constexpr vec3 plane_center = {0.3, 0.2, 1.0};
 /// The plane's grid: (2 * plane_grid_half + 1)^2 points, plane_grid_spacing_m apart.
 constexpr int plane_grid_half = 20;
 constexpr double plane_grid_spacing_m = 0.005;
 
-/// Returns the plane's unit normal, pointing away from the camera (n_z > 0) so that the code has
-/// to flip it, and tilted off every axis with components of distinct magnitude, which keeps the
-/// eigensolver clear of two bugs [S]. An axis-aligned plane has a diagonal covariance, whose
-/// eigenvalues fast_eigen_val_vec.cuh:196-204 returns unsorted; compute_normal_functor's strict
-/// < then picks a wrong eigenvector if the smallest eigenvalue ties another. max_coeff
-/// (math.cuh:100) returns the x entry when the two largest of its three entries tie, and
-/// fast_eigen_val_vec.cuh:34 divides by that entry's root: a less accurate eigenvector, or NaN
-/// when the entry is 0. On a plane those entries, the squared cross products of the shifted
-/// covariance's rows, are proportional to the squared components of the eigenvector being
-/// solved for (the adjugate of a rank-2 symmetric matrix): the normal, components 0.28, 0.19 and
-/// 0.94, or, where a neighbourhood elongated along the grid's edge makes the solver start from
-/// the largest eigenvalue, the edge direction u (0, 0.98, 0.20) or v (0.96, 0.06, 0.28) in
-/// magnitude [S: computed from the inputs, 2026-11-13]; none has a tie.
-/// @return the normal.
-vec3 plane_normal()
-{
-    return normalized({0.3, -0.2, 1.0});
-}
-
 /// Builds the tilted plane: a square grid around plane_center, the color varying with the grid
 /// position.
 /// @return the points.
 std::vector<gca::point_t> make_plane()
 {
-    const vec3 n = plane_normal();
-    const vec3 u = normalized(cross(n, {1.0, 0.0, 0.0}));
-    const vec3 v = cross(n, u);
     std::vector<gca::point_t> points;
-    for (int i = -plane_grid_half; i <= plane_grid_half; i++)
+    for (const plane_grid_point &grid : make_plane_grid(
+             plane_center, plane_grid_half, plane_grid_half, plane_grid_spacing_m, 0.0, 0.0))
     {
-        for (int j = -plane_grid_half; j <= plane_grid_half; j++)
-        {
-            const vec3 p = add_scaled(add_scaled(plane_center, i * plane_grid_spacing_m, u),
-                                      j * plane_grid_spacing_m, v);
-            const float r = static_cast<float>(i + plane_grid_half) / (2 * plane_grid_half);
-            const float g = static_cast<float>(j + plane_grid_half) / (2 * plane_grid_half);
-            points.push_back(make_point(p, gca::color3{r, g, 0.5f}));
-        }
+        const float r = static_cast<float>(grid.i + plane_grid_half) / (2 * plane_grid_half);
+        const float g = static_cast<float>(grid.j + plane_grid_half) / (2 * plane_grid_half);
+        points.push_back(make_point(grid.p, gca::color3{r, g, 0.5f}));
     }
     return points;
 }
@@ -344,77 +206,6 @@ void test_normals_sphere()
     check_max_error("normals sphere: max axis angle (deg)", errors->axis_angle_deg,
                     angle_tolerance_deg);
     check_max_error("normals sphere: max | |n| - 1 |", errors->length, normal_length_tolerance);
-}
-
-/// A rigid transform as the test passes it to the library, in float.
-struct rigid_transform
-{
-    float rotation[3][3];
-    float translation[3];
-};
-
-/// Builds the rigid transform that rotates by an angle about an axis through the origin, then
-/// translates (Rodrigues' formula, rounded to float once).
-/// @param axis the rotation axis, not zero.
-/// @param angle_rad the rotation angle in radians.
-/// @param translation the translation in meters.
-/// @return the transform.
-rigid_transform make_rigid_transform(const vec3 &axis, double angle_rad, const vec3 &translation)
-{
-    const vec3 k = normalized(axis);
-    const double c = std::cos(angle_rad);
-    const double s = std::sin(angle_rad);
-    const double kv[3] = {k.x, k.y, k.z};
-    const double kx[3][3] = {{0.0, -k.z, k.y}, {k.z, 0.0, -k.x}, {-k.y, k.x, 0.0}};
-    rigid_transform result{};
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
-            result.rotation[i][j] =
-                static_cast<float>((i == j ? c : 0.0) + s * kx[i][j] + (1.0 - c) * kv[i] * kv[j]);
-    result.translation[0] = static_cast<float>(translation.x);
-    result.translation[1] = static_cast<float>(translation.y);
-    result.translation[2] = static_cast<float>(translation.z);
-    return result;
-}
-
-/// Converts the transform to the library's 4x4 matrix.
-/// @param transform the transform.
-/// @return the homogeneous matrix [R t; 0 1].
-mat4x4 to_mat4x4(const rigid_transform &transform)
-{
-    mat4x4 m;
-    for (unsigned int i = 0; i < 3; i++)
-    {
-        for (unsigned int j = 0; j < 3; j++)
-            m(i, j) = transform.rotation[i][j];
-        m(i, 3) = transform.translation[i];
-        m(3, i) = 0.0f;
-    }
-    m(3, 3) = 1.0f;
-    return m;
-}
-
-/// Rotates a direction by the transform, in double, with the float values the library receives.
-/// @param transform the transform.
-/// @param d the direction.
-/// @return R d.
-vec3 rotate_direction(const rigid_transform &transform, const vec3 &d)
-{
-    const auto row = [&](int i) {
-        return transform.rotation[i][0] * d.x + transform.rotation[i][1] * d.y +
-               transform.rotation[i][2] * d.z;
-    };
-    return {row(0), row(1), row(2)};
-}
-
-/// Moves a point by the transform, in double, with the float values the library receives.
-/// @param transform the transform.
-/// @param p the point.
-/// @return R p + t.
-vec3 transform_point(const rigid_transform &transform, const vec3 &p)
-{
-    const vec3 t = {transform.translation[0], transform.translation[1], transform.translation[2]};
-    return add_scaled(rotate_direction(transform, p), 1.0, t);
 }
 
 /// transform() moves every point of the plane to R p + t, turns its normal to R n, keeps the
