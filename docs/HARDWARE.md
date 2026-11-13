@@ -33,12 +33,36 @@ What the camera offers and does at 5000M; OrbbecSDK reports `USB3.0` [M 2026-11-
 | 640x400 | 306.18, 306.14, 317.41, 199.13 | 29.1 to 30.2 | 5.7 to 5.9 ms | about 91 000 |
 | 1280x800 | 612.37, 612.29, 635.81, 398.27 | 28.6 to 30.3 | 19.4 to 19.9 ms | about 383 000 |
 
+After the cleanup (the tree at b23f168), the same session ran main's viewer (b5c70dc) and the
+cleaned tree alternately, 100 frames headless each, on a scene with about 1.5x the points of the
+table above [M 2026-11-13]:
+
+| size at 30 fps | `create_from_rgbd` with upload, main (two runs) | the cleaned tree (two runs) | points |
+|---|---|---|---|
+| 640x400 | 6.99 / 7.55 ms | 7.40 / 7.60 ms | 133 000 to 136 000 |
+| 1280x800 | 25.64 / 25.04 ms | 25.96 / 24.32 ms | 530 000 to 558 000 |
+
+The fps is about 30 in every run [M 2026-11-13]. Both trees run above the table above on this
+scene; whether its points, its content or the GPU clock account for that is open [?]. Main
+and the cleaned tree differ by no more than main's own run-to-run spread (8 % at 640x400)
+[M 2026-11-13]. The GPU clock runs under the governor `nvhost_podgov`, 306 to
+1020 MHz, and idles at 306 MHz; each run lasts about 3 s, so the governor's ramp is part of
+every number [M 2026-11-13].
+
 OrbbecSDK's warnings in these runs, the stream going on after each:
 
-* `Timestamp anomaly detected ... currentDiff: 4294967296`, a few times at the start of every
-  run: the frame timestamp jumps by exactly 2^32 [M]; why is open [?].
-* 1280x800 only, at the start: `Update data size(1824744) > data buffer size! (1792000)`,
-  the frame dropped. 1792000 bytes is 1280 x 800 x 14 bit, one packed Y14 frame [S].
+* `Not added to property map ... id=108` and `... id=5003`, on every open [M 2026-11-13].
+* `Timestamp anomaly detected ... currentDiff: 4294967296`: the frame timestamp jumps by
+  exactly 2^32 [M]; why is open [?]. The first session saw it a few times at the start of
+  every run [M]. The after-cleanup session saw it in 8 of 10 runs, in both trees: before the
+  first report line in 3 runs, at stop in 6 (one run had both), none in 2; at stop it is an
+  `[error]` line for each sensor, and the stream goes on until the program closes
+  [M 2026-11-13].
+* A depth frame dropped at the start. At 1280x800: `Update data size(1824744) > data buffer
+  size! (1792000)`; 1792000 bytes is 1280 x 800 x 14 bit, one packed Y14 frame [S]. At 640x400
+  too, under a second wording: `This frame will be dropped because the data size does not
+  match the expectation! ... expected=1792000 @Depth`; at 1280x800 this wording also appears
+  [M 2026-11-13].
 
 ## The camera on USB 2
 

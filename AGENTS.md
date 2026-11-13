@@ -15,8 +15,9 @@ unverified. A number without a tag is a mistake; treat it as [?].
 3DScanner: a 3D scanner built from an Orbbec Gemini 2 L RGB-D camera and a Jetson Orin Nano
 (docs/HARDWARE.md). It is a full rewrite of CUDA_3D, the user's GPU point-cloud library
 written for Intel RealSense (its history ends at 5e568d9). The rewrite starts from a list of
-requirements the user checks (ROADMAP.md); until then the tree is CUDA_3D as it was, made to
-build here and given the Orbbec camera, and serves as the reference for what the rewrite keeps.
+requirements the user checks (ROADMAP.md); until then the tree is CUDA_3D cleaned up (dead
+code, RealSense and PCL removed), made to build here and given the Orbbec camera, and serves as
+the reference for what the rewrite keeps.
 
 The tree today: `src/` is four static libraries and the header-only `types`, one per
 directory, each linking only the ones below it: `types`, `camera`, `gpu`, `geometry`,
