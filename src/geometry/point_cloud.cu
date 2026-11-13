@@ -486,33 +486,6 @@ std::shared_ptr<point_cloud> point_cloud::create_from_points(
     return pc;
 }
 
-#ifdef GCA_WITH_PCL
-std::shared_ptr<point_cloud> point_cloud::create_from_pcl(
-    const pcl::PointCloud<pcl::PointXYZRGB> &pcl_pc)
-{
-    thrust::host_vector<gca::point_t> host_pts(pcl_pc.size());
-    for (size_t i = 0; i < pcl_pc.size(); i++)
-    {
-        gca::point_t p;
-        auto pcl_p = pcl_pc[i];
-        p.coordinates.x = pcl_p.x;
-        p.coordinates.y = pcl_p.y;
-        p.coordinates.z = pcl_p.z;
-        auto scale = 1.0f / 255.0f;
-        p.color.r = (float)pcl_p.r * scale;
-        p.color.g = (float)pcl_p.g * scale;
-        p.color.b = (float)pcl_p.b * scale;
-        p.property = gca::point_property::inactive;
-        host_pts[i] = p;
-    }
-
-    auto pc = std::make_shared<point_cloud>();
-    pc->m_points = host_pts;
-
-    return pc;
-}
-#endif
-
 thrust::device_vector<gca::index_t> point_cloud::nn_search(const gca::point_cloud &query_pc,
                                                            const gca::point_cloud &reference_pc,
                                                            float radius)

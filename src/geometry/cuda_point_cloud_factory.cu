@@ -128,33 +128,6 @@ __forceinline__ __device__ static float __adaptive_bilateral_filter(
                               filter_r, new_sigma_space, new_sigma_depth);
 }
 
-/************************************** Filter out eddges ***************************************/
-/* See: https://github.com/raluca-scona/Joint-VO-SF/blob/master/segmentation_background.cpp     */
-/* line 56 to 69. NOT USED!!! For realsense nothing can fix the noise... */
-/*
-__forceinline__ __device__ static float __edges_filter(const uint16_t *depth, uint32_t input_width,
-                                                       uint32_t input_height, int index_x,
-                                                       int index_y, float depth_scale)
-{
-    static constexpr float threshold_edge = 0.3f;
-
-    auto depth_value = __ldg(&depth[index_y * input_width + index_x]);
-
-    if (index_x < 1 || index_x > input_width - 2 || index_y < 1 || index_y > input_height - 2)
-    {
-        return depth_value * depth_scale;
-    }
-
-    const float sum_diff_depth =
-        abs(__ldg(&depth[index_y * input_width + (index_x - 1)]) - depth_value) +
-        abs(__ldg(&depth[index_y * input_width + (index_x + 1)]) - depth_value) +
-        abs(__ldg(&depth[(index_y - 1) * input_width + index_x]) - depth_value) +
-        abs(__ldg(&depth[(index_y + 1) * input_width + index_x]) - depth_value);
-
-    return (sum_diff_depth * depth_scale < threshold_edge) * depth_value * depth_scale;
-}
-*/
-
 /****************** Create point cloud from rgbd, include invalid point remove ******************/
 
 __forceinline__ __device__ static void __transform_point_to_point(float to_point[3],

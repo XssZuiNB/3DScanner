@@ -1,8 +1,5 @@
-enable_language(CUDA)
-
 find_package(CUDAToolkit REQUIRED)
 find_package(OpenCV REQUIRED)
-find_package(OpenMP REQUIRED)
 
 # Downloaded dependencies live outside the tree (tools/fetch_deps.sh).
 if(DEFINED ENV{GCA_DEPS_DIR})
@@ -38,30 +35,12 @@ if(GCA_WITH_ORBBEC)
     find_package(OrbbecSDK REQUIRED)
 endif()
 
-find_library(REALSENSE2_LIB realsense2)
-if(REALSENSE2_LIB)
-    option(GCA_WITH_REALSENSE "Build Intel RealSense support" ON)
-else()
-    option(GCA_WITH_REALSENSE "Build Intel RealSense support" OFF)
-endif()
-
-# PCL is only used for comparison/visualization, it is optional.
-find_package(PCL QUIET)
-if(PCL_FOUND)
-    option(GCA_WITH_PCL "Build PCL comparison/visualizer code" ON)
-else()
-    option(GCA_WITH_PCL "Build PCL comparison/visualizer code" OFF)
-endif()
-
-message(STATUS "GCA: Orbbec=${GCA_WITH_ORBBEC} RealSense=${GCA_WITH_REALSENSE} PCL=${GCA_WITH_PCL}")
+message(STATUS "GCA: Orbbec=${GCA_WITH_ORBBEC}")
 
 # ---------------------------------------------------------------- Sources
 set(CAMERA_SRC camera/camera_device.hpp camera/camera_param.hpp)
 if(GCA_WITH_ORBBEC)
     list(APPEND CAMERA_SRC camera/orbbec_device.cpp camera/orbbec_device.hpp)
-endif()
-if(GCA_WITH_REALSENSE)
-    list(APPEND CAMERA_SRC camera/realsense_device.cpp camera/realsense_device.hpp)
 endif()
 
 file(GLOB CUDA_CONTAINER_SRC "cuda_container/*.hpp" "cuda_container/*.cu" "cuda_container/*.cuh")
@@ -73,11 +52,6 @@ file(GLOB REGISTRATION_SRC
     "registration/*.cpp" "registration/*.hpp" "registration/*.cu" "registration/*.cuh")
 file(GLOB UTIL_SRC "util/*.cpp" "util/*.hpp" "util/*.cu" "util/*.cuh")
 
-set(VISUALIZER_SRC)
-if(GCA_WITH_PCL)
-    file(GLOB VISUALIZER_SRC "visualizer/*.cpp" "visualizer/*.hpp")
-endif()
-
 add_library(
     gca_lib
     SHARED
@@ -87,7 +61,6 @@ add_library(
     ${MOVEMENT_DETECTION_SRC}
     ${REGISTRATION_SRC}
     ${UTIL_SRC}
-    ${VISUALIZER_SRC}
 )
 
 target_compile_features(gca_lib PUBLIC cxx_std_17)
@@ -104,22 +77,12 @@ target_link_libraries(
     PUBLIC
     CUDA::cudart
     ${OpenCV_LIBS}
-    OpenMP::OpenMP_CXX
     Eigen3::Eigen
 )
 
 if(GCA_WITH_ORBBEC)
     target_link_libraries(gca_lib PUBLIC ob::OrbbecSDK)
     target_compile_definitions(gca_lib PUBLIC GCA_WITH_ORBBEC)
-endif()
-if(GCA_WITH_REALSENSE)
-    target_link_libraries(gca_lib PUBLIC ${REALSENSE2_LIB})
-    target_compile_definitions(gca_lib PUBLIC GCA_WITH_REALSENSE)
-endif()
-if(GCA_WITH_PCL)
-    target_include_directories(gca_lib PUBLIC ${PCL_INCLUDE_DIRS})
-    target_link_libraries(gca_lib PUBLIC ${PCL_LIBRARIES})
-    target_compile_definitions(gca_lib PUBLIC GCA_WITH_PCL)
 endif()
 
 set_target_properties(

@@ -151,7 +151,7 @@ struct nn_search_functor
          *    other grid cell approach implementation (27 grid cells) ist more than 3 times less
          *    iterations in for loop.
          * 5. The result of this implementation shows more than 3 times faster than other CUDA
-         *    implementation and more than 100 times faster than PCL CPU implementaion.
+         *    implementation.
          */
         auto grid_cell = m_compute_grid_cell(point);
 
@@ -460,7 +460,7 @@ struct check_if_enough_radius_nn_functor
          *    other grid cell approach implementation (27 grid cells) ist more than 3 times less
          *    iterations in for loop.
          * 5. The result of this implementation shows more than 3 times faster than other CUDA
-         *    implementation and more than 100 times faster than PCL CPU implementaion.
+         *    implementation.
          */
         auto min_x_this_grid_cell =
             __fmaf_rn(m_grid_cell_size, grid_cell.x, m_grid_cells_min_bound.x);

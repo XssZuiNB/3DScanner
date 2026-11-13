@@ -12,11 +12,6 @@
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 
-#ifdef GCA_WITH_PCL
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-#endif
-
 namespace gca
 {
 class movement_detection;
@@ -110,11 +105,6 @@ public:
     /// @param points the points.
     /// @return the new cloud.
     static std::shared_ptr<point_cloud> create_from_points(const std::vector<gca::point_t> &points);
-
-#ifdef GCA_WITH_PCL
-    static std::shared_ptr<point_cloud> create_from_pcl(
-        const pcl::PointCloud<pcl::PointXYZRGB> &pcl_pc);
-#endif
 
     static thrust::device_vector<gca::index_t> nn_search(const gca::point_cloud &query_pc,
                                                          const gca::point_cloud &reference_pc,

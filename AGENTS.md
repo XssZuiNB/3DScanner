@@ -21,15 +21,14 @@ build here and given the Orbbec camera, and serves as the reference for what the
 The tree today: `src/` is one library, `gca_lib`; `src/camera/` puts each camera behind
 `gca::device`, and `orbbec_device` delivers depth aligned to color, so the GPU code sees one
 resolution and one set of intrinsics. The programs in `apps/` each open the camera
-themselves; there is no daemon. RealSense and PCL are optional (CMake finds them or leaves
-them out); PCL code is for comparison only.
+themselves; there is no daemon.
 
 ## 2. Before you run anything
 
 **Check the machine state.** These read only:
 
     lsusb -t                                   # the camera, its bus and speed (5000M = USB 3)
-    pgrep -af 'orbbec|ob_|realsense'           # a program holding the camera
+    pgrep -af 'orbbec|ob_'                     # a program holding the camera
     journalctl -k --since -10min | grep -iE 'usb|uvc|nvgpu'
 
 `dmesg` is closed to the user [M 2026-11-13]; `journalctl -k` works (group `adm`).
@@ -120,8 +119,7 @@ From the hardware or a source, changed only with new evidence written above them
 * `GCA_CUDA_ARCHITECTURES` 87: the Orin's compute capability 8.7 [S: CUDA documentation].
 
 Free choices: the stream size 640x400 at 30 fps [?: a choice; it exists on USB 2], the depth range 0.15 m to
-3.0 m in `apps/orbbec_viewer.cpp` [?: a choice], every filter radius and voxel size in
-`apps/app.cpp` (tuned for RealSense in CUDA_3D [?]).
+3.0 m in `apps/orbbec_viewer.cpp` [?: a choice].
 
 ## 6. Traps
 

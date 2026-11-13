@@ -11,11 +11,11 @@ its RealSense SLAM demo: https://youtu.be/5NcDEhguzGU). Agents start at [CLAUDE.
 
 | directory | what |
 |---|---|
-| `src/` | the library `gca_lib`: `camera/` (Orbbec, RealSense behind `gca::device`), `cuda_container/`, `geometry/`, `registration/`, `movement_detection/`, `visualizer/` (PCL only), `util/` |
-| `apps/` | `orbbec_viewer` (camera test, live point cloud); `app.cpp`, CUDA_3D's RealSense demo, built only with RealSense and PCL |
+| `src/` | the library `gca_lib`: `camera/` (Orbbec behind `gca::device`), `cuda_container/`, `geometry/`, `registration/`, `movement_detection/`, `util/` |
+| `apps/` | `orbbec_viewer` (camera test, live point cloud) |
 | `tests/` | offline tests, run by ctest; they need the GPU, no camera |
 | `tools/` | fetch the dependencies, build, verify (AGENTS.md §4) |
-| `data/` | CUDA_3D's sample point clouds |
+| `data/` | the two colored-ICP fragments, `frag_115.ply` and `frag_116.ply` |
 | `docs/` | the hardware, the workflow's tracker and domain conventions |
 
 ## Build
@@ -26,8 +26,6 @@ Then:
     tools/fetch_deps.sh     # OrbbecSDK v2 and Eigen into ~/.local/share/3dscanner
     tools/build.sh          # build/
     tools/verify.sh         # every offline check (AGENTS.md §4)
-
-librealsense and PCL are used when CMake finds them.
 
 ## Run
 

@@ -23,7 +23,7 @@ The rewrite starts with its list of requirements, which the user checks. `/grill
 on the scanner: what it scans (objects, rooms), how the camera moves (hand, turntable), what
 it delivers (point cloud, mesh, which format), accuracy and speed, where it runs and who
 works it, and which parts of CUDA_3D carry over (its algorithms, `gca::device`, the
-`movement_detection/` module, `scripts/`, `graph.png`). Fixed already: `src/util/math.cuh` is
+`movement_detection/` module). Fixed already: `src/util/math.cuh` is
 CC BY-NC-SA 3.0 (README.md, "License") and is replaced, not carried over. Done when the user
 has checked the list and `/to-spec` has turned it into a spec.
 
@@ -35,5 +35,5 @@ Each needs a measurement that shows the cost first (docs/HARDWARE.md has the fir
   where the time goes (the bilateral filter, the invalid-point removal, the upload).
 * Undistort color, or check that the SDK's aligned output needs none.
 * The half-pixel deprojection of the point-cloud kernel (AGENTS.md §6).
-* A viewer without PCL.
+* A live 3D view of the point cloud: `orbbec_viewer` shows only 2D images.
 * A compiler warning set (CODING_STANDARDS.md).
