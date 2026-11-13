@@ -312,6 +312,7 @@ configure_when_needed() {
 # Builds every target in the build directory.
 # Globals:
 #   build_dir: the build directory (read).
+#   BUILD_JOBS: the parallel compile jobs (read).
 # Arguments:
 #   None
 # Outputs:
@@ -320,7 +321,7 @@ configure_when_needed() {
 #   0 when the build succeeds, 1 otherwise.
 #######################################
 build() {
-  if ! cmake --build "${build_dir}" -j "$(nproc)" >"${build_dir}/build.log" 2>&1; then
+  if ! cmake --build "${build_dir}" -j "${BUILD_JOBS}" >"${build_dir}/build.log" 2>&1; then
     failure_lines "${build_dir}/build.log" >&2
     fail "build"
     return 1

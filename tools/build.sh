@@ -16,7 +16,7 @@ source tools/build_common.sh
 #######################################
 # Configures build/ when it needs it and builds it.
 # Globals:
-#   None
+#   BUILD_JOBS: the parallel compile jobs (read).
 # Arguments:
 #   None
 # Outputs:
@@ -29,7 +29,7 @@ main() {
   if ! configured_with_ccache; then
     configure_build build
   fi
-  cmake --build build -j "$(nproc)"
+  cmake --build build -j "${BUILD_JOBS}"
 }
 
 main "$@"

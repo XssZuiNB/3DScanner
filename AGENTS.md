@@ -93,6 +93,11 @@ passed-tree check say no until a new run passes; returning a tree to a state tha
 it say yes again. It covers the tree only: after a toolchain update or a new download of
 `tools/fetch_deps.sh`, run `tools/verify.sh` again.
 
+**Jobs.** Builds run four parallel compile jobs, not one per core (six): `BUILD_JOBS` in
+`tools/build_common.sh` sets it for `tools/build.sh`, `tools/verify.sh` and, through verify,
+`tools/run_mutant.sh`, and holds the measurements: one compiler process peaks at up to 1.5 GB and
+a -j6 build froze the board on 2026-11-13 [M 2026-11-13].
+
 **ccache.** Every compile of the three tools goes through ccache (CODING_STANDARDS.md,
 "Tools"), set in the build directory's compiler launcher, so that the builds of one tree hit
 what another tree's builds wrote (`configure_build` in `tools/build_common.sh`): a second
