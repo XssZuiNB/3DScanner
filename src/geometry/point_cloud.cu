@@ -6,6 +6,7 @@
 #include "geometry/cuda_voxel_grid_down_sample.cuh"
 #include "geometry/geometry_util.cuh"
 #include "util/console_color.hpp"
+#include "util/float3_ops.cuh"
 
 #include <memory>
 #include <vector>

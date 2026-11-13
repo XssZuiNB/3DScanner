@@ -1,5 +1,6 @@
 #pragma once
 
+#include "util/float3_ops.cuh"
 #include "util/math.cuh"
 
 #include <cuda.h>

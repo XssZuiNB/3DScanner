@@ -5,6 +5,7 @@
 #include "registration/cuda_compute_color_gradient.cuh"
 #include "registration/eigen_solver.hpp"
 #include "util/console_color.hpp"
+#include "util/float3_ops.cuh"
 
 #include <cuda.h>
 #include <cuda_runtime.h>

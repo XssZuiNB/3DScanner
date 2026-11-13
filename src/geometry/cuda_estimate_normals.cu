@@ -4,6 +4,7 @@
 #include "geometry/type.hpp"
 #include "util/cuda_util.cuh"
 #include "util/fast_eigen_val_vec.cuh"
+#include "util/float3_ops.cuh"
 #include "util/math.cuh"
 
 #include <cuda.h>

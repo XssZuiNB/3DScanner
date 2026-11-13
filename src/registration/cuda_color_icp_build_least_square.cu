@@ -1,5 +1,6 @@
 #include "cuda_color_icp_build_least_square.cuh"
 
+#include "util/float3_ops.cuh"
 #include "util/math.cuh"
 
 #include <thrust/device_vector.h>

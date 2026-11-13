@@ -1,6 +1,7 @@
 #include "cuda_compute_color_gradient.cuh"
 
 #include "geometry/cuda_nn_search.cuh"
+#include "util/float3_ops.cuh"
 #include "util/little_3x3_ldlt_solve.cuh"
 #include "util/math.cuh"
 

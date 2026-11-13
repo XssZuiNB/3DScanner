@@ -27,69 +27,9 @@
 #define MINF -__FLT_MAX__
 #define INF __FLT_MAX__
 
-__host__ __device__ __forceinline__ float squared_norm(const float3 &vec)
-{
-    return vec.x * vec.x + vec.y * vec.y + vec.z * vec.z;
-}
-
-__host__ __device__ __forceinline__ float norm(const float3 &vec)
-{
-    return sqrtf(vec.x * vec.x + vec.y * vec.y + vec.z * vec.z);
-}
-
-__host__ __device__ __forceinline__ float3 normalize(const float3 &vec)
-{
-    float vec_norm = norm(vec);
-    return make_float3(vec.x / vec_norm, vec.y / vec_norm, vec.z / vec_norm);
-}
-
-__host__ __device__ __forceinline__ float3 operator+(const float3 &a, const float3 &b)
-{
-    return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
-}
-
 __host__ __device__ __forceinline__ int3 operator+(const int3 &a, const int3 &b)
 {
     return make_int3(a.x + b.x, a.y + b.y, a.z + b.z);
-}
-
-__host__ __device__ __forceinline__ float3 operator-(const float3 &a, const float3 &b)
-{
-    return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
-}
-
-__host__ __device__ __forceinline__ float3 operator-(const float3 &a)
-{
-    return make_float3(-a.x, -a.y, -a.z);
-}
-
-__host__ __device__ __forceinline__ float3 operator*(const float3 &a, float b)
-{
-    return make_float3(a.x * b, a.y * b, a.z * b);
-}
-
-__host__ __device__ __forceinline__ float3 operator*(float b, const float3 &a)
-{
-    return make_float3(a.x * b, a.y * b, a.z * b);
-}
-
-__host__ __device__ __forceinline__ float3 &operator*=(float3 &a, float b)
-{
-    a.x *= b;
-    a.y *= b;
-    a.z *= b;
-    return a;
-}
-
-__host__ __device__ __forceinline__ float dot(const float3 &a, const float3 &b)
-{
-    float dot = a.x * b.x + a.y * b.y + a.z * b.z;
-    return dot;
-}
-
-__host__ __device__ __forceinline__ float3 cross(const float3 &a, const float3 &b)
-{
-    return make_float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
 }
 
 __host__ __device__ __forceinline__ float max_coeff(const float3 &a)
@@ -106,16 +46,6 @@ __host__ __device__ __forceinline__ float max_coeff(const float3 a, int &idx)
         return a.y;
     else
         return a.z;
-}
-
-__host__ __device__ __forceinline__ float3 operator/(const float3 &a, float b)
-{
-    return make_float3(a.x / b, a.y / b, a.z / b);
-}
-
-__host__ __device__ __forceinline__ float distance(const float3 &a, const float3 &b)
-{
-    return norm(b - a);
 }
 
 __host__ __device__ __forceinline__ int sign(float n)
@@ -626,17 +556,6 @@ public:
         entries[3 * i + 0] = r.x;
         entries[3 * i + 1] = r.y;
         entries[3 * i + 2] = r.z;
-    }
-
-    __forceinline__ __device__ __host__ void normalize_rows()
-    {
-        // #pragma unroll 3
-        for (unsigned int i = 0; i < 3; i++)
-        {
-            float3 r = get_row(i);
-            r = r / norm(r);
-            set_row(i, r);
-        }
     }
 
     //! computes the product of two matrices (result stored in this)
