@@ -2,7 +2,8 @@
 /// @file check.hpp
 /// The offline tests' check helpers: a failed check prints what was checked and is counted, a
 /// measured value is printed with the tolerance it is checked against, a set of errors is
-/// checked by its largest and by every one being finite, and the count becomes the test
+/// checked by its largest and by every one being finite, an input that has to be refused is
+/// printed with its message and checked against the expected one, and the count becomes the test
 /// program's summary line and exit status. Header only; each test program is one translation
 /// unit.
 
@@ -72,6 +73,19 @@ inline void check_max_error(const std::string &what, const max_error &errors, do
 {
     check(errors.all_finite, (what + ": every value finite").c_str());
     check_within(what.c_str(), errors.max, tolerance);
+}
+
+/// Prints how an input that has to be refused came out, its message or "accepted", and records a
+/// failed check unless it was refused with the expected message.
+/// @param what the case, printed and named in the check line.
+/// @param refused whether the input was refused.
+/// @param message the refusal's message, printed when it was refused.
+/// @param message_expected whether the message is the expected one.
+inline void check_refusal(const std::string &what, bool refused, const std::string &message,
+                          bool message_expected)
+{
+    std::printf("%s: %s\n", what.c_str(), refused ? message.c_str() : "accepted");
+    check(refused && message_expected, ("refused with the expected message: " + what).c_str());
 }
 
 /// Prints the test program's summary line when every check passed.

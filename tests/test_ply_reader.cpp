@@ -10,7 +10,6 @@
 
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <iterator>
 #include <optional>
@@ -19,6 +18,7 @@
 #include <vector>
 
 using gca_test::check;
+using gca_test::check_refusal;
 using gca_test::check_summary;
 using gca_test::float_step;
 using gca_test::ply_vertices;
@@ -222,15 +222,12 @@ void test_refusals()
         std::istringstream in(refusal.file);
         std::string error;
         const bool refused = !read_ply(in, error).has_value();
-        std::printf("%s: %s\n", refusal.what, refused ? error.c_str() : "accepted");
-        check(refused && error.find(refusal.location) != std::string::npos,
-              (std::string("refused with the reason located: ") + refusal.what).c_str());
+        check_refusal(refusal.what, refused, error,
+                      error.find(refusal.location) != std::string::npos);
     }
     std::string error;
     const bool refused = !read_ply_file("/nonexistent/frag.ply", error).has_value();
-    std::printf("missing file: %s\n", refused ? error.c_str() : "accepted");
-    check(refused && error.find("cannot open") != std::string::npos,
-          "refused with the reason located: missing file");
+    check_refusal("missing file", refused, error, error.find("cannot open") != std::string::npos);
 }
 } // namespace
 

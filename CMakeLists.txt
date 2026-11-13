@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: 0BSD
+#
+# CMakeLists.txt - the tree's build: the build type and CUDA architecture, the warning set,
+# the dependencies (CUDA, Eigen, OrbbecSDK, OpenCV), then the libraries (src/), the programs
+# (apps/) and the tests (tests/).
+
 cmake_minimum_required(VERSION 3.18)
 
 project(3DScanner LANGUAGES C CXX CUDA)
@@ -13,6 +19,15 @@ set(GCA_CUDA_ARCHITECTURES "87" CACHE STRING "CUDA architectures to build for")
 # CUDA::cudart. CMake's default, the static runtime, links libcudart_static.a beside it
 # [M 2026-11-13: the link line of the one shared library before the split had both].
 set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
+
+# ---------------------------------------------------------------- Warnings
+# The warning set of CODING_STANDARDS.md, on every target of the tree: -Wall -Wextra for host
+# code and for nvcc's host compiler; nvcc's own warnings are its defaults, none suppressed, and
+# -Wreorder. tools/verify.sh fails on any warning in the configure or build log.
+add_compile_options(
+    "$<$<COMPILE_LANGUAGE:C,CXX>:-Wall;-Wextra>"
+    "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra;-Wreorder>"
+)
 
 # The dependencies are found here, so that their targets are seen in src/, apps/ and tests/.
 find_package(CUDAToolkit REQUIRED)
@@ -37,16 +52,21 @@ find_package(Eigen3 3.4 QUIET NO_MODULE)
 if(NOT TARGET Eigen3::Eigen)
     set(GCA_EIGEN_DIR "${GCA_DEPS_DIR}/eigen-3.4.0" CACHE PATH "Eigen source dir")
     if(NOT EXISTS "${GCA_EIGEN_DIR}/Eigen/Core")
-        message(FATAL_ERROR "Eigen3 not found. Run tools/fetch_deps.sh, install libeigen3-dev or set GCA_EIGEN_DIR.")
+        message(FATAL_ERROR "Eigen3 not found. Run tools/fetch_deps.sh, install libeigen3-dev "
+            "or set GCA_EIGEN_DIR.")
     endif()
     # A source copy states its version only in Macros.h; accept 3.4 or a later 3.x, as
     # find_package above does [S: Eigen 3.4.0's CMakeLists.txt, SameMajorVersion].
     file(STRINGS "${GCA_EIGEN_DIR}/Eigen/src/Core/util/Macros.h" _gca_eigen_defines
         REGEX "^#define EIGEN_(WORLD|MAJOR)_VERSION [0-9]+$")
-    string(REGEX REPLACE ".*EIGEN_WORLD_VERSION ([0-9]+).*" "\\1" _gca_eigen_world "${_gca_eigen_defines}")
-    string(REGEX REPLACE ".*EIGEN_MAJOR_VERSION ([0-9]+).*" "\\1" _gca_eigen_major "${_gca_eigen_defines}")
+    string(REGEX REPLACE ".*EIGEN_WORLD_VERSION ([0-9]+).*" "\\1" _gca_eigen_world
+        "${_gca_eigen_defines}")
+    string(REGEX REPLACE ".*EIGEN_MAJOR_VERSION ([0-9]+).*" "\\1" _gca_eigen_major
+        "${_gca_eigen_defines}")
     if(NOT _gca_eigen_world STREQUAL "3" OR NOT _gca_eigen_major GREATER_EQUAL 4)
-        message(FATAL_ERROR "Eigen 3.4 needed; ${GCA_EIGEN_DIR} holds ${_gca_eigen_world}.${_gca_eigen_major}. Run tools/fetch_deps.sh or set GCA_EIGEN_DIR.")
+        message(FATAL_ERROR "Eigen 3.4 needed; ${GCA_EIGEN_DIR} holds "
+            "${_gca_eigen_world}.${_gca_eigen_major}. Run tools/fetch_deps.sh or set "
+            "GCA_EIGEN_DIR.")
     endif()
     add_library(Eigen3::Eigen INTERFACE IMPORTED)
     set_target_properties(Eigen3::Eigen PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${GCA_EIGEN_DIR}")

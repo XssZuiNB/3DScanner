@@ -75,6 +75,8 @@ void test_plane_out_of_range()
 }
 } // namespace
 
+/// Runs the RGB-D checks and prints the summary line.
+/// @return 0 when every check passed, 1 otherwise.
 int main()
 {
     test_plane_in_range();

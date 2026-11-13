@@ -58,6 +58,7 @@ The left column looks diagnostic and often is not.
 | `tools/build.sh`, `tools/verify.sh`, `tools/run_mutant.sh` | no hardware access |
 | `tools/fetch_deps.sh` | no hardware access; downloads into `~/.local/share/3dscanner` |
 | `build/apps/orbbec_viewer --list` | opens the camera, reads its info and stream profiles, starts no stream [S: orbbec_device.cpp]; what OrbbecSDK sends on open is unverified [?] |
+| `build/apps/orbbec_viewer` with an argument it does not know (`--help` too) or an option without its value | prints the reason and the usage line and exits 2; `main` reads the options before it opens the camera or the GPU or installs a signal handler [S: orbbec_viewer.cpp, `main`; the refusals: ctest `viewer_options`]. The load-time code of OrbbecSDK, OpenCV and CUDA runs before `main`; what it does is unverified [?] |
 | `build/apps/orbbec_viewer [--frames N]` | streams color and depth with depth-to-color alignment; sets no option of the camera [S]; `s`, or the last of N frames headless, writes `cloud_NNN.ply`, `.color.png`, `.depth.png` into the current directory: run it in a scratch directory |
 | any program using OrbbecSDK | writes `Log/OrbbecSDK.log.txt` into the current directory [M 2026-11-13]; closing it hands the camera back to uvcvideo, which logs the enumeration lines again (docs/HARDWARE.md) |
 | OrbbecSDK's examples, OrbbecViewer | not built here; `ob_device_firmware_update`, `ob_device_optional_depth_presets_update`, `ob_multi_devices_firmware_update` and OrbbecViewer's firmware and preset pages WRITE the camera's flash |
@@ -81,9 +82,9 @@ the user's words in the conversation.
 | command | what | when |
 |---|---|---|
 | `tools/build.sh` | the incremental build into `build/`, warnings included | while working |
-| `tools/verify.sh` | the one offline check: the checkers of CODING_STANDARDS.md, "Tools", a fresh configure and build in a new `verify-build.XXXXXX/` beside `src/` (removed after), every test; no hardware, no root; it also passes in a copy of the tree without `.git`. A pass records the tree's fingerprint | at the end of every change |
+| `tools/verify.sh` | the one offline check: the checkers of CODING_STANDARDS.md, "Tools", a fresh configure and build in a new `verify-build.XXXXXX/` beside `src/` (removed after), which fails on any warning in their logs (CODING_STANDARDS.md, "Warnings"), every test; no hardware, no root; it also passes in a copy of the tree without `.git`. A pass records the tree's fingerprint | at the end of every change |
 | `tools/verify.sh --passed` | the passed-tree check: whether the working tree as it is now has passed `tools/verify.sh`; exit 0 yes, 1 no, 2 cannot tell (no git working tree); builds nothing | before every commit: a commit needs its yes |
-| `tools/run_mutant.sh <patch>...` | whether `tools/verify.sh` catches a deliberate mistake: a scratch copy of the working tree, built once; each patch applied in turn, checked by `tools/verify.sh --incremental` in the copy's `build/` (the checkers; when a file was added, removed or renamed or a CMake file changed, a configure on a fresh cache; the rebuild of what the patch touched; every test), within time limits, then taken out | to show a new rule, refusal or branch bites |
+| `tools/run_mutant.sh <patch>...` | whether `tools/verify.sh` catches a deliberate mistake: a scratch copy of the working tree, built once; each patch applied in turn, checked by `tools/verify.sh --incremental` in the copy's `build/` (the checkers; when a file was added, removed or renamed or a CMake file changed, a configure on a fresh cache; the rebuild of what the patch touched and its warnings; every test), within time limits, then taken out | to show a new rule, refusal or branch bites |
 
 **The fingerprint** is the SHA-256 of the tree's files, tracked and untracked, ignored files
 left out, a nested repository's files included by the same rule (the set `tools/run_mutant.sh`
@@ -101,11 +102,11 @@ a -j6 build froze the board on 2026-11-13 [M 2026-11-13].
 
 **ccache.** Every compile of the three tools goes through ccache (CODING_STANDARDS.md,
 "Tools"), set in the build directory's compiler launcher, so that the builds of one tree hit
-what another tree's builds wrote (`configure_build` in `tools/build_common.sh`): a second
-verify, `tools/build.sh` after it, a copy without `.git` elsewhere and the mutant copy each
-hit 18 of 18 compiles, nvcc's `-dc` compiles included; verify takes 196 s with an empty cache
-and 9.5 s with a warm one [M 2026-11-13]. On a hit ccache replays the compile's warnings,
-g++'s and nvcc's [M 2026-11-13].
+what another tree's builds wrote (`configure_build` in `tools/build_common.sh`): a verify
+after `tools/build.sh` and the mutant copy's first build each hit 20 of 20 compiles
+[M 2026-11-13: `ccache -s`, ccache's log]; verify takes 196 s with an empty cache and 9.5 s
+with a warm one [M 2026-11-13]. On a hit ccache replays the compile's warnings,
+g++'s and nvcc's [M 2026-11-13], so verify's warning check sees them on a hit too.
 
 **Mutants.** In a patched run each test may take 3 × the unpatched copy's run, at least 60 s,
 and the whole run 600 s more for the configure and the build [S: tools/run_mutant.sh]; a run
@@ -154,8 +155,10 @@ checkers; these are the rules no checker holds.
 
 1. **A file starts with SPDX, then its name and an overview of what its module does**, and
    nothing else; a module is one source file and its header. C and C++: `/// @file <name>`.
-   A script puts its SPDX line under the shebang, then `# <name> - <overview>`. A trap, an
-   ownership rule or a cache note goes into the comment of the function it concerns.
+   A script puts its SPDX line under the shebang, then `# <name> - <overview>`; a CMake file
+   starts with its SPDX line, then `# <path> - <overview>`, the path from the tree's root.
+   A trap, an ownership rule or a cache note goes into the comment of the function it
+   concerns.
 2. **Every function's comment states its purpose, every parameter and its return value**:
    a public function in its header above its declaration, a file-local one above its
    definition. C and C++: a `///` comment whose first sentence is the purpose, one `@param`

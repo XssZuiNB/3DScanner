@@ -59,27 +59,37 @@ private:
     /// @return true when a complete, correctly sized frameset arrived.
     bool start_stream() final;
 
-    /// @return meters per raw depth value, read from the first depth frame.
+    /// Converts the depth value scale that start_stream() read from the first depth frame to
+    /// meters.
+    /// @return meters per raw depth value.
     float read_depth_scale() final;
 
+    /// Reads the color camera's intrinsics from the selected color profile.
     /// @return the color camera's intrinsics at the selected resolution.
     gca::intrinsics read_color_intrinsics() final;
 
-    /// @return the color intrinsics: depth is aligned to color.
+    /// Gives the depth intrinsics, which are the color camera's: depth is aligned to color.
+    /// @return the color intrinsics.
     gca::intrinsics read_depth_intrinsics() final;
 
-    /// @return identity: depth is aligned to color.
+    /// Gives the color-to-depth extrinsics, the identity: depth is aligned to color.
+    /// @return the identity rotation and a zero translation.
     gca::extrinsics read_color_to_depth_extrinsics() final;
 
-    /// @return identity: depth is aligned to color.
+    /// Gives the depth-to-color extrinsics, the identity: depth is aligned to color.
+    /// @return the identity rotation and a zero translation.
     gca::extrinsics read_depth_to_color_extrinsics() final;
 
-    /// Waits up to 5 s for the next frameset and makes it the current one.
+    /// Waits up to 5 s for the next frameset and makes it the current one. On a timeout it
+    /// prints "No frames received from Orbbec camera for 5s!" and keeps the previous frames
+    /// [S: orbbec_device.cpp].
     void receive_data_from_device() final;
 
+    /// Hands the current color image to gca::device::get_color_cv_mat().
     /// @return the current color image (BGR8), sharing the device's buffer.
     cv::Mat set_color_to_cv_mat() final;
 
+    /// Wraps the current aligned depth frame as an image for gca::device::get_depth_cv_mat().
     /// @return the current aligned depth image (CV_16UC1), sharing the frame's buffer.
     cv::Mat set_depth_to_cv_mat() final;
 

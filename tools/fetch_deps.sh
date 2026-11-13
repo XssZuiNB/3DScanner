@@ -25,6 +25,9 @@ readonly EIGEN_URL="https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.
 #   $2: the directory the tarball unpacks to, relative to DEPS_DIR.
 # Outputs:
 #   What it does to STDOUT.
+# Returns:
+#   0 when the directory is there or the tarball unpacked; exits non-zero
+#   otherwise (set -e).
 #######################################
 fetch() {
   if [[ -d "${DEPS_DIR}/$2" ]]; then
@@ -35,6 +38,21 @@ fetch() {
   curl -fsSL "$1" | tar -xz -C "${DEPS_DIR}"
 }
 
-mkdir -p "${DEPS_DIR}"
-fetch "${OB_URL}" "${OB_TARBALL%.tar.gz}"
-fetch "${EIGEN_URL}" "eigen-3.4.0"
+#######################################
+# Fetches each dependency that is not there yet.
+# Globals:
+#   DEPS_DIR, OB_URL, OB_TARBALL, EIGEN_URL: what to fetch where (read).
+# Arguments:
+#   None
+# Outputs:
+#   What it does to STDOUT.
+# Returns:
+#   0; exits non-zero when a download or an unpack fails.
+#######################################
+main() {
+  mkdir -p "${DEPS_DIR}"
+  fetch "${OB_URL}" "${OB_TARBALL%.tar.gz}"
+  fetch "${EIGEN_URL}" "eigen-3.4.0"
+}
+
+main "$@"

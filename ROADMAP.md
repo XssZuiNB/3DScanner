@@ -36,4 +36,3 @@ Each needs a measurement that shows the cost first (docs/HARDWARE.md has the fir
 * Undistort color, or check that the SDK's aligned output needs none.
 * The half-pixel deprojection of the point-cloud kernel (AGENTS.md §6).
 * A live 3D view of the point cloud: `orbbec_viewer` shows only 2D images.
-* A compiler warning set (CODING_STANDARDS.md).

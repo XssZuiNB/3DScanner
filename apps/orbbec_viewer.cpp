@@ -4,15 +4,17 @@
 /// reports frame rate and timings once a second and shows color | depth | overlay. 's' saves
 /// the current point cloud as PLY plus the color and depth images, 'q' or ESC quits.
 ///
-/// Usage: orbbec_viewer [--list] [--headless] [--frames N] [--width W --height H --fps F]
-/// --list prints the device's stream profiles and exits. --frames N stops after N frames and,
-/// headless, saves the last one.
+/// The options are viewer_options.hpp's, whose usage line lists them: --list prints the device's
+/// stream profiles and exits. --frames N stops after N frames and, headless, saves the last one.
+/// A command line with an argument the viewer does not know is refused with the usage line
+/// before anything touches the camera, the GPU or a signal handler.
 
 #include "camera/orbbec_device.hpp"
 #include "geometry/point_cloud.hpp"
 #include "gpu/cuda_container.hpp"
 #include "gpu/gpu_check.hpp"
 #include "types/console_color.hpp"
+#include "viewer_options.hpp"
 
 #include <chrono>
 #include <csignal>
@@ -20,7 +22,10 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
@@ -34,16 +39,6 @@ constexpr float max_depth_m = 3.0f;  ///< [?: a choice] points farther than this
 
 volatile std::sig_atomic_t g_exit_requested = 0;
 
-struct options
-{
-    uint32_t width = 640;
-    uint32_t height = 400; ///< [?: a choice] 640x480 color does not exist on USB 2 [M 2026-11-13]
-    uint32_t fps = 30;
-    int max_frames = -1; ///< -1: run until quit
-    bool headless = false;
-    bool list_only = false;
-};
-
 /// Timings accumulated between two once-a-second reports.
 struct frame_stats
 {
@@ -53,39 +48,20 @@ struct frame_stats
     double gpu_ms = 0.0;
 };
 
+/// The GPU side of the loop, set up once from the started camera: its parameters and the
+/// buffers each frame is uploaded into.
+struct gpu_buffers
+{
+    gca::cuda_camera_param param; ///< the camera's parameters (gpu_camera_param())
+    gca::cuda_color_frame color;  ///< the current color frame
+    gca::cuda_depth_frame depth;  ///< the current aligned depth frame
+};
+
 /// Sets the flag the main loop polls; installed for SIGINT.
 /// @param signal_number the signal, unused.
 void on_sigint(int /*signal_number*/)
 {
     g_exit_requested = 1;
-}
-
-/// Reads the command line.
-/// @param argc argument count.
-/// @param argv arguments.
-/// @return the options; headless defaults to true when DISPLAY is unset.
-options parse_options(int argc, char *argv[])
-{
-    options opt;
-    opt.headless = (std::getenv("DISPLAY") == nullptr);
-    for (int i = 1; i < argc; i++)
-    {
-        const std::string a = argv[i];
-        const bool has_value = (i + 1 < argc);
-        if (a == "--list")
-            opt.list_only = true;
-        else if (a == "--headless")
-            opt.headless = true;
-        else if (a == "--frames" && has_value)
-            opt.max_frames = std::atoi(argv[++i]);
-        else if (a == "--width" && has_value)
-            opt.width = std::atoi(argv[++i]);
-        else if (a == "--height" && has_value)
-            opt.height = std::atoi(argv[++i]);
-        else if (a == "--fps" && has_value)
-            opt.fps = std::atoi(argv[++i]);
-    }
-    return opt;
 }
 
 /// Writes points as a binary little-endian PLY with float xyz and uchar rgb.
@@ -160,38 +136,96 @@ void report_if_due(frame_stats &stats, size_t points)
     stats = frame_stats{};
 }
 
-/// Grabs, builds and shows frames until quit, SIGINT or the frame limit.
-/// @param cam the started camera.
-/// @param opt the options.
-void run_loop(gca::orbbec_device &cam, const options &opt)
+/// Prints the GPUs and warms up the first one.
+void warm_up_gpu()
 {
-    gca::cuda_camera_param cu_param(cam.get_depth_intrinsics(), cam.get_color_intrinsics(),
-                                    cam.get_depth_to_color_extrinsics(), cam.get_width(),
-                                    cam.get_height(), cam.get_depth_scale(),
-                                    cam.get_depth_frame_format(), cam.get_color_frame_format());
-    gca::cuda_color_frame gpu_color(cam.get_width(), cam.get_height());
-    gca::cuda_depth_frame gpu_depth(cam.get_width(), cam.get_height());
+    cuda_print_devices();
+    cuda_warm_up_gpu(0);
+}
+
+/// Starts the camera and prints its color intrinsics and depth scale.
+/// @param cam the camera.
+/// @return true when it started.
+bool start_camera(gca::orbbec_device &cam)
+{
+    if (!cam.device_start())
+        return false;
+    const auto &in = cam.get_color_intrinsics();
+    std::cout << "Intrinsics fx=" << in.fx << " fy=" << in.fy << " cx=" << in.cx << " cy=" << in.cy
+              << "  depth scale=" << cam.get_depth_scale() << " m/unit" << std::endl;
+    return true;
+}
+
+/// Copies the started camera's parameters to the GPU. Each argument carries the name of the
+/// constructor parameter it fills: three pairs have one type each (the two intrinsics, width and
+/// height, the two formats), so the compiler does not catch a swap, and on this camera the two
+/// intrinsics are equal and the extrinsics the identity, so the hardware does not either.
+/// @param cam the started camera.
+/// @return the parameters on the GPU.
+gca::cuda_camera_param gpu_camera_param(const gca::orbbec_device &cam)
+{
+    return gca::cuda_camera_param(/*depth_intrin=*/cam.get_depth_intrinsics(),
+                                  /*color_intrin=*/cam.get_color_intrinsics(),
+                                  /*depth2color_extrin=*/cam.get_depth_to_color_extrinsics(),
+                                  /*width=*/cam.get_width(),
+                                  /*height=*/cam.get_height(),
+                                  /*depth_scale=*/cam.get_depth_scale(),
+                                  /*depth_format=*/cam.get_depth_frame_format(),
+                                  /*color_format=*/cam.get_color_frame_format());
+}
+
+/// Sets up the GPU side of the loop for the started camera: its parameters and frame buffers of
+/// its size.
+/// @param cam the started camera.
+/// @return the buffers.
+gpu_buffers make_gpu_buffers(const gca::orbbec_device &cam)
+{
+    return {gpu_camera_param(cam),
+            {cam.get_width(), cam.get_height()},
+            {cam.get_width(), cam.get_height()}};
+}
+
+/// Grabs the next frame, uploads it and builds its point cloud on the GPU, and adds the grab and
+/// the GPU times to the statistics.
+/// @param cam the started camera.
+/// @param gpu the GPU buffers.
+/// @param stats the timings, which gain this frame.
+/// @return the frame's point cloud.
+std::shared_ptr<gca::point_cloud> process_frame(gca::orbbec_device &cam, gpu_buffers &gpu,
+                                                frame_stats &stats)
+{
+    const auto t0 = std::chrono::steady_clock::now();
+    cam.receive_data();
+    const auto t1 = std::chrono::steady_clock::now();
+    gpu.color.upload(static_cast<const uint8_t *>(cam.get_color_raw_data()), cam.get_width(),
+                     cam.get_height());
+    gpu.depth.upload(static_cast<const uint16_t *>(cam.get_depth_raw_data()), cam.get_width(),
+                     cam.get_height());
+    auto pc = gca::point_cloud::create_from_rgbd(gpu.depth, gpu.color, gpu.param, min_depth_m,
+                                                 max_depth_m);
+    cudaDeviceSynchronize();
+    const auto t2 = std::chrono::steady_clock::now();
+
+    stats.grab_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
+    stats.gpu_ms += std::chrono::duration<double, std::milli>(t2 - t1).count();
+    stats.frames++;
+    return pc;
+}
+
+/// Grabs, builds and shows frames until quit, SIGINT or the frame limit; 's', or the last frame
+/// of a headless run with a frame limit, saves a snapshot.
+/// @param cam the started camera.
+/// @param gpu the GPU buffers.
+/// @param opt the options.
+void run_loop(gca::orbbec_device &cam, gpu_buffers &gpu, const gca_viewer::options &opt)
+{
     frame_stats stats;
     int frame = 0;
     int saved = 0;
 
     while (!g_exit_requested && (opt.max_frames < 0 || frame < opt.max_frames))
     {
-        const auto t0 = std::chrono::steady_clock::now();
-        cam.receive_data();
-        const auto t1 = std::chrono::steady_clock::now();
-        gpu_color.upload(static_cast<const uint8_t *>(cam.get_color_raw_data()), cam.get_width(),
-                         cam.get_height());
-        gpu_depth.upload(static_cast<const uint16_t *>(cam.get_depth_raw_data()), cam.get_width(),
-                         cam.get_height());
-        auto pc = gca::point_cloud::create_from_rgbd(gpu_depth, gpu_color, cu_param, min_depth_m,
-                                                     max_depth_m);
-        cudaDeviceSynchronize();
-        const auto t2 = std::chrono::steady_clock::now();
-
-        stats.grab_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
-        stats.gpu_ms += std::chrono::duration<double, std::milli>(t2 - t1).count();
-        stats.frames++;
+        const auto pc = process_frame(cam, gpu, stats);
         frame++;
         report_if_due(stats, pc->points_number());
 
@@ -205,27 +239,31 @@ void run_loop(gca::orbbec_device &cam, const options &opt)
 }
 } // namespace
 
+/// Runs the camera test. Reading the options comes first, before anything touches the camera,
+/// the GPU or a signal handler; then the profiles are listed, or the GPU and the camera are set
+/// up and the loop runs until quit, SIGINT or the frame limit.
+/// @param argc the argument count.
+/// @param argv the arguments (viewer_options.hpp).
+/// @return 0 after the list or the loop, 1 when the camera does not start, 2 when the command
+///     line is refused.
 int main(int argc, char *argv[])
 {
-    const options opt = parse_options(argc, argv);
-    if (opt.list_only)
+    const std::optional<gca_viewer::options> opt =
+        gca_viewer::read_options(argc, argv, std::getenv("DISPLAY") == nullptr, std::cerr);
+    if (!opt)
+        return 2;
+    if (opt->list_only)
     {
         gca::orbbec_device::print_stream_profiles();
         return 0;
     }
     std::signal(SIGINT, on_sigint);
-
-    cuda_print_devices();
-    cuda_warm_up_gpu(0);
-
-    gca::orbbec_device cam(opt.width, opt.height, opt.fps);
-    if (!cam.device_start())
+    warm_up_gpu();
+    gca::orbbec_device cam(opt->width, opt->height, opt->fps);
+    if (!start_camera(cam))
         return 1;
-    const auto &in = cam.get_color_intrinsics();
-    std::cout << "Intrinsics fx=" << in.fx << " fy=" << in.fy << " cx=" << in.cx << " cy=" << in.cy
-              << "  depth scale=" << cam.get_depth_scale() << " m/unit" << std::endl;
-
-    run_loop(cam, opt);
+    gpu_buffers gpu = make_gpu_buffers(cam);
+    run_loop(cam, gpu, *opt);
     cam.device_stop();
     return 0;
 }

@@ -22,7 +22,16 @@ deviation. This document adds what the guides leave to the project.
   the more accurate form. `-ffp-contract=off` goes only on a target whose bit-exact
   reference changes without it, with that measurement written beside the flag.
 - **C++17** for C++ and CUDA; CUDA for compute capability 8.7 (`GCA_CUDA_ARCHITECTURES`).
-- **Warnings:** the compilers' defaults; no warning set is enforced yet (ROADMAP.md).
+- **Warnings:** `-Wall -Wextra` for C and C++, and through `-Xcompiler` for nvcc's host
+  compiler; nvcc's own warnings are its defaults, none suppressed (no `-w`, no
+  `-diag-suppress`), and `-Wreorder`. The top-level `CMakeLists.txt` sets them on every target;
+  `tools/verify.sh` fails on any warning in the configure or build log, also on a ccache hit,
+  which replays the compile's warnings. A warning in code that stays is fixed, not silenced.
+  nvcc's opt-ins `-Wdefault-stream-launch` and `-Wmissing-launch-bounds` stay off: they are no
+  defaults, and in today's kernels they print 4 and 5 warning lines (#20198-D and #20238-D, in
+  `gpu_check.cu` and `cuda_point_cloud_factory.cu`) [M 2026-11-13], kernels the rewrite
+  replaces; the rewrite can turn them on. `-Wext-lambda-captures-this` cannot fire without
+  `--extended-lambda`, which the build does not use.
 - **Include order:** the file's own header, then this tree's headers (`"camera/..."`, from
   `src/`), then the system and library headers, each group sorted.
 - **File names:** snake_case; `.cpp`/`.hpp` for host code, `.cu`/`.cuh` for CUDA.

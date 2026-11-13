@@ -1,4 +1,7 @@
-# One library per directory, each linking only the ones below it; types is header only:
+# SPDX-License-Identifier: 0BSD
+#
+# src/CMakeLists.txt - the libraries, one per directory, each linking only the ones below it;
+# types is header only:
 #   types <- camera (OrbbecSDK, OpenCV)
 #   types <- gpu (CUDA runtime) <- geometry (Eigen) <- registration
 # Every library includes from src/ ("gpu/cuda_container.hpp"); types carries that directory.

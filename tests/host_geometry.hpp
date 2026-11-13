@@ -97,9 +97,10 @@ inline vec3 to_vec3(const float3 &a)
 }
 
 /// Builds a point to upload with create_from_points(). Every point the tests build is positive
-/// on every axis: today's max bound starts at FLT_MIN (geometry_util.cuh:81, 92), so a cloud
-/// with no positive coordinate on an axis gets a wrong bound. No cloud of the tests that build
-/// points comes from create_from_rgbd(), whose default minimum depth 0 makes NaN points [S].
+/// on every axis: today's max bound starts at FLT_MIN (geometry_util.cuh,
+/// cuda_compute_min_max_bound()), so a cloud with no positive coordinate on an axis gets a wrong
+/// bound. No cloud of the tests that build points comes from create_from_rgbd(), whose default
+/// minimum depth 0 makes NaN points [S].
 /// @param p the coordinates in meters, rounded to float.
 /// @param color the color.
 /// @return the point, property inactive like the points create_from_rgbd() keeps.

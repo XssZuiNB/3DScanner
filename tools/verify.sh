@@ -1,8 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: 0BSD
 #
-# verify.sh - the one offline check: the build, every test and the checkers of
-# CODING_STANDARDS.md, "Tools" (AGENTS.md §4).
+# verify.sh - the one offline check: the build, which fails on any warning,
+# every test and the checkers of CODING_STANDARDS.md, "Tools" (AGENTS.md §4).
 #
 #   tools/verify.sh            the checks on a fresh build; records the pass
 #   tools/verify.sh --passed   the passed-tree check: whether the working tree
@@ -43,6 +43,9 @@ readonly INCREMENTAL_DIR=build
 readonly KEY_FILE="${INCREMENTAL_DIR}/verify-configure.key"
 
 failed=0
+# Whether this run configured its build directory, so that its configure log
+# is this run's.
+configured=0
 # Global, so that the EXIT trap still has it after main returns.
 build_dir=''
 
@@ -123,7 +126,8 @@ parse_options() {
 #######################################
 in_git_tree() {
   local top
-  top="$(git rev-parse --show-toplevel 2>/dev/null)" && [[ "${top}" == "$(pwd -P)" ]]
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    && [[ "${top}" == "$(pwd -P)" ]]
 }
 
 #######################################
@@ -216,10 +220,11 @@ require_tools() {
 #######################################
 run_checkers() {
   local -a cxx_files sh_files
-  mapfile -t cxx_files < <(find src apps tests -type f \
-    \( -name '*.cpp' -o -name '*.hpp' -o -name '*.cu' -o -name '*.cuh' \) | sort)
+  mapfile -t cxx_files < <(find src apps tests -type f \( -name '*.cpp' \
+    -o -name '*.hpp' -o -name '*.cu' -o -name '*.cuh' \) | sort)
   mapfile -t sh_files < <(find tools -type f -name '*.sh' | sort)
-  "${CLANG_FORMAT}" --dry-run --Werror --style=file "${cxx_files[@]}" || fail "clang-format"
+  "${CLANG_FORMAT}" --dry-run --Werror --style=file "${cxx_files[@]}" \
+    || fail "clang-format"
   "${SHELLCHECK}" "${sh_files[@]}" || fail "shellcheck"
 }
 
@@ -262,7 +267,8 @@ configure_key() (
 #######################################
 failure_lines() {
   local lines
-  lines="$(grep -i -E '(^|[^a-z_])(error|fatal)([^a-z_]|$)|undefined reference' "$1" \
+  local -r pattern='(^|[^a-z_])(error|fatal)([^a-z_]|$)|undefined reference'
+  lines="$(grep -i -E "${pattern}" "$1" \
     | grep -v -E '^g?make(\[[0-9]+\])?: ' | head -n 20)" || true
   echo "${lines:-$(tail -n 40 "$1")}"
 }
@@ -280,6 +286,7 @@ failure_lines() {
 #   mode: fresh or incremental (read).
 #   build_dir: the build directory (read).
 #   KEY_FILE: where the incremental build directory's key is kept (read).
+#   configured: set to 1 when this run configured.
 # Arguments:
 #   None
 # Outputs:
@@ -303,6 +310,7 @@ configure_when_needed() {
     fail "configure"
     return 1
   fi
+  configured=1
   if [[ -n "${key}" ]]; then
     echo "${key}" >"${KEY_FILE}"
   fi
@@ -321,10 +329,61 @@ configure_when_needed() {
 #   0 when the build succeeds, 1 otherwise.
 #######################################
 build() {
-  if ! cmake --build "${build_dir}" -j "${BUILD_JOBS}" >"${build_dir}/build.log" 2>&1; then
+  if ! cmake --build "${build_dir}" -j "${BUILD_JOBS}" \
+    >"${build_dir}/build.log" 2>&1; then
     failure_lines "${build_dir}/build.log" >&2
     fail "build"
     return 1
+  fi
+}
+
+#######################################
+# Prints the lines of the given logs that name a warning, in the forms the
+# tools print: "warning:" (g++, the linker, make), "Warning:" (the
+# assembler), "warning #NNNNN-D" (nvcc's front end, e.g. #20011-D), "ptxas
+# warning" and "CMake Warning" (with or without "(dev)"). The bare word is
+# not matched: the configure log prints absolute paths, and a directory
+# named, say, no-warning must not fail verify.
+# Globals:
+#   None
+# Arguments:
+#   $@: the logs, each of which exists.
+# Outputs:
+#   The lines to STDOUT.
+# Returns:
+#   0.
+#######################################
+warning_lines() {
+  local -r pattern='[Ww]arning:|warning #[0-9]+-D|ptxas warning|CMake Warning'
+  grep -h -E "${pattern}" "$@" || true
+}
+
+#######################################
+# Fails on any warning in the logs this run wrote: the build log, and the
+# configure log when this run configured. An incremental run that did not
+# configure leaves the configure log of an earlier run, which is not read.
+# The compiles' warnings are in the build log on a ccache hit too: ccache
+# replays them (AGENTS.md §4).
+# Globals:
+#   build_dir: the build directory (read).
+#   configured: whether this run configured (read).
+# Arguments:
+#   None
+# Outputs:
+#   At most 20 of the warning lines (warning_lines) to STDERR.
+# Returns:
+#   0.
+#######################################
+check_warnings() {
+  local lines
+  local -a logs=("${build_dir}/build.log")
+  if ((configured)); then
+    logs=("${build_dir}/configure.log" "${logs[@]}")
+  fi
+  lines="$(warning_lines "${logs[@]}")"
+  if [[ -n "${lines}" ]]; then
+    head -n 20 <<<"${lines}" >&2
+    fail "warnings"
   fi
 }
 
@@ -391,7 +450,8 @@ run_tests() {
 record_pass() {
   local after
   if ! after="$(tree_fingerprint)" || [[ "${after}" != "$1" ]]; then
-    echo "verify: the tree changed while the checks ran, so the pass is not recorded"
+    echo "verify: the tree changed while the checks ran, so the pass is" \
+      "not recorded"
     return 0
   fi
   if ! { mkdir -p "${PASSED_LOG%/*}" \
@@ -498,6 +558,7 @@ main() {
   run_checkers
   prepare_build_dir
   if configure_when_needed && build; then
+    check_warnings
     run_tests
   fi
   if ((failed)); then

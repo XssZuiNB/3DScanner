@@ -220,31 +220,26 @@ clean_up() {
 }
 
 #######################################
-# Runs each patch as a mutant on a scratch copy of the working tree.
+# Reads the patches: each one has to exist and apply to the working tree.
 # Globals:
-#   limit: each test's time limit in a patched run (set).
-#   group: the running check's process group (set).
-#   tmp: the run's scratch directory, removed on exit (set).
+#   repo: the repository's root (set).
+#   patches: the patches' absolute paths (set).
 # Arguments:
 #   $@: the patches.
 # Outputs:
-#   The unpatched run's time, the time limit and each mutant's verdict to
-#   STDOUT; errors to STDERR.
+#   The usage, or a patch that does not apply, to STDERR.
 # Returns:
-#   Exits 0 when every mutant is caught, 1 when one survives, and 2 when a
-#   patch does not apply, a tool is missing, the unpatched copy fails verify,
-#   or the run is interrupted.
+#   0; exits 2 when there is no patch, the repository is not found or a patch
+#   does not apply.
 #######################################
-main() {
-  local repo patch path survived=0 status start verify_s
-  local -a patches=()
-
+read_patches() {
+  local patch path
   if (($# < 1)); then
     echo "usage: ${0##*/} <patch>..." >&2
     exit 2
   fi
-  require_ccache run_mutant
   repo="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 2
+  patches=()
   for patch in "$@"; do
     if ! path="$(realpath -e -- "${patch}")" \
       || ! git -C "${repo}" apply --check "${path}"; then
@@ -253,8 +248,25 @@ main() {
     fi
     patches+=("${path}")
   done
+}
 
-  # Global, so that the EXIT trap still has it after main returns.
+#######################################
+# Makes the run's scratch directory, removed on exit (clean_up), outside the
+# repository, and copies the working tree into it. tmp is global, not local,
+# so that the EXIT trap still has it after main returns.
+# Globals:
+#   repo: the repository's root (read).
+#   tmp: the run's scratch directory (set).
+#   group: the running check's process group, none yet (set).
+# Arguments:
+#   None
+# Outputs:
+#   Errors to STDERR.
+# Returns:
+#   0; exits 2 when the directory lies inside the repository or the copy
+#   fails.
+#######################################
+make_scratch_copy() {
   tmp="$(mktemp -d)"
   group=''
   trap clean_up EXIT
@@ -266,6 +278,24 @@ main() {
   fi
   mkdir -p "${tmp}/scratch" || exit 2
   copy_tree "${repo}" "${tmp}/tree" || exit 2
+}
+
+#######################################
+# Runs verify on the unpatched copy, which has to pass, and sets each test's
+# time limit in a patched run from the time it took.
+# Globals:
+#   limit: each test's time limit in a patched run (set).
+#   BUILD_LIMIT_S: the bound on the rest of a run (read).
+# Arguments:
+#   None
+# Outputs:
+#   The unpatched run's time and the time limits to STDOUT; why the copy
+#   fails to STDERR.
+# Returns:
+#   0; exits 2 when the unpatched copy fails verify.
+#######################################
+time_unpatched_run() {
+  local start verify_s
   start="${SECONDS}"
   if ! verify_in_copy 0; then
     echo "run_mutant: verify fails in the unpatched copy, so no mutant" \
@@ -278,7 +308,23 @@ main() {
   echo "run_mutant: a copy of the working tree passes verify in" \
     "${verify_s} s; in a patched verify a test may take ${limit} s, the" \
     "whole verify $((limit + BUILD_LIMIT_S)) s"
+}
 
+#######################################
+# Runs each patch in turn as a mutant on the copy (run_one).
+# Globals:
+#   patches: the patches' absolute paths (read).
+# Arguments:
+#   None
+# Outputs:
+#   Each mutant's verdict to STDOUT; a patch that cannot be applied or taken
+#   out to STDERR.
+# Returns:
+#   0 when every mutant is caught; exits 1 when one survives, 2 when a patch
+#   cannot be applied or taken out again.
+#######################################
+run_mutants() {
+  local patch status survived=0
   for patch in "${patches[@]}"; do
     run_one "${patch}" "${patch##*/}"
     status=$?
@@ -290,6 +336,28 @@ main() {
   if ((survived)); then
     exit 1
   fi
+}
+
+#######################################
+# Runs each patch as a mutant on a scratch copy of the working tree.
+# Globals:
+#   None
+# Arguments:
+#   $@: the patches.
+# Outputs:
+#   The unpatched run's time, the time limit and each mutant's verdict to
+#   STDOUT; errors to STDERR.
+# Returns:
+#   Exits 0 when every mutant is caught, 1 when one survives, and 2 when a
+#   patch does not apply, a tool is missing, the unpatched copy fails verify,
+#   or the run is interrupted.
+#######################################
+main() {
+  require_ccache run_mutant
+  read_patches "$@"
+  make_scratch_copy
+  time_unpatched_run
+  run_mutants
 }
 
 main "$@"

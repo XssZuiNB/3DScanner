@@ -60,8 +60,10 @@ struct min_max_bound_functor
 __forceinline__ thrust::pair<float3, float3> cuda_compute_min_max_bound(
     const thrust::device_vector<gca::point_t> &points)
 {
-    gca::point_t init_min{.coordinates{.x = FLT_MAX, .y = FLT_MAX, .z = FLT_MAX}};
-    gca::point_t init_max{.coordinates{.x = FLT_MIN, .y = FLT_MIN, .z = FLT_MIN}};
+    gca::point_t init_min{
+        .coordinates{.x = FLT_MAX, .y = FLT_MAX, .z = FLT_MAX}, .color{}, .property{}};
+    gca::point_t init_max{
+        .coordinates{.x = FLT_MIN, .y = FLT_MIN, .z = FLT_MIN}, .color{}, .property{}};
     auto zipped_init = thrust::make_tuple(init_min, init_max);
 
     auto zipped_iter_begin =
