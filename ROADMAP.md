@@ -7,19 +7,23 @@ What to do next, in order. Each step has a definition of done and says who can d
 go), **decision** (the user's). A finished step is deleted; its outcome goes into the
 document that owns the fact.
 
-## 1. Clean up the CUDA_3D tree (agent, decisions)
+## 1. Clean up the CUDA_3D tree (agent)
 
-Before the rewrite, in this order, each step done when `tools/verify.sh` passes:
+The inventory is done: `.scratch/cleanup/inventory.md`, read by the user 2026-11-13. Decided
+by the user the same day, in this order, each step done when `tools/verify.sh` passes:
 
-1. **Inventory** (agent): every module of `src/` and `apps/`: purpose, live callers, tests,
-   flaws, a keep / rewrite / drop suggestion. Done when `.scratch/cleanup/inventory.md` has
-   every module and the user has read it.
-2. **Dead code** (decision, then agent): the deletion list from the inventory, checked by the
-   user, deleted.
-3. **Directory layout** (decision, then agent): a layout for the scanner, checked by the user,
+1. **Dead code:** delete `apps/test_color_icp.cpp`, `scripts/`, `graph.png`,
+   `data/cloud_bin_*.pcd`, `src/visualizer/`, `src/movement_detection/`,
+   `src/geometry/cuda_clustering.*` with its `point_cloud` wrappers, the unused functions and
+   classes the inventory lists (the unused part of `math.cuh` among them), RealSense
+   (`realsense_device.*`, `apps/app.cpp`) and PCL support, and the CMake settings nothing
+   needs. `data/frag_115.ply` and `frag_116.ply` stay as the fixture of a future colored-ICP
+   test.
+2. **Directory layout** (decision, then agent): a layout for the scanner, checked by the user,
    the files moved.
-4. **The rules for the old code** (agent): AGENTS.md §7 for what is left: headers, function
-   comments, `main()` split into steps, a warning set.
+3. **The rules for the code that stays** (agent): AGENTS.md §7 for `orbbec_device`,
+   `orbbec_viewer`, the test and the tools, and a compiler warning set. The rest gets the rules
+   when the rewrite replaces it.
 
 ## 2. The rewrite's requirements (decision)
 
