@@ -80,9 +80,33 @@ the user's words in the conversation.
 
 | command | what | when |
 |---|---|---|
-| `tools/build.sh` | the incremental build, warnings included | while working |
-| `tools/verify.sh` | the one offline check: the build, every test, the checkers of CODING_STANDARDS.md, "Tools"; no hardware, no root; it also passes in a copy of the tree without `.git` | at the end of every change, before every commit |
-| `tools/run_mutant.sh <patch>...` | whether `tools/verify.sh` catches a deliberate mistake: a scratch copy of the working tree, each patch applied in turn | to show a new rule, refusal or branch bites |
+| `tools/build.sh` | the incremental build into `build/`, warnings included | while working |
+| `tools/verify.sh` | the one offline check: the checkers of CODING_STANDARDS.md, "Tools", a fresh configure and build in a new `verify-build.XXXXXX/` beside `src/` (removed after), every test; no hardware, no root; it also passes in a copy of the tree without `.git`. A pass records the tree's fingerprint | at the end of every change |
+| `tools/verify.sh --passed` | the passed-tree check: whether the working tree as it is now has passed `tools/verify.sh`; exit 0 yes, 1 no, 2 cannot tell (no git working tree); builds nothing | before every commit: a commit needs its yes |
+| `tools/run_mutant.sh <patch>...` | whether `tools/verify.sh` catches a deliberate mistake: a scratch copy of the working tree, built once; each patch applied in turn, checked by `tools/verify.sh --incremental` in the copy's `build/` (the checkers; when a file was added, removed or renamed or a CMake file changed, a configure on a fresh cache; the rebuild of what the patch touched; every test), within time limits, then taken out | to show a new rule, refusal or branch bites |
+
+**The fingerprint** is the SHA-256 of the tree's files, tracked and untracked, ignored files
+left out, a nested repository's files included by the same rule (the set `tools/run_mutant.sh`
+copies): their paths, contents and executable bits.
+`tools/verify.sh` records it in `~/.local/state/3dscanner/verify-passed` when a fresh run
+passes and the tree did not change while it ran. A changed, added or deleted file makes the
+passed-tree check say no until a new run passes; returning a tree to a state that passed makes
+it say yes again. It covers the tree only: after a toolchain update or a new download of
+`tools/fetch_deps.sh`, run `tools/verify.sh` again.
+
+**ccache.** Every compile of the three tools goes through ccache (CODING_STANDARDS.md,
+"Tools"), set in the build directory's compiler launcher, so that the builds of one tree hit
+what another tree's builds wrote (`configure_build` in `tools/build_common.sh`): a second
+verify, `tools/build.sh` after it, a copy without `.git` elsewhere and the mutant copy each
+hit 18 of 18 compiles, nvcc's `-dc` compiles included; verify takes 196 s with an empty cache
+and 9.5 s with a warm one [M 2026-11-13]. On a hit ccache replays the compile's warnings,
+g++'s and nvcc's [M 2026-11-13].
+
+**Mutants.** In a patched run each test may take 3 × the unpatched copy's run, at least 60 s,
+and the whole run 600 s more for the configure and the build [S: tools/run_mutant.sh]; a run
+past either is "caught by the time limit". Taking a patch out writes its files anew, so the
+next patch's build first rebuilds what it broke; a configure starts from a fresh cache, so no
+cache variable a patch set outlives it.
 
 A test touches no hardware: what it needs from the hardware comes from a simulation or a
 recording. The tests (`tests/`, run by ctest) need the GPU and no camera. No frozen files yet.

@@ -20,7 +20,8 @@ its RealSense SLAM demo: https://youtu.be/5NcDEhguzGU). Agents start at [CLAUDE.
 
 ## Build
 
-Needs CUDA 12 (12.6 tested), CMake 3.18+, OpenCV 4. Then:
+Needs CUDA 12 (12.6 tested), CMake 3.18+, OpenCV 4 and ccache (CODING_STANDARDS.md, "Tools").
+Then:
 
     tools/fetch_deps.sh     # OrbbecSDK v2 and Eigen into ~/.local/share/3dscanner
     tools/build.sh          # build/

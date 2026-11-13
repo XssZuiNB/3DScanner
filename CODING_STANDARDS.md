@@ -39,3 +39,9 @@ deviation. This document adds what the guides leave to the project.
 
 clang-format and shellcheck come from PyPI into `~/.local/bin`, no root:
 `pip3 install --user clang-format==18.1.8 shellcheck-py==0.10.0.1`.
+
+ccache 4.5.1 [M 2026-11-13: `ccache --version`] caches every compile of `tools/build.sh`,
+`tools/verify.sh` and `tools/run_mutant.sh`, and each of them stops without it. It comes from
+apt, which needs root, so the user installs it: `sudo apt install ccache`. The cache is
+ccache's default, `~/.cache/ccache`, at most 5 GB [M 2026-11-13: `ccache -p`]; the tools'
+settings for it are in AGENTS.md §4.

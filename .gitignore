@@ -1,8 +1,9 @@
 # The tracker's working files (docs/agents/issue-tracker.md)
 .scratch/
 
-# Build output
+# Build output: tools/build.sh's, and tools/verify.sh's fresh builds
 build/
+/verify-build.*/
 
 # Data recorded on the hardware stays out of the tree (AGENTS.md §2, "Privacy"):
 # orbbec_viewer's snapshots.

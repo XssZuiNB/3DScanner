@@ -6,24 +6,38 @@
 # A check nobody has seen fail is not a check. A mutant is a patch, as `git
 # diff` writes it (paths from the repository's root), that makes the mistake a
 # check is meant to catch. This copies the working tree, its uncommitted
-# changes and new files included, and requires tools/verify.sh to pass there
-# unpatched. Then, for each patch in turn, it applies the patch, runs
-# tools/verify.sh within a time limit, reports the mutant caught or survived,
-# and takes the patch back out. The working tree is only read.
+# changes and new files included, and requires tools/verify.sh --incremental to
+# pass there unpatched: the copy's one full build, into its build/, mostly
+# ccache's hits from the working tree's builds (tools/build_common.sh). Then,
+# for each patch in turn, it applies the patch, runs tools/verify.sh
+# --incremental again (the checkers, a configure on a fresh cache when a build
+# file changed, the rebuild of what the patch touched, every test), within
+# time limits, reports the mutant caught or survived, and takes the patch back
+# out. Taking a patch out writes its files anew, so the next patch's build
+# rebuilds whatever the patch left broken before that patch is judged. The
+# working tree is only read.
 
 set -u
 
-# A patched run's time limit: this many times the unpatched run's time, and
-# at least this many seconds. A mutant can make a check loop forever.
+# A patched run's time limit for each test: this many times the unpatched
+# run's time, and at least this many seconds. A mutant can make a test loop
+# forever.
 readonly LIMIT_FACTOR=3
 readonly LIMIT_FLOOR_S=60
+# The bound on the rest of a run, the configure and the build above all, which
+# a mutant can make hang too: 3 times a verify with an empty ccache
+# [M 2026-11-13: 196 s]. The unpatched run's time cannot set it: from ccache's
+# hits it says nothing about how long a patched rebuild takes.
+readonly BUILD_LIMIT_S=600
+
+# shellcheck source=tools/build_common.sh
+source "$(dirname "$0")/build_common.sh" || exit 2
 
 #######################################
-# Copies the working tree's files, tracked and untracked but not ignored, as
-# they are in the working tree. Ignored files (the build, recordings) and .git
-# are not copied.
+# Copies the working tree's files (tree_files) as they are in the working
+# tree.
 # Globals:
-#   tmp: the run's scratch directory (read).
+#   None
 # Arguments:
 #   $1: the repository.
 #   $2: the copy's directory.
@@ -35,11 +49,8 @@ readonly LIMIT_FLOOR_S=60
 copy_tree() {
   local -a status
   mkdir -p "$2" || return 1
-  git -C "$1" ls-files -z --cached --others --exclude-standard \
-    | LC_ALL=C sort -zu >"${tmp}/files"
-  git -C "$1" ls-files -z --deleted | LC_ALL=C sort -zu >"${tmp}/deleted"
-  LC_ALL=C comm -z -23 "${tmp}/files" "${tmp}/deleted" \
-    | tar -C "$1" --null -T - -cf - | tar -C "$2" -xf -
+  tree_files "$1" | tar -C "$1" --null --no-recursion -T - -cf - \
+    | tar -C "$2" -xf -
   status=("${PIPESTATUS[@]}")
   if ((status[0] != 0 || status[1] != 0 || status[2] != 0)); then
     echo "run_mutant: the working tree could not be copied" >&2
@@ -66,28 +77,30 @@ apply_in_copy() {
 }
 
 #######################################
-# Runs tools/verify.sh in the copy, within a time limit. timeout(1) runs it in
-# a process group of its own and, when the limit expires, signals the whole
-# group; what has not ended 10 s after the TERM gets a KILL. The check's
-# scratch files go to ${tmp}/scratch, so a check killed there leaves nothing
-# behind.
+# Runs tools/verify.sh --incremental in the copy, each test within its limit
+# and the whole run within BUILD_LIMIT_S more. timeout(1) runs it in a process
+# group of its own and, when the limit expires, signals the whole group; what
+# has not ended 10 s after the TERM gets a KILL. The check's scratch files go
+# to ${tmp}/scratch, so a check killed there leaves nothing behind.
 # Globals:
+#   BUILD_LIMIT_S: the bound on the rest of the run (read).
 #   tmp: the run's scratch directory (read).
 #   group: the running check's process group, while it runs (set).
 # Arguments:
-#   $1: the time limit in seconds; 0 for none.
+#   $1: each test's time limit in seconds; 0 for none.
 # Outputs:
 #   The check's STDOUT to ${tmp}/verify.log, its STDERR to ${tmp}/verify.err.
 # Returns:
-#   tools/verify.sh's exit status; 124, or 137 after the KILL, when the limit
-#   expired.
+#   tools/verify.sh's exit status; 124, or 137 after the KILL, when the whole
+#   run's limit expired.
 #######################################
 verify_in_copy() {
   local status
   (
     cd "${tmp}/tree" || exit 2
     export TMPDIR="${tmp}/scratch" GIT_CEILING_DIRECTORIES="${tmp}"
-    exec timeout --kill-after=10 "$1" tools/verify.sh
+    exec timeout --kill-after=10 $(($1 + BUILD_LIMIT_S)) \
+      tools/verify.sh --incremental --test-timeout "$1"
   ) </dev/null >"${tmp}/verify.log" 2>"${tmp}/verify.err" &
   group=$!
   wait "${group}"
@@ -97,8 +110,10 @@ verify_in_copy() {
 }
 
 #######################################
-# Prints why the last check failed: the first lines it wrote to STDERR, or,
-# when it wrote none there, the last lines of its STDOUT.
+# Prints why the last check failed: the first lines it wrote to STDERR (the
+# lines that name the failure: the checkers' findings, the configure's or the
+# build's errors, a failed test's lines), or, when it wrote none there, the
+# last lines of its STDOUT.
 # Globals:
 #   tmp: the run's scratch directory (read).
 # Arguments:
@@ -123,7 +138,7 @@ print_failed() {
 }
 
 #######################################
-# Prints the time limit of a patched run.
+# Prints the time limit of each test in a patched run.
 # Globals:
 #   LIMIT_FACTOR, LIMIT_FLOOR_S: the limit's rule (read).
 # Arguments:
@@ -141,7 +156,9 @@ time_limit() {
 #######################################
 # Runs one mutant on the copy and reports it.
 # Globals:
-#   limit: the patched run's time limit (read).
+#   limit: each test's time limit in a patched run (read).
+#   BUILD_LIMIT_S: the bound on the rest of the run (read).
+#   tmp: the run's scratch directory (read).
 # Arguments:
 #   $1: the patch, an absolute path.
 #   $2: its name, for the report.
@@ -160,15 +177,19 @@ run_one() {
   fi
   verify_in_copy "${limit}"
   status=$?
-  if ((status == 124 || status == 137)); then
-    echo "caught by the time limit: $2: verify ran past ${limit} s"
-    print_failed
-  elif ((status != 0)); then
-    echo "caught by verify: $2"
-    print_failed
-  else
+  if ((status == 0)); then
     echo "survived: $2: verify passes with it"
     verdict=1
+  elif ((status == 124 || status == 137)); then
+    echo "caught by the time limit: $2: verify ran past" \
+      "$((limit + BUILD_LIMIT_S)) s"
+    print_failed
+  elif grep -q -F '***Timeout' "${tmp}/verify.err"; then
+    echo "caught by the time limit: $2: a test ran past ${limit} s"
+    print_failed
+  else
+    echo "caught by verify: $2"
+    print_failed
   fi
   if ! apply_in_copy "$1" -R; then
     echo "run_mutant: $2 cannot be taken out of the copy again" >&2
@@ -201,7 +222,7 @@ clean_up() {
 #######################################
 # Runs each patch as a mutant on a scratch copy of the working tree.
 # Globals:
-#   limit: the patched run's time limit (set).
+#   limit: each test's time limit in a patched run (set).
 #   group: the running check's process group (set).
 #   tmp: the run's scratch directory, removed on exit (set).
 # Arguments:
@@ -211,8 +232,8 @@ clean_up() {
 #   STDOUT; errors to STDERR.
 # Returns:
 #   Exits 0 when every mutant is caught, 1 when one survives, and 2 when a
-#   patch does not apply, the unpatched copy fails verify, or the run is
-#   interrupted.
+#   patch does not apply, a tool is missing, the unpatched copy fails verify,
+#   or the run is interrupted.
 #######################################
 main() {
   local repo patch path survived=0 status start verify_s
@@ -222,6 +243,7 @@ main() {
     echo "usage: ${0##*/} <patch>..." >&2
     exit 2
   fi
+  require_ccache run_mutant
   repo="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 2
   for patch in "$@"; do
     if ! path="$(realpath -e -- "${patch}")" \
@@ -254,7 +276,8 @@ main() {
   verify_s=$((SECONDS - start))
   limit="$(time_limit "${verify_s}")"
   echo "run_mutant: a copy of the working tree passes verify in" \
-    "${verify_s} s; a patched verify may take ${limit} s"
+    "${verify_s} s; in a patched verify a test may take ${limit} s, the" \
+    "whole verify $((limit + BUILD_LIMIT_S)) s"
 
   for patch in "${patches[@]}"; do
     run_one "${patch}" "${patch##*/}"
