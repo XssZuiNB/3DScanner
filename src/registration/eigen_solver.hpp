@@ -1,20 +1,10 @@
 #pragma once
 
-#include "util/math.cuh"
-
+#include <Eigen/Cholesky>
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
-namespace Eigen
-{
-using Matrix6f = Eigen::Matrix<float, 6, 6>;
-using Vector6f = Eigen::Matrix<float, 6, 1>;
-
-using Matrix6d = Eigen::Matrix<double, 6, 6>;
-using Vector6d = Eigen::Matrix<double, 6, 1>;
-} // namespace Eigen
-
-static Eigen::Matrix4f transform_vec6d_to_mat4f(const Eigen::Vector6d &input)
+static Eigen::Matrix4f transform_vec6d_to_mat4f(const Eigen::Vector<double, 6> &input)
 {
     Eigen::Matrix4d output;
     output.setIdentity();
@@ -28,36 +18,20 @@ static Eigen::Matrix4f transform_vec6d_to_mat4f(const Eigen::Vector6d &input)
 
 namespace gca
 {
-inline mat4x4 solve_JTJ_JTr(const mat6x6 &JTJ, const mat6x1 &JTr)
+inline Eigen::Matrix4f solve_JTJ_JTr(const Eigen::Matrix<float, 6, 6> &JTJ,
+                                     const Eigen::Vector<float, 6> &JTr)
 {
-    // JTJ is Symmetric Matrix. Therefore, eventhough Eigen matrix is column-major and mine is
-    // Row-major, it can also work.
-    Eigen::Matrix6f JTJ_f(JTJ.ptr());
-    Eigen::Vector6f JTr_f(JTr.ptr());
-
-    Eigen::Matrix6d JTJ_d(JTJ_f.cast<double>());
-    Eigen::Vector6d JTr_d(JTr_f.cast<double>());
+    const Eigen::Matrix<double, 6, 6> JTJ_d = JTJ.cast<double>();
+    const Eigen::Vector<double, 6> JTr_d = JTr.cast<double>();
 
     // equation 21 in paper of color icp
-    Eigen::LDLT<Eigen::Matrix6d> ldlt(JTJ_d);
+    const Eigen::LDLT<Eigen::Matrix<double, 6, 6>> ldlt(JTJ_d);
     if (ldlt.info() != Eigen::Success)
     {
-        return mat4x4::get_identity();
+        return Eigen::Matrix4f::Identity();
     }
 
-    Eigen::Vector6d se3_vec(ldlt.solve(-JTr_d));
-    Eigen::Matrix4f SE3_matrix_eigen = transform_vec6d_to_mat4f(se3_vec);
-
-    mat4x4 SE3_matrix;
-
-    for (size_t i = 0; i < 4; i++)
-    {
-        for (size_t j = 0; j < 4; j++)
-        {
-            SE3_matrix(i, j) = SE3_matrix_eigen(i, j);
-        }
-    }
-
-    return SE3_matrix;
+    const Eigen::Vector<double, 6> se3_vec = ldlt.solve(-JTr_d);
+    return transform_vec6d_to_mat4f(se3_vec);
 }
 } // namespace gca

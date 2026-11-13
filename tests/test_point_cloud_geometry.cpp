@@ -3,9 +3,9 @@
 /// Offline test of gca::point_cloud's geometry on synthetic clouds uploaded with
 /// create_from_points(): transform() moves points, normals and bounds by a known rigid
 /// transform; estimate_normals() finds the analytic normals of a tilted plane and of a sphere,
-/// oriented as the code orients them today; voxel_grid_down_sample() gives the known voxel
-/// centroids and count. Each run prints the measured maxima with their tolerances. Needs the
-/// GPU, no camera.
+/// oriented as the code orients them today, and of the plane x = y, where the eigensolver meets
+/// exact ties; voxel_grid_down_sample() gives the known voxel centroids and count. Each run
+/// prints the measured maxima with their tolerances. Needs the GPU, no camera.
 
 #include "check.hpp"
 #include "geometry/point_cloud.hpp"
@@ -34,7 +34,7 @@ using gca_test::plane_normal;
 using gca_test::rigid_transform;
 using gca_test::rotate_direction;
 using gca_test::scale;
-using gca_test::to_mat4x4;
+using gca_test::to_matrix4f;
 using gca_test::to_vec3;
 using gca_test::transform_point;
 using gca_test::vec3;
@@ -153,10 +153,11 @@ std::optional<normal_errors> compare_normals(const std::vector<gca::point_t> &po
     return errors;
 }
 
-/// The tolerance of | |n| - 1 |: 8 float steps [S: float32 ulp]. Today's maxima are 3.04e-7
-/// (2.6 steps) on the plane and 1.07e-7 on the sphere [M 2026-11-13, b5c70dc]: the eigensolver
-/// normalizes a cross product of two computed eigenvectors, and another normalization path
-/// rounds by a few steps more or less.
+/// The tolerance of | |n| - 1 |: 8 float steps [S: float32 ulp]. The maxima it was set from are
+/// 3.04e-7 (2.6 steps) on the plane and 1.07e-7 on the sphere [M 2026-11-13, b5c70dc]; after
+/// replace-math-cuh-with-eigen 3.04e-7 on the plane, 1.17e-7 on the sphere and 2.78e-7 on the
+/// mirror plane [M 2026-11-13]: the eigensolver normalizes a cross product of two computed
+/// eigenvectors, and another normalization path rounds by a few steps more or less.
 constexpr double normal_length_tolerance = 8 * float_step;
 
 /// estimate_normals() on the tilted plane gives the plane's normal everywhere, flipped toward
@@ -179,10 +180,7 @@ void test_normals_plane()
 }
 
 /// estimate_normals() on the sphere gives the radial direction, flipped toward the camera. Its
-/// neighbourhoods take every orientation, so the max_coeff tie of plane_normal()'s comment can
-/// occur where a normal's two largest components have equal magnitude: a less accurate normal,
-/// and NaN where the returned entry is 0, which the finite check catches. No normal is NaN today
-/// [M 2026-11-13].
+/// neighbourhoods take every orientation.
 void test_normals_sphere()
 {
     // The equator band |n_z| < 0.2 reaches 11.5 degrees on each side of the equator (asin 0.2 [S:
@@ -208,6 +206,57 @@ void test_normals_sphere()
     check_max_error("normals sphere: max | |n| - 1 |", errors->length, normal_length_tolerance);
 }
 
+/// The mirror plane's center in meters, a point of the plane x = y.
+constexpr vec3 mirror_plane_center = {0.3, 0.3, 1.0};
+
+/// Builds the mirror plane x = y: a square grid around mirror_plane_center along (1, 1, 0) and
+/// the z axis, plane_grid_spacing_m apart, every point's x and y the same float.
+/// @return the points.
+std::vector<gca::point_t> make_mirror_plane()
+{
+    const vec3 diagonal = normalized({1.0, 1.0, 0.0});
+    std::vector<gca::point_t> points;
+    for (int i = -plane_grid_half; i <= plane_grid_half; i++)
+    {
+        for (int j = -plane_grid_half; j <= plane_grid_half; j++)
+        {
+            const vec3 p =
+                add_scaled(add_scaled(mirror_plane_center, i * plane_grid_spacing_m, diagonal),
+                           j * plane_grid_spacing_m, {0.0, 0.0, 1.0});
+            points.push_back(make_point(p, gca::color3{0.5f, 0.5f, 0.5f}));
+        }
+    }
+    return points;
+}
+
+/// estimate_normals() on the mirror plane gives the plane's normal (1, -1, 0) / sqrt 2, either
+/// sign: n_z is 0, so noise decides the orientation and only the axis angle counts. Every point's
+/// x and y are the same float, so each neighbourhood's covariance is unchanged when x and y swap
+/// places, and so are the squared lengths of the cross products of its shifted rows from which
+/// the eigensolver takes the normal: the two largest can tie exactly, and the eigensolver has to
+/// divide by the length of the one it takes. An argmax that returned the x entry on a tie of y
+/// and z gave 1254 of these 1681 normals more than 1 degree off, up to 90 degrees [M 2026-11-13,
+/// 2fefa86].
+void test_normals_mirror_plane()
+{
+    // 8 float steps in radians, 5.5e-5 degrees [S: float32 ulp]. The maximum is 2.66e-5 degrees,
+    // 3.9 steps [M 2026-11-13], rounding: a covariance unchanged by the swap has (1, -1, 0) as an
+    // exact eigenvector however its moments round [S], so only the eigensolver's rounding is
+    // left. The tie the check guards against turns a normal by up to 90 degrees.
+    constexpr double angle_tolerance_deg = 8 * float_step * 180.0 / M_PI;
+    const std::optional<normal_errors> errors = compare_normals(
+        make_mirror_plane(), [](const vec3 &) { return normalized({1.0, -1.0, 0.0}); }, 1.0);
+    check(errors.has_value(), "normals mirror plane: one normal per point");
+    if (!errors)
+        return;
+    check(errors->all_nonzero, "normals mirror plane: no zero normal");
+    check(errors->all_toward_camera, "normals mirror plane: every normal has n_z <= 0");
+    check_max_error("normals mirror plane: max axis angle (deg)", errors->axis_angle_deg,
+                    angle_tolerance_deg);
+    check_max_error("normals mirror plane: max | |n| - 1 |", errors->length,
+                    normal_length_tolerance);
+}
+
 /// transform() moves every point of the plane to R p + t, turns its normal to R n, keeps the
 /// colors and properties, and leaves the cloud's bounds those of the moved points (the normals
 /// estimated first made the cloud cache its bounds). The plane stays positive on every axis:
@@ -215,9 +264,10 @@ void test_normals_sphere()
 /// 2026-11-13].
 void test_transform()
 {
-    // 4 float steps at 1 m for positions and bounds, 4 for unit normals [S: float32 ulp]. Today's
-    // maxima on this board [M 2026-11-13, b5c70dc]: positions 7.9e-8 m, normals 5.89e-8,
-    // bounds 2.14e-8 m.
+    // 4 float steps at 1 m for positions and bounds, 4 for unit normals [S: float32 ulp]. The
+    // maxima they were set from [M 2026-11-13, b5c70dc]: positions 7.9e-8 m, normals 5.89e-8,
+    // bounds 2.14e-8 m; after replace-math-cuh-with-eigen [M 2026-11-13]: positions 1.14e-7 m,
+    // normals 8.68e-8, bounds 2.14e-8 m.
     constexpr double position_tolerance_m = 4 * float_step;
     constexpr double normal_tolerance = 4 * float_step;
     const std::vector<gca::point_t> before = make_plane();
@@ -226,7 +276,7 @@ void test_transform()
     const std::vector<float3> normals_before = cloud->download_normals();
     const rigid_transform transform =
         make_rigid_transform({1.0, 2.0, 3.0}, 30.0 * M_PI / 180.0, {0.1, 0.2, -0.05});
-    cloud->transform(to_mat4x4(transform));
+    cloud->transform(to_matrix4f(transform));
     const std::vector<gca::point_t> after = cloud->download();
     const std::vector<float3> normals_after = cloud->download_normals();
 
@@ -394,6 +444,7 @@ int main()
     test_transform();
     test_normals_plane();
     test_normals_sphere();
+    test_normals_mirror_plane();
     test_voxel_down_sample();
     return check_summary("test_point_cloud_geometry");
 }

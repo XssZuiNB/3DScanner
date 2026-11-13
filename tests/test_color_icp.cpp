@@ -30,6 +30,8 @@
 #include <string>
 #include <vector>
 
+#include <Eigen/Core>
+
 using gca_test::add_scaled;
 using gca_test::check;
 using gca_test::check_max_error;
@@ -37,7 +39,7 @@ using gca_test::check_summary;
 using gca_test::distance;
 using gca_test::dot;
 using gca_test::float_step;
-using gca_test::from_mat4x4;
+using gca_test::from_matrix4f;
 using gca_test::make_plane_axes;
 using gca_test::make_plane_grid;
 using gca_test::make_point;
@@ -136,8 +138,8 @@ moved_source move_source(const std::vector<gca::point_t> &source,
 /// @param target the target, its normals estimated.
 /// @return the transform align() recovered, which moves the source onto the target, or nothing
 ///     when align() failed.
-std::optional<mat4x4> align_source(const std::shared_ptr<const gca::point_cloud> &source,
-                                   const std::shared_ptr<const gca::point_cloud> &target)
+std::optional<Eigen::Matrix4f> align_source(const std::shared_ptr<const gca::point_cloud> &source,
+                                            const std::shared_ptr<const gca::point_cloud> &target)
 {
     gca::color_icp icp(icp_max_iterations, icp_max_correspondence_m, icp_color_gradient_radius_m);
     icp.set_source_point_cloud(source);
@@ -161,7 +163,7 @@ struct alignment_error
 /// @param known the transform the source was moved by.
 /// @param target the target's points.
 /// @return the comparison.
-alignment_error compare_alignment(const mat4x4 &recovered, const rigid_transform &known,
+alignment_error compare_alignment(const Eigen::Matrix4f &recovered, const rigid_transform &known,
                                   const std::vector<gca::point_t> &target)
 {
     alignment_error error;
@@ -172,7 +174,7 @@ alignment_error compare_alignment(const mat4x4 &recovered, const rigid_transform
     error.homogeneous = finite && recovered(3, 0) == 0.0f && recovered(3, 1) == 0.0f &&
                         recovered(3, 2) == 0.0f && recovered(3, 3) == 1.0f;
 
-    const rigid_transform back = from_mat4x4(recovered);
+    const rigid_transform back = from_matrix4f(recovered);
     // E's rotation, column by column, and its angle from the skew part and the trace, accurate at
     // small angles where acos is not.
     const vec3 x = rotate_direction(back, rotate_direction(known, {1.0, 0.0, 0.0}));
@@ -237,7 +239,7 @@ void check_alignment(const std::string &name, const std::shared_ptr<gca::point_c
                     moved.partner_distance_m, icp_max_correspondence_m);
     check(moved.all_positive, (name + ": the moved source positive on every axis").c_str());
 
-    const std::optional<mat4x4> recovered =
+    const std::optional<Eigen::Matrix4f> recovered =
         align_source(gca::point_cloud::create_from_points(moved.points), target);
     check(recovered.has_value(), (name + ": align() succeeded").c_str());
     if (!recovered)
@@ -265,11 +267,12 @@ rigid_transform fixture_transform()
                                {0.006, -0.004, 0.003});
 }
 
-/// The fixture case's tolerances, 3 times today's errors, 2.25e-4 degrees and 1.05e-5 m [M
-/// 2026-11-13, library at 2d6eaa2, the same over 3 runs]. Those errors are not rounding but what
-/// Gauss-Newton leaves after the step that met align()'s stop rule (a step below 1 mm and 0.081
-/// degrees), so they depend on where that rule fires: of 15 transforms around this one (0.8 to
-/// 1.2 degrees, the shift scaled by 0.8 to 1.25, this one included), 10 end with such a
+/// The fixture case's tolerances, 3 times the errors they were set from, 2.25e-4 degrees and
+/// 1.05e-5 m [M 2026-11-13, library at 2d6eaa2, the same over 3 runs]; after
+/// replace-math-cuh-with-eigen 2.25e-4 degrees and 1.06e-5 m [M 2026-11-13]. Those errors are not
+/// rounding but what Gauss-Newton leaves after the step that met align()'s stop rule (a step below
+/// 1 mm and 0.081 degrees), so they depend on where that rule fires: of 15 transforms around this
+/// one (0.8 to 1.2 degrees, the shift scaled by 0.8 to 1.25, this one included), 10 end with such a
 /// remainder, 1.03e-5 to 1.74e-5 m and 2.25e-4 to 4.44e-4 degrees, and 5 at rounding level,
 /// 1.4e-7 to 3.5e-7 m and 1.0e-6 to 3.3e-6 degrees, presumably one step later [M 2026-11-13; ?:
 /// the iterations are not visible]. Undone by nothing, the move leaves 1 degree and up to 28 mm.
@@ -378,9 +381,10 @@ rigid_transform textured_plane_transform()
 }
 
 /// The textured-plane case's tolerances: 8 float steps [S: float32 ulp], 9.5e-7 rad (5.5e-5
-/// degrees) for the angle and 9.5e-7 m for points below 2 m. Today's errors are rounding:
-/// 1.22e-5 degrees (1.8 steps) and 7.4e-8 m (0.6 steps) [M 2026-11-13, library at 2d6eaa2, the
-/// same over 3 runs]; 18 transforms around this one (0 to 0.7 degrees, the shift scaled by 0.8 to
+/// degrees) for the angle and 9.5e-7 m for points below 2 m. The errors they were set from are
+/// rounding: 1.22e-5 degrees (1.8 steps) and 7.4e-8 m (0.6 steps) [M 2026-11-13, library at
+/// 2d6eaa2, the same over 3 runs]; after replace-math-cuh-with-eigen 8.49e-6 degrees and 8.5e-8 m
+/// [M 2026-11-13]; 18 transforms around this one (0 to 0.7 degrees, the shift scaled by 0.8 to
 /// 1.25) end within 2.0e-5 degrees (3.0 steps) and 5.1e-7 m (4.3 steps) [M 2026-11-13]. Undone
 /// by nothing, the move leaves 0.5 degrees and up to 6.1 mm.
 constexpr alignment_tolerance textured_plane_tolerance = {8 * float_step * 180.0 / M_PI,
@@ -392,10 +396,11 @@ constexpr alignment_tolerance textured_plane_tolerance = {8 * float_step * 180.0
 constexpr double resample_offset_u = 0.3;
 constexpr double resample_offset_v = 0.15;
 
-/// The resampled case's tolerances, 3 times today's errors, 0.0119 degrees and 2.04e-4 m [M
-/// 2026-11-13, library at 2d6eaa2, the same over 3 runs]. Those errors are no convergence
-/// remainder: all 18 transforms around this one (0 to 0.7 degrees, the shift scaled by 0.8 to
-/// 1.25) end at the same errors [M 2026-11-13], presumably the bias of a color model whose
+/// The resampled case's tolerances, 3 times the errors they were set from, 0.0119 degrees and
+/// 2.04e-4 m [M 2026-11-13, library at 2d6eaa2, the same over 3 runs]; after
+/// replace-math-cuh-with-eigen 0.0119 degrees and 2.06e-4 m [M 2026-11-13]. Those errors are no
+/// convergence remainder: all 18 transforms around this one (0 to 0.7 degrees, the shift scaled by
+/// 0.8 to 1.25) end at the same errors [M 2026-11-13], presumably the bias of a color model whose
 /// gradients are fitted flatter than the texture's (texture_waves' comment), which leaves color
 /// residuals at the known transform where the source's points lie between the target's [?]. With
 /// the gradients doubled (Atb doubled in cuda_compute_color_gradient.cu), the same 18 end at

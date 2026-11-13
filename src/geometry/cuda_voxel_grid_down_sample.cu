@@ -4,7 +4,6 @@
 #include "geometry/type.hpp"
 #include "util/cuda_util.cuh"
 #include "util/float3_ops.cuh"
-#include "util/math.cuh"
 
 #include <cuda.h>
 #include <cuda_runtime.h>

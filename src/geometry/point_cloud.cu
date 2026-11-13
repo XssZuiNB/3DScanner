@@ -40,7 +40,7 @@ std::vector<float3> point_cloud::download_normals() const
     return temp;
 }
 
-void point_cloud::transform(const mat4x4 &trans_mat)
+void point_cloud::transform(const Eigen::Matrix4f &trans_mat)
 {
     cuda_transform_point(m_points, trans_mat);
     if (m_has_bound)

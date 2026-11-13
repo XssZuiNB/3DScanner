@@ -11,6 +11,8 @@
 #include <cmath>
 #include <vector>
 
+#include <Eigen/Core>
+
 namespace gca_test
 {
 /// A vector in double, for the analytic values.
@@ -121,18 +123,11 @@ inline bool positive_on_every_axis(const vec3 &p)
 }
 
 /// Returns the tests' plane's unit normal, pointing away from the camera (n_z > 0) so that the
-/// code has to flip it, and tilted off every axis with components of distinct magnitude, which
-/// keeps the eigensolver clear of two bugs [S]. An axis-aligned plane has a diagonal covariance,
-/// whose eigenvalues fast_eigen_val_vec.cuh:196-204 returns unsorted; compute_normal_functor's
-/// strict < then picks a wrong eigenvector if the smallest eigenvalue ties another. max_coeff
-/// (math.cuh:100) returns the x entry when the two largest of its three entries tie, and
-/// fast_eigen_val_vec.cuh:34 divides by that entry's root: a less accurate eigenvector, or NaN
-/// when the entry is 0. On a plane those entries, the squared cross products of the shifted
-/// covariance's rows, are proportional to the squared components of the eigenvector being
-/// solved for (the adjugate of a rank-2 symmetric matrix): the normal, components 0.28, 0.19 and
-/// 0.94, or, where a neighbourhood elongated along the edge of a grid along make_plane_axes()
-/// makes the solver start from the largest eigenvalue, the edge direction u (0, 0.98, 0.20) or
-/// v (0.96, 0.06, 0.28) in magnitude [S: computed from the inputs, 2026-11-13]; none has a tie.
+/// code has to flip it, and tilted off every axis, which keeps the eigensolver clear of a bug [S].
+/// An axis-aligned plane has a diagonal covariance, whose eigenvalues the eigensolver returns in
+/// the diagonal's order (fast_eigen_val_vec.cuh, solve_symmetric_eigen_3x3()), not sorted;
+/// compute_normal_functor's strict < then picks a wrong eigenvector if the smallest eigenvalue
+/// ties another.
 /// @return the normal.
 inline vec3 plane_normal()
 {
@@ -227,12 +222,12 @@ inline rigid_transform make_rigid_transform(const vec3 &axis, double angle_rad,
 /// Converts the transform to the library's 4x4 matrix.
 /// @param transform the transform.
 /// @return the homogeneous matrix [R t; 0 1].
-inline mat4x4 to_mat4x4(const rigid_transform &transform)
+inline Eigen::Matrix4f to_matrix4f(const rigid_transform &transform)
 {
-    mat4x4 m;
-    for (unsigned int i = 0; i < 3; i++)
+    Eigen::Matrix4f m;
+    for (int i = 0; i < 3; i++)
     {
-        for (unsigned int j = 0; j < 3; j++)
+        for (int j = 0; j < 3; j++)
             m(i, j) = transform.rotation[i][j];
         m(i, 3) = transform.translation[i];
         m(3, i) = 0.0f;
@@ -244,7 +239,7 @@ inline mat4x4 to_mat4x4(const rigid_transform &transform)
 /// Converts the library's 4x4 matrix to a rigid transform; the last row is left to the caller.
 /// @param m the homogeneous matrix [R t; 0 1].
 /// @return R and t, as the matrix holds them.
-inline rigid_transform from_mat4x4(const mat4x4 &m)
+inline rigid_transform from_matrix4f(const Eigen::Matrix4f &m)
 {
     rigid_transform transform{};
     for (int i = 0; i < 3; i++)

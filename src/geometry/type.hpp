@@ -1,10 +1,9 @@
 #pragma once
 
-#include "util/math.cuh"
-
+#include <cstdint>
 #include <iostream>
 
-#include <vector_types.h>
+#include <cuda_runtime.h>
 
 namespace gca
 {

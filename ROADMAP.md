@@ -12,10 +12,10 @@ document that owns the fact.
 Spec: `.scratch/cleanup/spec.md`, from the inventory (`.scratch/cleanup/inventory.md`) and
 the user's decisions of 2026-11-13. In order, each step done when `tools/verify.sh` passes:
 offline tests on the library's public API; the dead code, RealSense and PCL deleted
-(`data/frag_115.ply` and `frag_116.ply` stay as fixtures); `src/util/math.cuh` replaced by
-Eigen and the tree's own `float3` operators; one static library per module; AGENTS.md §7
-and a warning set for the code that stays. Done when, on the user's go, `orbbec_viewer` still
-runs at 30 fps with the timings of docs/HARDWARE.md.
+(`data/frag_115.ply` and `frag_116.ply` stay as fixtures); the CC BY-NC-SA matrix header
+replaced by Eigen and the tree's own `float3` operators; one static library per module;
+AGENTS.md §7 and a warning set for the code that stays. Done when, on the user's go,
+`orbbec_viewer` still runs at 30 fps with the timings of docs/HARDWARE.md.
 
 ## 2. The rewrite's requirements (decision)
 
@@ -24,9 +24,8 @@ on the scanner: what it scans (objects, rooms), how the camera moves (hand, turn
 the object is separated from the background (depth range, the table or turntable plane,
 clusters), what it delivers (point cloud, mesh, which format), accuracy and speed, where it
 runs and who works it, and which parts of CUDA_3D carry over (its algorithms and
-`gca::device`). Fixed already: `src/util/math.cuh` is CC BY-NC-SA 3.0 (README.md,
-"License") and is replaced, not carried over. Done when the user has checked the list and
-`/to-spec` has turned it into a spec.
+`gca::device`). Done when the user has checked the list and `/to-spec` has turned it into a
+spec.
 
 ## Candidates, once measured
 

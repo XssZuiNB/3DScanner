@@ -40,7 +40,5 @@ Once per machine, as root: the Orbbec udev rule, from the SDK
 
 [0BSD](LICENSE), except:
 
-* `src/util/math.cuh` comes from VoxelHashing and is CC BY-NC-SA 3.0: attribution,
-  **non-commercial**, share-alike. The rewrite replaces it (ROADMAP.md).
 * The workflow skills in `.claude/skills/` are MIT (`.claude/skills/LICENSE-mattpocock-skills`).
 * `data/`: Open3D test data [?], license unchecked.

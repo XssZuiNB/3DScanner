@@ -1,206 +1,190 @@
+// SPDX-License-Identifier: 0BSD
+/// @file fast_eigen_val_vec.cuh
+/// The closed-form eigendecomposition of a symmetric 3x3 matrix in device code, after D. Eberly,
+/// "A Robust Eigensolver for 3 x 3 Symmetric Matrices", Geometric Tools,
+/// https://www.geometrictools.com/Documentation/RobustEigenSymmetric3x3.pdf: the matrix scaled
+/// by its largest entry, the eigenvalues from the trigonometric solution of its characteristic
+/// cubic, the eigenvector of the eigenvalue farthest from the other two from the cross products
+/// of the shifted matrix's rows, a second one in the plane orthogonal to it, the third their
+/// cross product.
+
 #pragma once
 
-#include "util/float3_ops.cuh"
-#include "util/math.cuh"
+#include <Eigen/Core>
+#include <Eigen/Geometry>
 
-#include <cuda.h>
 #include <cuda_runtime.h>
-#include <cuda_runtime_api.h>
-#include <thrust/pair.h>
-#include <thrust/tuple.h>
 
-// The document
-// https://www.geometrictools.com/Documentation/RobustEigenSymmetric3x3.pdf
-// describes algorithms for solving the eigensystem associated with a 3x3
-// symmetric！！！ real-valued matrix.
-
-__forceinline__ __device__ static float3 __compute_eigenvector_1(const float3x3 &A, float eval1)
+namespace gca
 {
-    float3 row1 = make_float3(A.m11 - eval1, A.m12, A.m13);
-    float3 row2 = make_float3(A.m12, A.m22 - eval1, A.m23);
-    float3 row3 = make_float3(A.m13, A.m23, A.m33 - eval1);
+/// The eigenvalues and unit eigenvectors of a symmetric 3x3 matrix.
+struct symmetric_eigen_3x3
+{
+    /// The eigenvalues in ascending order; for a diagonal matrix, its diagonal entries in their
+    /// order, unsorted.
+    Eigen::Vector3f values;
+    /// Column k: a unit eigenvector of values(k); the columns are orthonormal.
+    Eigen::Matrix3f vectors;
+};
 
-    float3 rxr[3];
-    rxr[0] = cross(row1, row2);
-    rxr[1] = cross(row1, row3);
-    rxr[2] = cross(row2, row3);
+/// Computes the unit eigenvector of a symmetric matrix for an eigenvalue of multiplicity one.
+/// The rows of a - value I then span the plane orthogonal to the eigenvector, so the cross
+/// product of two of them is parallel to it; the longest of the three is the most robust [S:
+/// Eberly, section 5.2]. Among equally long ones it takes the first, whose length is the one it
+/// divides by.
+/// @param a the matrix, symmetric.
+/// @param value the eigenvalue.
+/// @return the eigenvector.
+__device__ __forceinline__ Eigen::Vector3f eigenvector_from_rows(const Eigen::Matrix3f &a,
+                                                                 float value)
+{
+    Eigen::Matrix3f shifted = a;
+    shifted.diagonal().array() -= value;
+    const Eigen::Vector3f row0 = shifted.row(0).transpose();
+    const Eigen::Vector3f row1 = shifted.row(1).transpose();
+    const Eigen::Vector3f row2 = shifted.row(2).transpose();
 
-    float3 d;
-    d.x = dot(rxr[0], rxr[0]);
-    d.y = dot(rxr[1], rxr[1]);
-    d.z = dot(rxr[2], rxr[2]);
+    Eigen::Matrix3f products;
+    products.col(0) = row0.cross(row1);
+    products.col(1) = row0.cross(row2);
+    products.col(2) = row1.cross(row2);
+    const Eigen::Vector3f squared_lengths(products.col(0).squaredNorm(),
+                                          products.col(1).squaredNorm(),
+                                          products.col(2).squaredNorm());
 
-    int imax;
-    auto max_d = max_coeff(d, imax);
-    return rxr[imax] / sqrtf(max_d);
+    Eigen::Index longest;
+    const float longest_squared_length = squared_lengths.maxCoeff(&longest);
+    return products.col(longest) / sqrtf(longest_squared_length);
 }
 
-__forceinline__ __device__ static float3 __compute_eigenvector_2(const float3x3 &A,
-                                                                 const float3 &evec1, float eval2)
+/// Computes a unit eigenvector of a symmetric matrix orthogonal to a known one: it lies in the
+/// plane spanned by an orthonormal pair u, v orthogonal to the known eigenvector, where it solves
+/// the 2x2 eigenproblem of a restricted to that plane.
+/// @param a the matrix, symmetric.
+/// @param known a unit eigenvector of a.
+/// @param value the eigenvalue of the eigenvector sought.
+/// @return the eigenvector; u when the restricted problem is zero or NaN.
+__device__ __forceinline__ Eigen::Vector3f eigenvector_orthogonal_to(const Eigen::Matrix3f &a,
+                                                                     const Eigen::Vector3f &known,
+                                                                     float value)
 {
-    float max_evec1_abs = fmax(fabs(evec1.x), fabs(evec1.y));
-    float inv_length = 1.0f / sqrtf(max_evec1_abs * max_evec1_abs + evec1.z * evec1.z);
+    const float abs_x = fabsf(known(0));
+    const float abs_y = fabsf(known(1));
+    const float larger = fmaxf(abs_x, abs_y);
+    const float inv_length = 1.0f / sqrtf(larger * larger + known(2) * known(2));
+    Eigen::Vector3f u = abs_x > abs_y ? Eigen::Vector3f(-known(2), 0.0f, known(0))
+                                      : Eigen::Vector3f(0.0f, known(2), -known(1));
+    u *= inv_length;
+    const Eigen::Vector3f v = known.cross(u);
+    const Eigen::Vector3f au = a * u;
+    const Eigen::Vector3f av = a * v;
 
-    float3 U = (fabs(evec1.x) > fabs(evec1.y)) ? make_float3(-evec1.z, 0, evec1.x)
-                                               : make_float3(0, evec1.z, -evec1.y);
-
-    U *= inv_length;
-
-    float3 V = cross(evec1, U);
-
-    float3 AU = A * U;
-
-    float3 AV = A * V;
-
-    float m00 = dot(U, AU) - eval2;
-    float m01 = dot(U, AV);
-    float m11 = dot(V, AV) - eval2;
-
-    float abs_m00 = fabs(m00);
-    float abs_m01 = fabs(m01);
-    float abs_m11 = fabs(m11);
-
-    float max_abs_comp;
+    // The restricted problem [m00 m01; m01 m11] (s, t) = 0; the eigenvector is s u + t v.
+    float m00 = u.dot(au) - value;
+    float m01 = u.dot(av);
+    float m11 = v.dot(av) - value;
+    const float abs_m00 = fabsf(m00);
+    const float abs_m01 = fabsf(m01);
+    const float abs_m11 = fabsf(m11);
     if (abs_m00 >= abs_m11)
     {
-        max_abs_comp = fmax(abs_m00, abs_m01);
-        if (max_abs_comp > 0.0f)
+        if (!(fmaxf(abs_m00, abs_m01) > 0.0f))
         {
-            if (abs_m00 >= abs_m01)
-            {
-                m01 /= m00;
-                m00 = 1.0f / sqrtf(1.0f + m01 * m01);
-                m01 *= m00;
-            }
-            else
-            {
-                m00 /= m01;
-                m01 = 1.0f / sqrtf(1.0f + m00 * m00);
-                m00 *= m01;
-            }
-            return U * m01 - V * m00;
+            return u;
+        }
+        // From the row (m00, m01), divided by its larger entry before normalizing.
+        if (abs_m00 >= abs_m01)
+        {
+            m01 /= m00;
+            m00 = 1.0f / sqrtf(1.0f + m01 * m01);
+            m01 *= m00;
         }
         else
         {
-            return U;
+            m00 /= m01;
+            m01 = 1.0f / sqrtf(1.0f + m00 * m00);
+            m00 *= m01;
         }
+        return u * m01 - v * m00;
+    }
+    if (!(fmaxf(abs_m11, abs_m01) > 0.0f))
+    {
+        return u;
+    }
+    // From the row (m01, m11), divided by its larger entry before normalizing.
+    if (abs_m11 >= abs_m01)
+    {
+        m01 /= m11;
+        m11 = 1.0f / sqrtf(1.0f + m01 * m01);
+        m01 *= m11;
     }
     else
     {
-        max_abs_comp = fmax(abs_m11, abs_m01);
-        if (max_abs_comp > 0.0f)
-        {
-            if (abs_m11 >= abs_m01)
-            {
-                m01 /= m11;
-                m11 = 1.0f / sqrtf(1.0f + m01 * m01);
-                m01 *= m11;
-            }
-            else
-            {
-                m11 /= m01;
-                m01 = 1.0f / sqrtf(1.0f + m11 * m11);
-                m11 *= m01;
-            }
-            return U * m11 - V * m01;
-        }
-        else
-        {
-            return U;
-        }
+        m11 /= m01;
+        m01 = 1.0f / sqrtf(1.0f + m11 * m11);
+        m11 *= m01;
     }
+    return u * m11 - v * m01;
 }
 
-using eval_evec_pair = thrust::pair<float, float3>;
-// The input matrix must be symmetric ！！！
-__forceinline__ __device__ auto fast_eigen_compute_3x3_symm(const float3x3 &A)
-    -> thrust::tuple<eval_evec_pair, eval_evec_pair, eval_evec_pair>
+/// Computes the eigenvalues and unit eigenvectors of a symmetric 3x3 matrix in closed form.
+/// @param a the matrix, symmetric.
+/// @return the eigenvalues and eigenvectors: for the zero matrix zeros and the axes; for a
+///     diagonal matrix, and for one with a NaN off-diagonal entry, its diagonal and the axes.
+__device__ __forceinline__ symmetric_eigen_3x3 solve_symmetric_eigen_3x3(const Eigen::Matrix3f &a)
 {
-    auto row1 = A.get_row(0);
-    auto row2 = A.get_row(1);
-    auto row3 = A.get_row(2);
-
-    auto abs_max_1 = fmax(fmax(fabs(row1.x), fabs(row1.y)), fabs(row1.z));
-    auto abs_max_2 = fmax(abs_max_1, fmax(fabs(row2.y), fabs(row2.z)));
-    auto abs_max_coeff = fmax(abs_max_2, fabs(row3.z));
-    if (abs_max_coeff == 0.0f)
+    symmetric_eigen_3x3 result;
+    const float largest = a.cwiseAbs().maxCoeff();
+    if (largest == 0.0f)
     {
-        // A is the zero matrix.
-        auto eval_evec_1 = thrust::pair<float, float3>(0.0f, {1.0f, 0.0f, 0.0f});
-        auto eval_evec_2 = thrust::pair<float, float3>(0.0f, {0.0f, 1.0f, 0.0f});
-        auto eval_evec_3 = thrust::pair<float, float3>(0.0f, {0.0f, 0.0f, 1.0f});
-
-        return thrust::make_tuple(eval_evec_1, eval_evec_2, eval_evec_3);
+        result.values.setZero();
+        result.vectors.setIdentity();
+        return result;
     }
 
-    float inv_abs_max_coeff = 1.0f / abs_max_coeff;
-    row1 *= inv_abs_max_coeff;
-    row2 *= inv_abs_max_coeff;
-    row3 *= inv_abs_max_coeff;
-
-    float norm = row1.y * row1.y + row1.z * row1.z + row2.z * row2.z;
-    if (norm > 0)
+    const Eigen::Matrix3f s = a * (1.0f / largest);
+    const float off_diagonal = s(0, 1) * s(0, 1) + s(0, 2) * s(0, 2) + s(1, 2) * s(1, 2);
+    if (!(off_diagonal > 0.0f))
     {
-        float q = (row1.x + row2.y + row3.z) / 3.0f;
+        result.values = a.diagonal();
+        result.vectors.setIdentity();
+        return result;
+    }
 
-        float b00 = row1.x - q;
-        float b11 = row2.y - q;
-        float b22 = row3.z - q;
+    // With s = q I + p B, the eigenvalues are q + p beta, beta = 2 cos(angle + 2 pi k / 3) the
+    // roots of beta^3 - 3 beta - det(B) = 0.
+    const float q = (s(0, 0) + s(1, 1) + s(2, 2)) / 3.0f;
+    const float b00 = s(0, 0) - q;
+    const float b11 = s(1, 1) - q;
+    const float b22 = s(2, 2) - q;
+    const float p = sqrtf((b00 * b00 + b11 * b11 + b22 * b22 + off_diagonal * 2.0f) / 6.0f);
+    const float c00 = b11 * b22 - s(1, 2) * s(1, 2);
+    const float c01 = s(0, 1) * b22 - s(1, 2) * s(0, 2);
+    const float c02 = s(0, 1) * s(1, 2) - b11 * s(0, 2);
+    const float det = (b00 * c00 - s(0, 1) * c01 + s(0, 2) * c02) / (p * p * p);
+    const float half_det = fminf(fmaxf(det * 0.5f, -1.0f), 1.0f);
+    const float angle = acosf(half_det) / 3.0f;
+    constexpr float two_thirds_pi = 2.09439510239319549f;
+    const float beta2 = cosf(angle) * 2.0f;
+    const float beta0 = cosf(angle + two_thirds_pi) * 2.0f;
+    const float beta1 = -(beta0 + beta2);
+    const Eigen::Vector3f values(q + p * beta0, q + p * beta1, q + p * beta2);
 
-        float p = sqrtf((b00 * b00 + b11 * b11 + b22 * b22 + norm * 2.0f) / 6.0f);
-
-        float c00 = b11 * b22 - row2.z * row2.z;
-        float c01 = row1.y * b22 - row2.z * row1.z;
-        float c02 = row1.y * row2.z - b11 * row1.z;
-        float det = (b00 * c00 - row1.y * c01 + row1.z * c02) / (p * p * p);
-
-        float half_det = det * 0.5f;
-        half_det = fmin(fmax(half_det, -1.0f), 1.0f);
-
-        float angle = acos(half_det) / 3.0f;
-        float constexpr two_thirds_pi = 2.09439510239319549f;
-        float beta2 = cos(angle) * 2.0f;
-        float beta0 = cos(angle + two_thirds_pi) * 2.0f;
-        float beta1 = -(beta0 + beta2);
-
-        auto eval_1 = q + p * beta0;
-        auto eval_2 = q + p * beta1;
-        auto eval_3 = q + p * beta2;
-
-        if (half_det >= 0.0f)
-        {
-            float3x3 A_(row1, row2, row3);
-            auto evec_3 = __compute_eigenvector_1(A_, eval_3);
-            auto evec_2 = __compute_eigenvector_2(A_, evec_3, eval_2);
-            auto evec_1 = cross(evec_2, evec_3);
-
-            auto eval_evec_1 = thrust::pair<float, float3>(eval_1 * abs_max_coeff, evec_1);
-            auto eval_evec_2 = thrust::pair<float, float3>(eval_2 * abs_max_coeff, evec_2);
-            auto eval_evec_3 = thrust::pair<float, float3>(eval_3 * abs_max_coeff, evec_3);
-
-            return thrust::make_tuple(eval_evec_1, eval_evec_2, eval_evec_3);
-        }
-        else
-        {
-            float3x3 A_(row1, row2, row3);
-            auto evec_1 = __compute_eigenvector_1(A_, eval_1);
-            auto evec_2 = __compute_eigenvector_2(A_, evec_1, eval_2);
-            auto evec_3 = cross(evec_1, evec_2);
-
-            auto eval_evec_1 = thrust::pair<float, float3>(eval_1 * abs_max_coeff, evec_1);
-            auto eval_evec_2 = thrust::pair<float, float3>(eval_2 * abs_max_coeff, evec_2);
-            auto eval_evec_3 = thrust::pair<float, float3>(eval_3 * abs_max_coeff, evec_3);
-
-            return thrust::make_tuple(eval_evec_1, eval_evec_2, eval_evec_3);
-        }
+    // The eigenvalue farthest from the other two has multiplicity one: the largest when
+    // half_det >= 0, else the smallest.
+    if (half_det >= 0.0f)
+    {
+        result.vectors.col(2) = eigenvector_from_rows(s, values(2));
+        result.vectors.col(1) = eigenvector_orthogonal_to(s, result.vectors.col(2), values(1));
+        result.vectors.col(0) = result.vectors.col(1).cross(result.vectors.col(2));
     }
     else
     {
-        // A is diagonal.
-        auto eval_evec_1 = thrust::pair<float, float3>(A.m11, {1.0f, 0.0f, 0.0f});
-        auto eval_evec_2 = thrust::pair<float, float3>(A.m22, {0.0f, 1.0f, 0.0f});
-        auto eval_evec_3 = thrust::pair<float, float3>(A.m33, {0.0f, 0.0f, 1.0f});
-
-        return thrust::make_tuple(eval_evec_1, eval_evec_2, eval_evec_3);
+        result.vectors.col(0) = eigenvector_from_rows(s, values(0));
+        result.vectors.col(1) = eigenvector_orthogonal_to(s, result.vectors.col(0), values(1));
+        result.vectors.col(2) = result.vectors.col(0).cross(result.vectors.col(1));
     }
+    result.values = values * largest;
+    return result;
 }
+} // namespace gca

@@ -1,10 +1,11 @@
 #include "cuda_compute_color_gradient.cuh"
 
 #include "geometry/cuda_nn_search.cuh"
+#include "util/float3_eigen.cuh"
 #include "util/float3_ops.cuh"
 #include "util/little_3x3_ldlt_solve.cuh"
-#include "util/math.cuh"
 
+#include <Eigen/Core>
 #include <thrust/device_vector.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/transform.h>
@@ -46,10 +47,8 @@ struct compute_color_gradient_functor
 
         float intensity = pts.color.to_intensity();
 
-        mat3x3 AtA;
-        mat3x1 Atb;
-        AtA.set_zero();
-        Atb.set_zero();
+        Eigen::Matrix3f AtA = Eigen::Matrix3f::Zero();
+        Eigen::Vector3f Atb = Eigen::Vector3f::Zero();
 
         /* equation 10 least square L(d_p)' = 0 => (f(p') - p)T * d_p = C(p') - C(P)
          * -> Ax = b => ATA * x = ATb
@@ -68,22 +67,22 @@ struct compute_color_gradient_functor
 
             float nn_intensity = nn_pts.color.to_intensity();
 
-            mat3x1 vec_pp_p(nn_pts_proj_coordinates - pts.coordinates);
-            AtA += vec_pp_p * vec_pp_p.get_transpose();
+            const Eigen::Vector3f vec_pp_p = to_eigen(nn_pts_proj_coordinates - pts.coordinates);
+            AtA += vec_pp_p * vec_pp_p.transpose();
             Atb += vec_pp_p * (nn_intensity - intensity);
         }
 
-        const mat3x1 n_mat(normal);
+        const Eigen::Vector3f normal_vec = to_eigen(normal);
         // orthogonal constraint  (after equation 10 in paper)
         // Goal is to give an addition term d_pT * n_p = 0 for least square to optimize
         // Because this color gradient should be on the tangent plane of the point
         // This term makes convergence faster!
-        AtA += (knn - 1) * (knn - 1) * n_mat * n_mat.get_transpose();
+        AtA += static_cast<float>((knn - 1) * (knn - 1)) * normal_vec * normal_vec.transpose();
         AtA(0, 0) += 1.0e-6f;
         AtA(1, 1) += 1.0e-6f;
         AtA(2, 2) += 1.0e-6f;
 
-        return ldlt_3x3(AtA).solve(Atb);
+        return to_float3(solve_ldlt_3x3(AtA, Atb));
     }
 };
 

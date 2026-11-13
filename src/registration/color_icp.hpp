@@ -2,10 +2,12 @@
 
 #include "geometry/point_cloud.hpp"
 #include "geometry/type.hpp"
-#include "util/math.cuh"
 
 // std
 #include <memory>
+
+// Eigen
+#include <Eigen/Core>
 
 // CUDA
 #include <thrust/device_vector.h>
@@ -24,7 +26,7 @@ public:
 
     bool align();
 
-    const mat4x4 &get_final_transformation_matrix() const;
+    const Eigen::Matrix4f &get_final_transformation_matrix() const;
     ~color_icp() = default;
 
 private:
@@ -49,6 +51,6 @@ private:
     float m_search_radius_color_gradient;
     bool m_color_gradient_done;
 
-    mat4x4 m_transformation_matrix;
+    Eigen::Matrix4f m_transformation_matrix;
 };
 } // namespace gca

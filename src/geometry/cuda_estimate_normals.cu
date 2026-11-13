@@ -4,9 +4,10 @@
 #include "geometry/type.hpp"
 #include "util/cuda_util.cuh"
 #include "util/fast_eigen_val_vec.cuh"
+#include "util/float3_eigen.cuh"
 #include "util/float3_ops.cuh"
-#include "util/math.cuh"
 
+#include <Eigen/Core>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
@@ -53,12 +54,12 @@ struct compute_cumulant_functor
 
     const gca::point_t *m_points_ptr;
 
-    __forceinline__ __device__ mat9x1 operator()(gca::index_t idx) const
+    __forceinline__ __device__ Eigen::Vector<float, 9> operator()(gca::index_t idx) const
     {
-        mat9x1 cm;
+        Eigen::Vector<float, 9> cm;
         if (idx < 0)
         {
-            cm.set_zero();
+            cm.setZero();
             return cm;
         }
 
@@ -84,8 +85,9 @@ struct compute_normal_functor
 {
     compute_normal_functor() {};
 
-    __device__ float3
-    operator()(const thrust::tuple<mat9x1, thrust::pair<gca::index_t, gca::counter_t>> &tuple) const
+    __device__ float3 operator()(
+        const thrust::tuple<Eigen::Vector<float, 9>, thrust::pair<gca::index_t, gca::counter_t>>
+            &tuple) const
     {
         auto count = thrust::get<1>(tuple).second;
         if (count < 3)
@@ -93,10 +95,9 @@ struct compute_normal_functor
             return make_float3(0.0f, 0.0f, 0.0f);
         }
 
-        auto cum = thrust::get<0>(tuple);
-        auto cumulants = cum / (float)count;
+        const Eigen::Vector<float, 9> cumulants = thrust::get<0>(tuple) / (float)count;
 
-        mat3x3 covariance;
+        Eigen::Matrix3f covariance;
         covariance(0, 0) = cumulants(3) - cumulants(0) * cumulants(0);
         covariance(1, 1) = cumulants(6) - cumulants(1) * cumulants(1);
         covariance(2, 2) = cumulants(8) - cumulants(2) * cumulants(2);
@@ -107,23 +108,20 @@ struct compute_normal_functor
         covariance(1, 2) = cumulants(7) - cumulants(1) * cumulants(2);
         covariance(2, 1) = covariance(1, 2);
 
-        auto eigen_result = fast_eigen_compute_3x3_symm(covariance);
-
-        auto eigen_pair_0 = thrust::get<0>(eigen_result);
-        auto eigen_pair_1 = thrust::get<1>(eigen_result);
-        auto eigen_pair_2 = thrust::get<2>(eigen_result);
+        const symmetric_eigen_3x3 eigen = solve_symmetric_eigen_3x3(covariance);
+        const Eigen::Vector3f &values = eigen.values;
 
         float3 normal;
-        if (eigen_pair_0.first < eigen_pair_1.first && eigen_pair_0.first < eigen_pair_2.first)
+        if (values(0) < values(1) && values(0) < values(2))
         {
-            normal = eigen_pair_0.second;
+            normal = to_float3(eigen.vectors.col(0));
         }
-        else if (eigen_pair_1.first < eigen_pair_0.first && eigen_pair_1.first < eigen_pair_2.first)
+        else if (values(1) < values(0) && values(1) < values(2))
         {
-            normal = eigen_pair_1.second;
+            normal = to_float3(eigen.vectors.col(1));
         }
         else
-            normal = eigen_pair_2.second;
+            normal = to_float3(eigen.vectors.col(2));
 
         return (norm(normal) > 0.0f) ? normal : make_float3(0.0f, 0.0f, 0.0f);
     }
@@ -179,7 +177,7 @@ struct align_normal_direction_functor
     thrust::for_each(counter_iter, counter_iter + pair_neighbors_begin_idx_and_count.size(),
                      fill_start_keys_functor(pair_neighbors_begin_idx_and_count, keys));
 
-    thrust::device_vector<mat9x1> cumulants_sum(n_points);
+    thrust::device_vector<Eigen::Vector<float, 9>> cumulants_sum(n_points);
     auto compute_cumulant_iter =
         thrust::make_transform_iterator(all_neighbors.begin(), compute_cumulant_functor(points));
     thrust::reduce_by_key(keys.begin(), keys.end(), compute_cumulant_iter,

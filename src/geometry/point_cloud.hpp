@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 
+#include <Eigen/Core>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
@@ -40,7 +41,7 @@ public:
 
     std::vector<float3> download_normals() const;
 
-    void transform(const mat4x4 &trans_mat);
+    void transform(const Eigen::Matrix4f &trans_mat);
 
     std::shared_ptr<point_cloud> voxel_grid_down_sample(float voxel_size);
 

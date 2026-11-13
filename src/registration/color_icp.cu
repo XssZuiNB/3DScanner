@@ -22,14 +22,14 @@ color_icp::color_icp(size_t maximum_iterations, float max_correspondence_distanc
     , m_target_pc(nullptr)
     , m_search_radius_color_gradient(search_radius_color_gradient)
     , m_color_gradient_done(false)
-    , m_transformation_matrix(mat4x4::get_identity())
+    , m_transformation_matrix(Eigen::Matrix4f::Identity())
 {
 }
 
 void color_icp::set_source_point_cloud(const std::shared_ptr<const gca::point_cloud> new_pc)
 {
     m_color_icp_done = false;
-    m_transformation_matrix.set_identity();
+    m_transformation_matrix.setIdentity();
 
     m_source_pc = std::make_shared<gca::point_cloud>(*new_pc);
 }
@@ -38,7 +38,7 @@ void color_icp::set_target_point_cloud(const std::shared_ptr<const gca::point_cl
 {
     m_color_icp_done = false;
     m_color_gradient_done = false;
-    m_transformation_matrix.set_identity();
+    m_transformation_matrix.setIdentity();
 
     m_target_pc = new_pc;
 }
@@ -113,8 +113,8 @@ bool color_icp::align()
         return false;
     }
 
-    mat6x6 JTJ;
-    mat6x1 JTr;
+    Eigen::Matrix<float, 6, 6> JTJ;
+    Eigen::Vector<float, 6> JTr;
 
     for (size_t i = 0; i < m_max_iter; i++)
     {
@@ -131,11 +131,11 @@ bool color_icp::align()
         {
             check_cuda_error(err, __FILE__, __LINE__);
             std::cout << YELLOW << "Gauss Newton failed!" << std::endl;
-            m_transformation_matrix.set_identity();
+            m_transformation_matrix.setIdentity();
             return false;
         }
 
-        auto this_transformation_matrix = solve_JTJ_JTr(JTJ, JTr);
+        const Eigen::Matrix4f this_transformation_matrix = solve_JTJ_JTr(JTJ, JTr);
 
         m_source_pc->transform(this_transformation_matrix);
 
@@ -161,7 +161,7 @@ bool color_icp::align()
     return true;
 }
 
-const mat4x4 &color_icp::get_final_transformation_matrix() const
+const Eigen::Matrix4f &color_icp::get_final_transformation_matrix() const
 {
     if (!m_color_icp_done)
     {

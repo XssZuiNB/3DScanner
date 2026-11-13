@@ -3,7 +3,6 @@
 #include "geometry/geometry_util.cuh"
 #include "geometry/type.hpp"
 #include "util/cuda_util.cuh"
-#include "util/math.cuh"
 
 #include <cuda.h>
 #include <cuda_runtime.h>

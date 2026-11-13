@@ -1,47 +1,42 @@
+// SPDX-License-Identifier: 0BSD
+/// @file little_3x3_ldlt_solve.cuh
+/// The solution of a small symmetric positive definite 3x3 system in device code, by an LDL^T
+/// factorization without pivoting.
+
 #pragma once
 
-#include "util/math.cuh"
+#include <Eigen/Core>
 
-// If a ldlt on host needed. USE EIGEN PLS!!!
-class ldlt_3x3
+#include <cuda_runtime.h>
+
+namespace gca
 {
-public:
-    __forceinline__ __device__ __host__ ldlt_3x3() = delete;
+/// Solves a x = b by a = L D L^T, L unit lower triangular and D diagonal, without pivoting.
+/// Reads only a's lower triangle.
+/// @param a the matrix, symmetric positive definite: an entry of D that is zero or tiny makes x
+///     infinite or inaccurate, since nothing pivots around it.
+/// @param b the right-hand side.
+/// @return x.
+__device__ __forceinline__ Eigen::Vector3f solve_ldlt_3x3(const Eigen::Matrix3f &a,
+                                                          const Eigen::Vector3f &b)
+{
+    const float d0 = a(0, 0);
+    const float l10 = a(1, 0) / d0;
+    const float l20 = a(2, 0) / d0;
+    const float d1 = a(1, 1) - l10 * l10 * d0;
+    const float l21 = (a(2, 1) - l10 * l20 * d0) / d1;
+    const float d2 = a(2, 2) - l20 * l20 * d0 - l21 * l21 * d1;
 
-    __forceinline__ __device__ ldlt_3x3(const mat3x3 &A)
-    {
-        L.set_identity();
-        D.set_zero();
-
-        D(0, 0) = A(0, 0);
-        L(1, 0) = A(1, 0) / D(0, 0);
-        L(2, 0) = A(2, 0) / D(0, 0);
-        D(1, 1) = A(1, 1) - L(1, 0) * L(1, 0) * D(0, 0);
-        L(2, 1) = (A(2, 1) - L(1, 0) * L(2, 0) * D(0, 0)) / D(1, 1);
-        D(2, 2) = A(2, 2) - L(2, 0) * L(2, 0) * D(0, 0) - L(2, 1) * L(2, 1) * D(1, 1);
-    }
-
-    __forceinline__ __device__ mat3x1 solve(const mat3x1 &b)
-    {
-        // This version uses less register, good for cuda!
-        mat3x1 x;
-        x(0) = b(0);
-        x(1) = b(1) - L(1, 0) * x(0);
-        x(2) = b(2) - L(2, 0) * x(0) - L(2, 1) * x(1);
-
-        x(0) /= D(0, 0);
-        x(1) /= D(1, 1);
-        x(2) /= D(2, 2);
-
-        x(1) -= L(2, 1) * x(2);
-        x(0) -= L(1, 0) * x(1) + L(2, 0) * x(2);
-
-        return x;
-    }
-
-    __forceinline__ __device__ __host__ ~ldlt_3x3() = default;
-
-private:
-    mat3x3 L;
-    mat3x3 D;
-};
+    // L y = b, then D z = y, then L^T x = z, all in x.
+    Eigen::Vector3f x;
+    x(0) = b(0);
+    x(1) = b(1) - l10 * x(0);
+    x(2) = b(2) - l20 * x(0) - l21 * x(1);
+    x(0) /= d0;
+    x(1) /= d1;
+    x(2) /= d2;
+    x(1) -= l21 * x(2);
+    x(0) -= l10 * x(1) + l20 * x(2);
+    return x;
+}
+} // namespace gca

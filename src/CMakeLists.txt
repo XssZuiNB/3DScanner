@@ -10,11 +10,26 @@ endif()
 set(GCA_DEPS_DIR "${_gca_deps_default}" CACHE PATH "Directory of tools/fetch_deps.sh's downloads")
 
 # ---------------------------------------------------------------- Eigen (header only)
-find_package(Eigen3 QUIET NO_MODULE)
+# The library uses Eigen in device code. nvcc compiles it without --expt-relaxed-constexpr
+# [M 2026-11-13: nvcc 12.6, Eigen 3.4.0; no error, no warning, every test passes], so the
+# flag is not set. Eigen 3.4.0 makes nvcc warn #20012-D 16 times in each translation unit
+# that includes it unless the CUDA toolkit's include directory is a system one, which linking
+# CUDA::cudart makes it [M 2026-11-13: nvcc 12.6].
+# The code needs Eigen 3.4 (Eigen::Vector<T, N>), and the measurements above are on 3.4.0.
+find_package(Eigen3 3.4 QUIET NO_MODULE)
 if(NOT TARGET Eigen3::Eigen)
     set(GCA_EIGEN_DIR "${GCA_DEPS_DIR}/eigen-3.4.0" CACHE PATH "Eigen source dir")
     if(NOT EXISTS "${GCA_EIGEN_DIR}/Eigen/Core")
         message(FATAL_ERROR "Eigen3 not found. Run tools/fetch_deps.sh, install libeigen3-dev or set GCA_EIGEN_DIR.")
+    endif()
+    # A source copy states its version only in Macros.h; accept 3.4 or a later 3.x, as
+    # find_package above does [S: Eigen 3.4.0's CMakeLists.txt, SameMajorVersion].
+    file(STRINGS "${GCA_EIGEN_DIR}/Eigen/src/Core/util/Macros.h" _gca_eigen_defines
+        REGEX "^#define EIGEN_(WORLD|MAJOR)_VERSION [0-9]+$")
+    string(REGEX REPLACE ".*EIGEN_WORLD_VERSION ([0-9]+).*" "\\1" _gca_eigen_world "${_gca_eigen_defines}")
+    string(REGEX REPLACE ".*EIGEN_MAJOR_VERSION ([0-9]+).*" "\\1" _gca_eigen_major "${_gca_eigen_defines}")
+    if(NOT _gca_eigen_world STREQUAL "3" OR NOT _gca_eigen_major GREATER_EQUAL 4)
+        message(FATAL_ERROR "Eigen 3.4 needed; ${GCA_EIGEN_DIR} holds ${_gca_eigen_world}.${_gca_eigen_major}. Run tools/fetch_deps.sh or set GCA_EIGEN_DIR.")
     endif()
     add_library(Eigen3::Eigen INTERFACE IMPORTED)
     set_target_properties(Eigen3::Eigen PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${GCA_EIGEN_DIR}")

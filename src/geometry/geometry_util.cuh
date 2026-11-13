@@ -1,8 +1,11 @@
 #pragma once
 
 #include "geometry/type.hpp"
-#include "util/math.cuh"
+#include "util/float3_eigen.cuh"
 
+#include <cfloat>
+
+#include <Eigen/Core>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
@@ -93,46 +96,44 @@ __forceinline__ void remove_invalid_points(thrust::device_vector<gca::point_t> &
 /************************************* Transform point cloud ************************************/
 struct transform_point_functor
 {
-    transform_point_functor(const mat4x4 &trans_mat)
+    transform_point_functor(const Eigen::Matrix4f &trans_mat)
+        : m_rotation_mat(trans_mat.topLeftCorner<3, 3>())
+        , m_translation_vec(trans_mat.topRightCorner<3, 1>())
     {
-        trans_mat.get_block<3, 3>(0, 0, m_rotation_mat);
-        trans_mat.get_block<3, 1>(0, 3, m_translation_vec);
     }
 
-    mat3x3 m_rotation_mat;
-    mat3x1 m_translation_vec;
+    Eigen::Matrix3f m_rotation_mat;
+    Eigen::Vector3f m_translation_vec;
 
     __forceinline__ __device__ void operator()(gca::point_t &p) const
     {
-        mat3x1 coordinate_mat(p.coordinates);
-        p.coordinates = m_rotation_mat * coordinate_mat + m_translation_vec;
+        p.coordinates = to_float3(m_rotation_mat * to_eigen(p.coordinates) + m_translation_vec);
     }
 };
 
 struct transform_normal_functor
 {
-    transform_normal_functor(const mat4x4 &trans_mat)
+    transform_normal_functor(const Eigen::Matrix4f &trans_mat)
+        : m_rotation_mat(trans_mat.topLeftCorner<3, 3>())
     {
-        trans_mat.get_block<3, 3>(0, 0, m_rotation_mat);
     }
 
-    mat3x3 m_rotation_mat;
+    Eigen::Matrix3f m_rotation_mat;
 
     __forceinline__ __device__ void operator()(float3 &n) const
     {
-        mat3x1 coordinate_mat(n);
-        n = m_rotation_mat * coordinate_mat;
+        n = to_float3(m_rotation_mat * to_eigen(n));
     }
 };
 
 __forceinline__ void cuda_transform_point(thrust::device_vector<gca::point_t> &src,
-                                          const mat4x4 &trans_matrix)
+                                          const Eigen::Matrix4f &trans_matrix)
 {
     thrust::for_each(src.begin(), src.end(), transform_point_functor(trans_matrix));
 }
 
 __forceinline__ void cuda_transform_normals(thrust::device_vector<float3> &src,
-                                            const mat4x4 &trans_matrix)
+                                            const Eigen::Matrix4f &trans_matrix)
 {
     thrust::for_each(src.begin(), src.end(), transform_normal_functor(trans_matrix));
 }
