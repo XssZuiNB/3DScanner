@@ -27,6 +27,7 @@
 ///   kind of parameters that cannot be used, empty organized points, organized points of another
 ///   size, and CUDA's last error left by an earlier call; and CUDA's refusal of the launch for a
 ///   picture whose rows need more blocks than a grid holds. CUDA's last error is clear after each.
+///   The largest steepest incidence, 89 degrees, is accepted, one float step above it refused.
 /// - Every buffer is requested before the pool closes, and the stage asks the closed pool for
 ///   nothing.
 
@@ -40,6 +41,7 @@
 #include "gpu/gpu_pool.hpp"
 #include "gpu/step_result.hpp"
 #include "gpu_test_helpers.hpp"
+#include "stage_checks.hpp"
 #include "stage_frames.hpp"
 #include "synthetic_source.hpp"
 #include "types/frame_description.hpp"
@@ -67,23 +69,34 @@
 
 namespace
 {
+using gca_test::angle_deg;
+using gca_test::built_frame;
 using gca_test::check;
 using gca_test::check_max_error;
 using gca_test::check_no_cuda_error;
 using gca_test::check_refused;
 using gca_test::check_within;
 using gca_test::create_stream;
+using gca_test::distance_from;
 using gca_test::granted;
+using gca_test::grey;
+using gca_test::index_of;
+using gca_test::is_zero;
 using gca_test::large_description;
 using gca_test::max_error;
+using gca_test::median;
 using gca_test::odd_description;
+using gca_test::pair_side;
+using gca_test::premise_margin_deg;
 using gca_test::render;
 using gca_test::rendered;
+using gca_test::side_of;
 using gca_test::small_description;
 using gca_test::tabletop_box;
 using gca_test::tabletop_plane;
 using gca_test::tabletop_sphere;
 using gca_test::tall_size;
+using gca_test::to_double;
 
 /// The stage's parameters: the method's starting values, a 7x7 window, 25 points, 75 degrees
 /// [S: docs/methods/normals.md, "Input"].
@@ -94,12 +107,6 @@ constexpr gca::organized_normals_parameters test_parameters = {3, 25, 75.0f};
 /// incidence of 60 degrees [?: choices, the ends of min_points' range].
 constexpr gca::organized_normals_parameters radius_1_parameters = {1, 4, 75.0f};
 constexpr gca::organized_normals_parameters radius_2_parameters = {2, 25, 60.0f};
-
-/// How near the depth edge rule's threshold a pair may lie before the reference leaves its pixel
-/// out: 1 degree of the angle between the pair's segment and the line of sight [?: a choice, far
-/// above float's rounding of that angle, a few 1e-5 degrees for points mm apart at 2 m
-/// (S: float32 ulp)].
-constexpr double premise_margin_deg = 1.0;
 
 /// The tilted plane's depth range: 0.4005 m to 0.8005 m, each limit half a depth unit off a depth
 /// value [?: a choice, the organized points' test's]. Inside it the plane is seen at less than the
@@ -194,22 +201,6 @@ struct downloaded
     std::vector<float3> normals;    ///< unit normals in the camera frame, or (0, 0, 0)
 };
 
-/// Builds a frame whose depth a function gives, color 128 everywhere.
-/// @param description [in] its size, intrinsics and depth unit.
-/// @param depth_of [in] the depth value of pixel (u, v), in depth units, 0 for none.
-/// @return the frame.
-template <typename Depth>
-gca::frame built_frame(const gca::frame_description &description, Depth depth_of)
-{
-    gca::frame host;
-    host.prepare(description, 0, 0);
-    for (std::uint32_t v = 0; v < description.size.height; v++)
-        for (std::uint32_t u = 0; u < description.size.width; u++)
-            host.depth()[static_cast<std::size_t>(v) * description.size.width + u] = depth_of(u, v);
-    std::ranges::fill(host.color(), std::uint8_t{128});
-    return host;
-}
-
 /// Fills organized normals with 0xFF bytes, a NaN in every coordinate, which the stage writes over
 /// at every pixel it writes.
 /// @param name [in] the case, named in the check line.
@@ -268,53 +259,6 @@ downloaded download(const std::string &name, const stage_buffers &stage)
     return copied ? std::move(result) : downloaded{};
 }
 
-/// Converts a float3 to double.
-/// @param a [in] the float3.
-/// @return a in double.
-Eigen::Vector3d to_double(const float3 &a)
-{
-    return {a.x, a.y, a.z};
-}
-
-/// Says whether a normal is the mark of no normal.
-/// @param n [in] the normal.
-/// @return whether it is (0, 0, 0); false for a NaN.
-bool is_none(const float3 &n)
-{
-    return n.x == 0.0f && n.y == 0.0f && n.z == 0.0f;
-}
-
-/// Returns the angle between two directions.
-/// @param a [in] the first direction, not zero.
-/// @param b [in] the second direction, not zero.
-/// @return the angle in degrees, 0 to 180; NaN when either is NaN.
-double angle_deg(const Eigen::Vector3d &a, const Eigen::Vector3d &b)
-{
-    return std::atan2(a.cross(b).norm(), a.dot(b)) * 180.0 / std::numbers::pi;
-}
-
-/// Returns the median of values.
-/// @param values [in] the values; taken over and reordered.
-/// @return their median; 0 when there are none.
-double median(std::vector<double> values)
-{
-    if (values.empty())
-        return 0.0;
-    const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);
-    std::nth_element(values.begin(), middle, values.end());
-    return *middle;
-}
-
-/// Returns pixel (u, v)'s index.
-/// @param size [in] the picture's size, in px.
-/// @param u [in] the column, in px.
-/// @param v [in] the row, in px.
-/// @return v * width + u.
-std::size_t index_of(const gca::frame_size &size, std::uint32_t u, std::uint32_t v)
-{
-    return static_cast<std::size_t>(v) * size.width + u;
-}
-
 /// Checks the marks and orientation of every pixel: an invalid pixel's normal is (0, 0, 0), every
 /// other normal is a unit vector with n . p <= 0.
 /// @param name [in] the case, printed in each line.
@@ -332,11 +276,11 @@ void check_every_normal(const std::string &name, const downloaded &got)
         const float3 &n = got.normals[pixel];
         if (got.mask[pixel] == 0)
         {
-            invalid_not_zero += is_none(n) ? 0 : 1;
+            invalid_not_zero += is_zero(n) ? 0 : 1;
             continue;
         }
         valid++;
-        if (is_none(n))
+        if (is_zero(n))
             continue;
         with_normal++;
         const Eigen::Vector3d normal = to_double(n);
@@ -353,36 +297,6 @@ void check_every_normal(const std::string &name, const downloaded &got)
     check_within((name + ": normals pointing away from the camera, n . p > 0").c_str(), facing_away,
                  0);
     check_max_error(name + ": | |n| - 1 |", length, length_tolerance);
-}
-
-/// How a pair of points stands to the depth edge rule.
-enum class pair_side
-{
-    one_surface, ///< inside the rule by more than premise_margin_deg
-    edge,        ///< beyond it by more than premise_margin_deg
-    near,        ///< within premise_margin_deg of its threshold
-};
-
-/// Places a pair of points against the depth edge rule, in double: the angle between the segment
-/// d = b - a and the line of sight m = a + b, against 90 degrees less the steepest incidence.
-/// @param a [in] the first point, in the camera frame, in m.
-/// @param b [in] the second point, in the camera frame, in m, not a.
-/// @param parameters [in] the stage's parameters, for the steepest incidence.
-/// @return its side, with premise_margin_deg on each side of the threshold.
-pair_side side_of(const Eigen::Vector3d &a, const Eigen::Vector3d &b,
-                  const gca::organized_normals_parameters &parameters)
-{
-    const Eigen::Vector3d d = b - a;
-    const Eigen::Vector3d m = a + b;
-    const double from_sight_deg =
-        std::acos(std::min(std::abs(d.dot(m)) / (d.norm() * m.norm()), 1.0)) * 180.0 /
-        std::numbers::pi;
-    const double threshold_deg = 90.0 - double{parameters.max_incidence_deg};
-    if (from_sight_deg > threshold_deg + premise_margin_deg)
-        return pair_side::one_surface;
-    if (from_sight_deg < threshold_deg - premise_margin_deg)
-        return pair_side::edge;
-    return pair_side::near;
 }
 
 /// What the reference says of one valid pixel.
@@ -423,8 +337,9 @@ reference_normal reference_at(const downloaded &got, std::uint32_t u, std::uint3
             if (got.mask[j] == 0)
                 continue;
             const Eigen::Vector3d point = to_double(got.points[j]);
-            const pair_side side =
-                du == 0 && dv == 0 ? pair_side::one_surface : side_of(centre, point, parameters);
+            const pair_side side = du == 0 && dv == 0
+                                       ? pair_side::one_surface
+                                       : side_of(centre, point, parameters.max_incidence_deg);
             if (side == pair_side::near)
                 return {};
             if (side == pair_side::edge)
@@ -492,7 +407,7 @@ reference_counts check_reference(const std::string &name, const downloaded &got,
                 !reference.at_edge && reference.points >= static_cast<int>(parameters.min_points);
             counts.at_edge += reference.at_edge ? 1 : 0;
             counts.too_few += !reference.at_edge && !expected ? 1 : 0;
-            const bool present = !is_none(got.normals[pixel]);
+            const bool present = !is_zero(got.normals[pixel]);
             if (present != expected)
             {
                 counts.presence_wrong++;
@@ -577,7 +492,7 @@ std::size_t check_analytic(const std::string &name, const downloaded &got, Analy
         for (std::uint32_t u = 0; u < got.size.width; u++)
         {
             const std::size_t pixel = index_of(got.size, u, v);
-            if (got.mask[pixel] == 0 || is_none(got.normals[pixel]))
+            if (got.mask[pixel] == 0 || is_zero(got.normals[pixel]))
                 continue;
             const std::optional<Eigen::Vector3d> expected = analytic(u, v);
             if (!expected)
@@ -756,7 +671,7 @@ int check_sphere_view(const std::string &name, const Eigen::Isometry3d &pose, st
     check_analytic(name, got, analytic, tolerance);
     int leaning_out = 0;
     for (std::size_t j = 0; j < got.normals.size(); j++)
-        if (got.mask[j] != 0 && !is_none(got.normals[j]) && on_sphere(j))
+        if (got.mask[j] != 0 && !is_zero(got.normals[j]) && on_sphere(j))
             leaning_out += got.normals[j].z > 0.0f ? 1 : 0;
     std::printf("%s: %d normals of the sphere with n.z > 0\n", name.c_str(), leaning_out);
     return leaning_out;
@@ -791,21 +706,6 @@ void check_spheres(stream_case &size)
     const int leaning_out =
         check_sphere_view("sphere near the side" + at, *side_pose, size, size.side_sphere);
     check(leaning_out > 0, ("sphere near the side" + at + ": normals with n.z > 0").c_str());
-}
-
-/// Returns a point's distance from a known surface, a rectangle.
-/// @param surface [in] the rectangle, in the world frame.
-/// @param world [in] the point, in the world frame, in m.
-/// @return the distance, in m.
-double distance_from(const gca_test::synthetic_surface &surface, const Eigen::Vector3d &world)
-{
-    const Eigen::Vector3d local = world - surface.centre_m;
-    const double s = local.dot(surface.axis_u);
-    const double t = local.dot(surface.axis_v);
-    const double h = local.dot(surface.axis_u.cross(surface.axis_v));
-    const double ds = std::abs(s) - std::min(std::abs(s), surface.half_u_m);
-    const double dt = std::abs(t) - std::min(std::abs(t), surface.half_v_m);
-    return std::sqrt(ds * ds + dt * dt + h * h);
 }
 
 /// Runs the oracle, the prototype's estimate_normals(), on a picture's valid points.
@@ -898,7 +798,7 @@ void compare_oracle(const downloaded &got, const std::vector<gca_test::synthetic
     {
         const std::size_t pixel = pixels[i];
         const float3 &mine = got.normals[pixel];
-        if (is_none(mine) || is_none(oracle[i]))
+        if (is_zero(mine) || is_zero(oracle[i]))
             continue;
         const auto u = static_cast<std::uint32_t>(pixel % got.size.width);
         const auto v = static_cast<std::uint32_t>(pixel / got.size.width);
@@ -1028,10 +928,13 @@ void check_steps(stage_buffers &stage)
     for (const step_case c : {step_case{4, false}, step_case{7, true}, step_case{100, true}})
     {
         const std::string name = "step of " + std::to_string(c.step) + " mm at 0.5 m";
-        const gca::frame frame = built_frame(small_description, [&](std::uint32_t u,
-                                                                    std::uint32_t) {
-            return static_cast<std::uint16_t>(u < step_column ? built_depth : built_depth + c.step);
-        });
+        const gca::frame frame = built_frame(
+            small_description,
+            [&](std::uint32_t u, std::uint32_t) {
+                return static_cast<std::uint16_t>(u < step_column ? built_depth
+                                                                  : built_depth + c.step);
+            },
+            grey);
         const checked_picture made = run_and_check(name, frame, built_range, stage);
         const downloaded &got = made.got;
         if (got.points.empty())
@@ -1045,7 +948,7 @@ void check_steps(stage_buffers &stage)
             {
                 step_pixels++;
                 undecided += reference_at(got, u, v, test_parameters).decided ? 0 : 1;
-                with_normal += is_none(got.normals[index_of(got.size, u, v)]) ? 0 : 1;
+                with_normal += is_zero(got.normals[index_of(got.size, u, v)]) ? 0 : 1;
             }
         }
         std::printf("%s: %d of %d step pixels of the checked rows have a normal\n", name.c_str(),
@@ -1059,7 +962,7 @@ void check_steps(stage_buffers &stage)
             continue;
         max_error flat;
         for (std::size_t pixel = 0; pixel < got.normals.size(); pixel++)
-            if (!is_none(got.normals[pixel]))
+            if (!is_zero(got.normals[pixel]))
                 flat.add(angle_deg(to_double(got.normals[pixel]), -Eigen::Vector3d::UnitZ()));
         check_max_error(name + ": angle to (0, 0, -1) beside the step, in degrees", flat,
                         flat_tolerance_deg);
@@ -1083,15 +986,17 @@ void check_few_points(stage_buffers &stage)
         return kinds[(u / cell_side + v / cell_side) % kinds.size()];
     };
     const std::uint32_t centre_in_cell = cell_side / 2 * cell_side + cell_side / 2;
-    const gca::frame frame =
-        built_frame(small_description, [&](std::uint32_t u, std::uint32_t v) -> std::uint16_t {
+    const gca::frame frame = built_frame(
+        small_description,
+        [&](std::uint32_t u, std::uint32_t v) -> std::uint16_t {
             const std::uint32_t k = points_of_cell(u, v);
             const std::uint32_t in_cell = (v % cell_side) * cell_side + u % cell_side;
             // The centre comes last of the first min_points pixels: a cell keeps the k pixels up
             // to its centre, and a cell of one its centre alone.
             const bool kept = in_cell <= centre_in_cell && in_cell + k > centre_in_cell;
             return kept ? built_depth : 0;
-        });
+        },
+        grey);
     const std::string name = "cells of 25, 24 and 1 points";
     const checked_picture made = run_and_check(name, frame, built_range, stage);
     const downloaded &got = made.got;
@@ -1107,8 +1012,8 @@ void check_few_points(stage_buffers &stage)
             const std::size_t kind = (u / cell_side + v / cell_side) % kinds.size();
             const float3 &n = got.normals[index_of(got.size, u, v)];
             centres[kind]++;
-            with_normal[kind] += is_none(n) ? 0 : 1;
-            if (!is_none(n))
+            with_normal[kind] += is_zero(n) ? 0 : 1;
+            if (!is_zero(n))
                 flat.add(angle_deg(to_double(n), -Eigen::Vector3d::UnitZ()));
         }
     }
@@ -1143,19 +1048,19 @@ void check_diagonal_covariance(stage_buffers &stage)
 {
     const std::string name = "flat frame of exact points";
     const gca::frame frame = built_frame(
-        exact_description, [](std::uint32_t, std::uint32_t) -> std::uint16_t { return 512; });
+        exact_description, [](std::uint32_t, std::uint32_t) -> std::uint16_t { return 512; }, grey);
     const checked_picture made = run_and_check(name, frame, built_range, stage);
     const downloaded &got = made.got;
     if (got.points.empty())
         return;
     const float3 &at_principal_point = got.normals[index_of(got.size, 320, 200)];
-    check(!is_none(at_principal_point), (name + ": a normal at the principal point").c_str());
+    check(!is_zero(at_principal_point), (name + ": a normal at the principal point").c_str());
     check_within((name + ": the principal point's angle to (0, 0, -1), in degrees").c_str(),
                  angle_deg(to_double(at_principal_point), -Eigen::Vector3d::UnitZ()),
                  flat_tolerance_deg);
     max_error flat;
     for (const float3 &n : got.normals)
-        if (!is_none(n))
+        if (!is_zero(n))
             flat.add(angle_deg(to_double(n), -Eigen::Vector3d::UnitZ()));
     check_max_error(name + ": angle to (0, 0, -1), in degrees", flat, flat_tolerance_deg);
 }
@@ -1177,25 +1082,29 @@ struct unusable_parameters
 
 /// Returns each kind of parameters the stage refuses, each alone [?: a choice of values]: a
 /// radius of 0 and of 4; the fewest points one below 2R + 2 and one above the window; an
-/// incidence of 0, of 90, not a number and infinite.
+/// incidence of 0, of 90, one float step above the largest, 89 degrees, not a number and
+/// infinite.
 /// @return the cases.
-std::array<unusable_parameters, 8> unusable()
+std::array<unusable_parameters, 9> unusable()
 {
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float infinite = std::numeric_limits<float>::infinity();
+    const float above_largest = std::nextafter(gca::max_steepest_incidence_deg, infinite);
     return {{{"a radius of 0 px", {0, 4, 75.0f}},
              {"a radius of 4 px", {4, 25, 75.0f}},
              {"7 points at a radius of 3 px", {3, 7, 75.0f}},
              {"50 points at a radius of 3 px", {3, 50, 75.0f}},
              {"an incidence of 0 deg", {3, 25, 0.0f}},
              {"an incidence of 90 deg", {3, 25, 90.0f}},
+             {"an incidence one float step above 89 deg", {3, 25, above_largest}},
              {"an incidence that is not a number", {3, 25, nan}},
              {"an incidence that is infinite", {3, 25, infinite}}}};
 }
 
 /// Checks the refusals that leave the normals as they were: empty organized normals, each kind of
 /// parameters that cannot be used, empty organized points, organized points of another size, and
-/// CUDA's last error left by an earlier call.
+/// CUDA's last error left by an earlier call; then that the largest steepest incidence, 89
+/// degrees, is accepted.
 /// @param stage [in,out] the stage of the smaller stream size, its normals estimated from its
 ///        points.
 /// @param buffers [in,out] the other GPU memory the refusals use.
@@ -1228,6 +1137,9 @@ void check_refusals_leave_normals(stage_buffers &stage, refusal_buffers &buffers
                                   before.normals.size() * sizeof(float3)) == 0;
     check(same, "refusals: the organized normals left as they were, bit for bit");
     check_no_cuda_error("refusals");
+    const gca::step_result largest =
+        out.estimate(stage.points, {3, 25, gca::max_steepest_incidence_deg}, stream);
+    check(largest.done, ("an incidence of 89 deg: estimated, " + largest.message).c_str());
 }
 
 /// Checks CUDA's refusal of the kernel's launch for a picture of 1 x 600000 px, whose rows need

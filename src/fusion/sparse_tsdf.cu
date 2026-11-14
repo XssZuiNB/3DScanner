@@ -42,12 +42,6 @@ constexpr std::uint64_t max_blocks = std::uint64_t{1} << 30;
 /// The kernels' block: 256 threads [?: a choice; no other size was measured].
 constexpr unsigned int threads_per_block = 256;
 
-/// The allocation's block: 32 x 8 threads, one warp along a row of pixels and 8 rows, as the
-/// organized points' kernel [?: a choice; its time on the board stands in docs/HARDWARE.md, "The
-/// per-frame path's stages"; no other block was measured].
-constexpr unsigned int pixel_block_width = 32;
-constexpr unsigned int pixel_block_height = 8;
-
 /// Why an empty sparse TSDF refuses every operation.
 constexpr const char *holds_no_memory =
     "the sparse TSDF holds no memory: it was not granted by the pool, or moved from";
@@ -311,7 +305,7 @@ __device__ inline void touch_block(const block_hash_view &hash, std::uint32_t *s
 ///       A thread takes at most max_blocks_per_ray steps, each an insertion (insert_block()).
 ///       The keys' trap of insert_block(): within this launch a key is visible before its
 ///       block's number, so no thread of it reads a number (touch_block()). Allocates nothing.
-__global__ void __launch_bounds__(pixel_block_width *pixel_block_height)
+__global__ void __launch_bounds__(picture_block_width *picture_block_height)
     allocate_kernel(const float3 *__restrict__ points, const std::uint8_t *__restrict__ valid,
                     frame_size size, float_pose pose, float blocks_per_m, float mu_min_m,
                     float noise_factor, block_hash_view hash, std::uint32_t *__restrict__ stamps,
@@ -598,7 +592,7 @@ step_result sparse_tsdf::allocate_near_surface(const organized_points &points,
                                m_layout.capacity_blocks};
     const float voxel_size_m = m_parameters.voxel_size_m;
     const truncation_parameters &t = m_parameters.truncation;
-    const dim3 block(pixel_block_width, pixel_block_height);
+    const dim3 block = picture_block();
     // This frame's stamp: the count of allocations before it, below every bit 1 (the @pre).
     const std::uint32_t frame = m_frames_allocated++;
     return launch_kernel(

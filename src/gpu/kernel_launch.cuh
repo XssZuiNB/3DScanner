@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: 0BSD
 /// @file kernel_launch.cuh
 /// The launch of a stage's kernel over a picture, shared by the per-frame path's stages (such as
-/// geometry/organized_points.hpp and geometry/organized_normals.hpp): the grid of blocks that
-/// covers the picture, and the launch on the caller's stream between two questions to CUDA,
-/// whether an earlier call left an error and whether CUDA accepted the launch, neither of which
-/// waits. A failure comes back as a value (gpu/step_result.hpp) with CUDA's error, which is
-/// cleared (gpu/gpu_messages.hpp). Header only, for CUDA translation units: it launches with
-/// <<< >>>.
+/// geometry/organized_points.hpp and geometry/organized_normals.hpp): the block of threads, the
+/// grid of blocks that covers the picture, and the launch on the caller's stream between two
+/// questions to CUDA, whether an earlier call left an error and whether CUDA accepted the launch,
+/// neither of which waits. A failure comes back as a value (gpu/step_result.hpp) with CUDA's
+/// error, which is cleared (gpu/gpu_messages.hpp). Header only, for CUDA translation units: it
+/// launches with <<< >>>.
 
 #pragma once
 
@@ -22,6 +22,20 @@
 
 namespace gca
 {
+/// The block of threads of a stage's kernel over a picture: 32 x 8 threads, one warp along a row
+/// and 8 rows, one thread for each pixel [?: a choice; the stages' times on the board stand in
+/// docs/HARDWARE.md, "The per-frame path's stages"; no other block was measured]. A kernel
+/// declares it in its __launch_bounds__ and launches with picture_block().
+inline constexpr unsigned int picture_block_width = 32;
+inline constexpr unsigned int picture_block_height = 8;
+
+/// Returns the block of threads of a stage's kernel over a picture.
+/// @return picture_block_width x picture_block_height threads, depth 1.
+inline dim3 picture_block()
+{
+    return dim3(picture_block_width, picture_block_height);
+}
+
 /// Returns the number of blocks that cover a length.
 /// @param length [in] the length, in px.
 /// @param block [in] a block's length, in px, > 0.

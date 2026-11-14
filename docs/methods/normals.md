@@ -21,7 +21,7 @@ too few neighbours on its surface gets no normal and is marked so. The code is
   |---|---|---|---|
   | `radius_px`, R | the window's half size: (2R + 1)² pixels around the pixel | 1 to 3 | 3 |
   | `min_points` | the fewest points of the neighbourhood, the pixel's own included, that give a normal | 2R + 2 to (2R + 1)² | 25 |
-  | `max_incidence_deg`, θ | the steepest incidence, the angle between a surface's normal and the line of sight, at which two neighbouring points still count as one surface | above 0, below 90 | 75 |
+  | `max_incidence_deg`, θ | the steepest incidence, the angle between a surface's normal and the line of sight, at which two neighbouring points still count as one surface | above 0, at most 89 | 75 |
 
   Why these values, and what each range rules out, stands below with the rule it belongs to.
   The stage's caller passes them; they are no object class's yet.
@@ -66,7 +66,13 @@ of at least 90° - φ with the line of sight, and the steepest one, down the pla
 exactly that [S: the projection of the line of sight onto the plane has length sin φ]. So the
 rule keeps every pair on a plane seen at φ <= θ, and it takes a pair whose segment lies within
 90° - θ of the line of sight for a jump in depth between two surfaces, one behind the other.
-The rule is symmetric in a and b, and it needs neither the focal length nor the depth unit.
+The rule is symmetric in a and b, and it needs neither the focal length nor the depth unit. θ is
+at most 89° [?: a choice]: the stage compares in float with sin² θ, 0.99970 at 89°, 3.0e-4 below
+1, far more than the rounding of the rule's products, a few float steps of 1e-7; from 89.990° on
+sin² θ rounds to 1, and the rule would take every pair for one surface, by the Cauchy-Schwarz
+inequality, a point and the camera's centre included [S: computed]. Its
+code, `src/geometry/one_surface.cuh`, is shared with the frame's pyramid, whose coarser levels
+combine only points on one surface by it (docs/methods/frame-pyramid.md).
 
 Across one pixel, near the picture's centre, the rule takes a step in depth larger than
 (z / fx) tan θ for an edge: with θ = 75°, 6.1 mm at 0.5 m and 24.4 mm at 2 m at 640x400, 3.0 mm
@@ -252,7 +258,7 @@ Each comes back as a value with its reason; nothing is queued and the normals ar
 were:
 
 * the parameters: `radius_px` not 1 to 3, `min_points` not 2R + 2 to (2R + 1)²,
-  `max_incidence_deg` not a finite number above 0 and below 90;
+  `max_incidence_deg` not a finite number above 0 and at most 89;
 * the normals hold no image, or the organized points hold none;
 * the organized points' size is not the normals'.
 

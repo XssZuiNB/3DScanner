@@ -6,13 +6,14 @@
 /// textured sphere of known centre and radius or none, and a known trajectory: frame i of an
 /// opening is seen from the trajectory's pose i. The source tells a test the trajectory and the
 /// known surfaces, textured rectangles in the world frame, and the sphere, which are exactly what
-/// it renders, the pinhole ray of any point of the picture, and where any ray first meets them, the
-/// hit it renders each pixel from. It also builds the trajectories its scenes are seen along: a
-/// camera's upright pose looking at a point, and a walk once around a point, each refused as a
-/// value where the view is not defined. This is the one renderer of the tests' frames: a test whose
-/// scene it lacks adds the scene here as one more option. A test builds the source to deliver its
-/// trajectory's frames and then to report the end, a timeout or a failure, or to refuse its
-/// opening, each with the message it is given. No camera and no OrbbecSDK; host only.
+/// it renders, the pinhole ray of any point of the picture, where any ray first meets them, the
+/// hit it renders each pixel from, and how far a point lies from a known surface. It also builds
+/// the trajectories its scenes are seen along: a camera's upright pose looking at a point, and a
+/// walk once around a point, each refused as a value where the view is not defined. This is the
+/// one renderer of the tests' frames: a test whose scene it lacks adds the scene here as one more
+/// option. A test builds the source to deliver its trajectory's frames and then to report the end,
+/// a timeout or a failure, or to refuse its opening, each with the message it is given. No camera
+/// and no OrbbecSDK; host only.
 
 #pragma once
 
@@ -121,6 +122,12 @@ struct synthetic_surface
 /// @param v [in] the row, in px, any real value.
 /// @return ((u - cx) / fx, (v - cy) / fy, 1), in the camera frame.
 Eigen::Vector3d pixel_ray(const gca::intrinsics &k, double u, double v);
+
+/// Returns a point's distance from a known surface, the nearest point of its rectangle.
+/// @param surface [in] the surface, in the world frame.
+/// @param world [in] the point, in the world frame, in m.
+/// @return the distance, in m.
+double distance_from(const synthetic_surface &surface, const Eigen::Vector3d &world);
 
 /// Where a ray first meets a scene in front of its origin.
 struct synthetic_hit

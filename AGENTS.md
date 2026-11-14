@@ -21,8 +21,9 @@ hand-held camera and works the scan from a web page the Jetson serves (the terms
 the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the frame, the frame source
 seam and the sequence on disk (`src/camera/`); the GPU image, the pool that closes and a
 frame's upload (`src/gpu/`); the organized points from a frame's depth
-(`src/geometry/organized_points.*`) and their normals (`src/geometry/organized_normals.*`); the
-sparse TSDF's hash of blocks, its pool and the allocation of the blocks near a frame's surface
+(`src/geometry/organized_points.*`), their normals (`src/geometry/organized_normals.*`) and the
+frame's pyramid of them with the intensity (`src/geometry/frame_pyramid.*`); the sparse TSDF's
+hash of blocks, its pool and the allocation of the blocks near a frame's surface
 (`src/fusion/`); the files a scan keeps and the parameters of each object class (`src/scan/`).
 The tree is CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to build here and
 given the Orbbec camera. It is the rewrite's prototype: its methods carry over, and its code is
@@ -217,19 +218,21 @@ checkers; these are the rules no checker holds.
    | the sequence on disk (docs/SEQUENCE_FILE.md): its layout, writer and reader, the comparison of two frames' descriptions bit for bit (`src/camera/sequence_format.*`); the POSIX file calls the writers and readers share | `src/camera/sequence_*`; `src/camera/posix_file.*` |
    | Orbbec: alignment, color decoding, OrbbecSDK's report as plain data | `src/camera/orbbec_device.*` |
    | Orbbec: the choice of streams, the checks of a frame, the rule for timestamps, the refusals of an opening | `src/camera/orbbec_rules.*` |
-   | the GPU array, the one owner of device memory; the GPU image, an array of pixels; the pinned host buffer, the pool that closes, a frame's upload, a GPU step's result, their messages, a stage kernel's launch | `src/gpu/gpu_array.hpp`, `src/gpu/gpu_image.hpp`, `src/gpu/pinned_buffer.hpp`, `src/gpu/gpu_pool.*`, `src/gpu/gpu_frame.*`, `src/gpu/step_result.hpp`, `src/gpu/gpu_messages.*`, `src/gpu/kernel_launch.cuh` |
+   | the GPU array, the one owner of device memory; the GPU image, an array of pixels; the pinned host buffer, the pool that closes, a frame's upload, a GPU step's result, their messages, a stage kernel's block of threads and launch | `src/gpu/gpu_array.hpp`, `src/gpu/gpu_image.hpp`, `src/gpu/pinned_buffer.hpp`, `src/gpu/gpu_pool.*`, `src/gpu/gpu_frame.*`, `src/gpu/step_result.hpp`, `src/gpu/gpu_messages.*`, `src/gpu/kernel_launch.cuh` |
    | the prototype's frames and camera parameters on the GPU, CUDA helpers, GPU checks | `src/gpu/` |
    | organized points from a frame's depth, their validity mask | `src/geometry/organized_points.*` |
    | the organized points' normals in image space | `src/geometry/organized_normals.*` |
+   | the frame's pyramid: the intensity, the coarser levels and their intrinsics; the rule of one surface the stages share | `src/geometry/frame_pyramid.*`; `src/geometry/one_surface.cuh` |
    | the sparse TSDF (docs/methods/sparse-tsdf.md): its voxel, its parameters (the voxel size, the truncation's rule), its hash of blocks, its pool and the division of the memory budget, the allocation of the blocks near a frame's surface; the hash's insertion and lookup as device code, which every fusion kernel calls | `src/fusion/sparse_tsdf.*`; `src/fusion/block_hash.cuh` |
    | point clouds: creation, filters, normals, search; the 3x3 eigensolver, `float3` arithmetic and its Eigen conversion | `src/geometry/` |
    | registration (colored ICP); the 3x3 LDLT solve | `src/registration/` |
    | the files a scan keeps (docs/SCAN_FILES.md); the parameters of each object class | `src/scan/` |
    | `orbbec_viewer`'s loop on a frame source: the first frame, the report line, the window, the snapshots, the sequence it writes | `apps/viewer_loop.*` |
-   | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, the trajectories it renders along | `tests/synthetic_source.*` |
+   | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, a point's distance from a known surface, the trajectories it renders along | `tests/synthetic_source.*` |
    | the tests' copy of a frame, to check a source left it as it was | `tests/frame_copy.hpp` |
    | the sparse TSDF tests' lookups of blocks, their readings of the usage and the method's starting truncation | `tests/sparse_tsdf_helpers.hpp` |
-   | the stages' test frames: the camera's stream sizes and intrinsics, the tabletop sphere, a scene's frames rendered | `tests/stage_frames.hpp` |
+   | the stages' test frames: the camera's stream sizes and intrinsics, the tabletop sphere, a scene's frames rendered, frames built from functions of the pixel | `tests/stage_frames.hpp` |
+   | the stages' tests' checks of an organized picture: a pixel's index, a float3 in double, the zero mark, angles, medians, the rule of one surface in double with its margin | `tests/stage_checks.hpp` |
 
 5. **Log lines are an interface.** A tool that reads a program's output holds the strings
    it reads: before a log line, a refusal or a dump key changes, grep the tools and tests
@@ -254,7 +257,7 @@ checkers; these are the rules no checker holds.
 | `CODING_STANDARDS.md` | the style guides, what they leave to this tree, the rules for the rewrite's code, the checkers |
 | `GLOSSARY.md`, `docs/adr/` | the scanner's terms; the decisions in force and why |
 | `docs/SCAN_FILES.md` | the formats of the files a scan keeps: the models (PLY), the trajectory, the parameters |
-| `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md`, `normals.md` and `sparse-tsdf.md` |
+| `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md`, `normals.md`, `frame-pyramid.md` and `sparse-tsdf.md` |
 | `docs/SEQUENCE_FILE.md` | the format of a sequence: a scan's frames with their poses, which the viewer writes and the scanner and the replay tool are planned to write or read |
 | `docs/agents/` | how the workflow skills in `.claude/skills/` find the tracker and the domain docs |
 

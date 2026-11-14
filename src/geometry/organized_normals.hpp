@@ -19,9 +19,18 @@
 #include <cuda_runtime_api.h>
 
 #include <cstdint>
+#include <string>
 
 namespace gca
 {
+/// The steepest incidence the stage takes, in degrees: 89 [?: a choice]. The rule of one surface
+/// needs the square of its sine below 1 in float, far enough that the rounding of the rule's
+/// products cannot close the gap: at 89 degrees it is 0.99970, 3.0e-4 below 1, against a few
+/// float steps, 1e-7 each; from 89.990 degrees on it rounds to 1, and the rule takes every pair for
+/// one surface, a point and the camera's centre included [S: computed; docs/methods/normals.md,
+/// "One surface, or a depth edge"].
+inline constexpr float max_steepest_incidence_deg = 89.0f;
+
 /// The stage's parameters (docs/methods/normals.md, "Input"): the window, the fewest points of a
 /// neighbourhood that give a normal, and the steepest incidence that still counts as one surface.
 struct organized_normals_parameters
@@ -33,7 +42,8 @@ struct organized_normals_parameters
     /// to (2R + 1)^2, so that the neighbourhood never lies on one line of the picture.
     std::uint32_t min_points;
     /// The steepest incidence, the angle between a surface's normal and the line of sight, at
-    /// which two neighbouring points still count as one surface, in degrees; finite, > 0, < 90.
+    /// which two neighbouring points still count as one surface, in degrees; finite, > 0, at most
+    /// max_steepest_incidence_deg.
     float max_incidence_deg;
 };
 
@@ -61,6 +71,15 @@ public:
     ///       from one pool at once (gpu_pool::request()).
     static request_result<organized_normals> request(gpu_pool &pool,
                                                      const frame_size &size) noexcept;
+
+    /// Checks the stage's parameters, as estimate() does before it queues anything, so that a step
+    /// that runs the normals among other work (geometry/frame_pyramid.hpp) refuses them before it
+    /// queues its first kernel.
+    /// @param parameters [in] the parameters.
+    /// @return empty when each field lies in the range organized_normals_parameters states; else
+    ///         the reason, the message estimate() refuses them with.
+    /// @note Allocates for the reason; throws std::bad_alloc when that fails. Waits for nothing.
+    static std::string parameters_refusal(const organized_normals_parameters &parameters);
 
     /// Organized normals are not copied: a copy allocates.
     organized_normals(const organized_normals &) = delete;
@@ -99,8 +118,7 @@ public:
     /// @param stream [in] the CUDA stream of the current device the work is queued on; owned by
     ///        the caller. Work queued on it later sees the normals.
     /// @return done when the work is queued; not done with the reason when refused before it:
-    ///         these normals are empty; radius_px is not 1 to 3, min_points not 2 radius_px + 2
-    ///         to (2 radius_px + 1)^2, max_incidence_deg not a finite number > 0 and < 90; the
+    ///         these normals are empty; the parameters are refused (parameters_refusal()); the
     ///         organized points are empty; their size is not these normals'. When refused, nothing
     ///         is queued and the image is left as it was. Not done with CUDA's error, which is
     ///         then cleared (gpu/gpu_messages.hpp): when CUDA's last error is set before the

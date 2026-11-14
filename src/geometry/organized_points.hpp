@@ -34,9 +34,27 @@ struct organized_points_parameters
 /// with z = depth value * depth unit, and its mark is 1; an invalid pixel's point is (0, 0, 0)
 /// and its mark 0 (docs/methods/organized-points.md). Move-only. Not synchronized: one thread at
 /// a time uses one.
+///
+/// Two writers fill the images: deproject(), from a frame; and, for a coarser level of a frame's
+/// pyramid, frame_pyramid::combine() (geometry/frame_pyramid.hpp), from the level before, where a
+/// valid pixel's point is the weighted mean of the points it combines, with the same meaning of
+/// point and mark (docs/methods/frame-pyramid.md). The pyramid writes through points_to_write()
+/// and validity_mask_to_write(), which take a key only the pyramid can make; everything else only
+/// reads the images.
 class organized_points
 {
 public:
+    /// The key to the images' writing for a coarser level of a frame's pyramid. Only
+    /// frame_pyramid makes one: its constructor is private, and the pyramid is its one friend, so
+    /// that the pyramid reaches no private member of the organized points themselves.
+    class pyramid_key
+    {
+        friend class frame_pyramid;
+
+        /// Makes a key; for the frame's pyramid alone.
+        pyramid_key() noexcept = default;
+    };
+
     /// Empty organized points: no images; deproject() into them is refused.
     organized_points() noexcept = default;
 
@@ -122,6 +140,19 @@ public:
     /// @return the image of the marks, 1 for a valid pixel and 0 for an invalid one, of the
     ///         size(); empty when the organized points are. Valid as long as they hold it.
     const gpu_image<std::uint8_t> &validity_mask() const noexcept;
+
+    /// Gives the points for the GPU to write: the frame's pyramid's combining of a coarser level.
+    /// @param key [in] the key only the frame's pyramid makes.
+    /// @return the image of the points, of the size(); empty when the organized points are. Valid
+    ///         as long as they hold it.
+    gpu_image<float3> &points_to_write(pyramid_key key) noexcept;
+
+    /// Gives the validity mask for the GPU to write: the frame's pyramid's combining of a coarser
+    /// level.
+    /// @param key [in] the key only the frame's pyramid makes.
+    /// @return the image of the marks, of the size(); empty when the organized points are. Valid
+    ///         as long as they hold it.
+    gpu_image<std::uint8_t> &validity_mask_to_write(pyramid_key key) noexcept;
 
 private:
     gpu_image<float3> m_points;

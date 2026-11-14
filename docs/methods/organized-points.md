@@ -35,6 +35,11 @@ pixel for the points and 1 for the marks, 3.3 MB at 640x400 and 13.3 MB at 1280x
 [S: computed]. They are requested from the pool (`src/gpu/gpu_pool.hpp`) before it closes; the
 stage itself asks for no memory and takes no pool.
 
+The class `gca::organized_points` holds the images of one other kind of points: a coarser level
+of the frame's pyramid, whose points the pyramid combines from the level before, with the same
+meaning of point and mark (docs/methods/frame-pyramid.md). That is its second writer, through
+a key only the pyramid makes (`gca::organized_points::pyramid_key`).
+
 ## Deprojection
 
 By the one pinhole convention (`src/types/camera_param.hpp`; docs/HARDWARE.md, "Pixel

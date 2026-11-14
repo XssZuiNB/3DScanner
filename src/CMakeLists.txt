@@ -105,7 +105,10 @@ add_library(
     geometry/cuda_voxel_grid_down_sample.cuh
     geometry/float3_eigen.cuh
     geometry/float3_ops.cuh
+    geometry/frame_pyramid.cu
+    geometry/frame_pyramid.hpp
     geometry/geometry_util.cuh
+    geometry/one_surface.cuh
     geometry/organized_normals.cu
     geometry/organized_normals.hpp
     geometry/organized_points.cu

@@ -7,6 +7,7 @@
 
 #include "geometry/float3_eigen.cuh"
 #include "geometry/float3_ops.cuh"
+#include "geometry/one_surface.cuh"
 #include "geometry/symmetric_eigen_3x3.cuh"
 #include "gpu/gpu_messages.hpp"
 #include "gpu/kernel_launch.cuh"
@@ -24,32 +25,9 @@ namespace gca
 {
 namespace
 {
-/// The kernel's block: 32 x 8 threads, one warp along a row and 8 rows [?: a choice, the
-/// organized points' block; its time on the board stands in docs/HARDWARE.md, "The per-frame
-/// path's stages"; no other block was measured].
-constexpr unsigned int block_width = 32;
-constexpr unsigned int block_height = 8;
-
 /// The largest window half size: (2 * 3 + 1)^2 = 49 pixels, whose membership fits the kernel's one
 /// 64-bit word [S: docs/methods/normals.md, "The covariance, centred first"].
 constexpr std::uint32_t max_radius_px = 3;
-
-/// Says whether two points lie on one surface: the segment between them makes an angle of at
-/// least 90 degrees less the steepest incidence with the line of sight to their midpoint
-/// (docs/methods/normals.md, "One surface, or a depth edge"). Symmetric in a and b; a point lies
-/// on one surface with itself.
-/// @param a [in] the first point, in the camera frame, in m, z > 0.
-/// @param b [in] the second point, in the camera frame, in m, z > 0.
-/// @param sin2_max_incidence [in] the square of the sine of the steepest incidence, in (0, 1).
-/// @return whether (d . m)^2 <= sin^2 * |d|^2 * |m|^2, d = b - a, m = a + b.
-__device__ __forceinline__ bool on_one_surface(const float3 &a, const float3 &b,
-                                               float sin2_max_incidence)
-{
-    const float3 d = b - a;
-    const float3 m = a + b;
-    const float along = dot(d, m);
-    return along * along <= sin2_max_incidence * dot(d, d) * dot(m, m);
-}
 
 /// Estimates every pixel's normal from its window's points (docs/methods/normals.md): the
 /// neighbourhood and its mean in a first pass over the window, the centred covariance in a second
@@ -72,7 +50,7 @@ __device__ __forceinline__ bool on_one_surface(const float3 &a, const float3 &b,
 ///        normals, which hold it until the kernel has run (their end's @pre).
 /// @note One thread for each pixel, on the launch's stream; a thread outside the picture writes
 ///       nothing. Allocates nothing.
-__global__ void __launch_bounds__(block_width *block_height)
+__global__ void __launch_bounds__(picture_block_width *picture_block_height)
     estimate_kernel(const float3 *__restrict__ points, const std::uint8_t *__restrict__ valid,
                     frame_size size, int radius, std::uint32_t min_points, float sin2_max_incidence,
                     float3 *__restrict__ normals)
@@ -179,13 +157,9 @@ __global__ void __launch_bounds__(block_width *block_height)
         normal = -1.0f * normal;
     normals[pixel] = normal;
 }
+} // namespace
 
-/// Checks the parameters.
-/// @param parameters [in] the parameters.
-/// @return empty when they are usable: radius_px 1 to max_radius_px, min_points 2 radius_px + 2
-///         to (2 radius_px + 1)^2, max_incidence_deg finite, > 0 and < 90; else the reason.
-/// @note Allocates for the reason; throws std::bad_alloc when that fails.
-std::string parameters_refusal(const organized_normals_parameters &parameters)
+std::string organized_normals::parameters_refusal(const organized_normals_parameters &parameters)
 {
     const std::uint32_t radius = parameters.radius_px;
     if (radius < 1 || radius > max_radius_px)
@@ -198,12 +172,12 @@ std::string parameters_refusal(const organized_normals_parameters &parameters)
                std::to_string(fewest) + " to " + std::to_string(window) +
                " for a window of radius " + std::to_string(radius) + " px";
     const float incidence = parameters.max_incidence_deg;
-    if (!(std::isfinite(incidence) && incidence > 0.0f && incidence < 90.0f))
+    if (!(std::isfinite(incidence) && incidence > 0.0f && incidence <= max_steepest_incidence_deg))
         return "the steepest incidence " + std::to_string(incidence) +
-               " deg is not a finite number above 0 and below 90";
+               " deg is not a finite number above 0 and at most " +
+               std::to_string(max_steepest_incidence_deg);
     return {};
 }
-} // namespace
 
 request_result<organized_normals> organized_normals::request(gpu_pool &pool,
                                                              const frame_size &size) noexcept
@@ -232,7 +206,7 @@ step_result organized_normals::estimate(const organized_points &points,
         return {false, "the organized points are " + size_text(points.size()) +
                            ", the organized normals " + size_text(size())};
     const double sine = std::sin(double{parameters.max_incidence_deg} * std::numbers::pi / 180.0);
-    const dim3 block(block_width, block_height);
+    const dim3 block = picture_block();
     return launch_kernel("the organized normals' kernel", &estimate_kernel, grid_for(size(), block),
                          block, stream, points.points().data(), points.validity_mask().data(),
                          size(), static_cast<int>(parameters.radius_px), parameters.min_points,

@@ -18,12 +18,6 @@ namespace gca
 {
 namespace
 {
-/// The kernel's block: 32 x 8 threads, one warp along a row and 8 rows [?: a choice; its time on
-/// the board stands in docs/HARDWARE.md, "The per-frame path's stages"; no other block was
-/// measured].
-constexpr unsigned int block_width = 32;
-constexpr unsigned int block_height = 8;
-
 /// Deprojects every pixel of a depth picture by the one pinhole convention and marks it valid or
 /// not (docs/methods/organized-points.md).
 /// @param depth [in] the depth picture, device memory of width * height values in depth units, 0
@@ -41,7 +35,7 @@ constexpr unsigned int block_height = 8;
 ///        for an invalid one; owned by the organized points, as points.
 /// @note One thread for each pixel, on the launch's stream; a thread outside the picture writes
 ///       nothing. Allocates nothing.
-__global__ void __launch_bounds__(block_width *block_height)
+__global__ void __launch_bounds__(picture_block_width *picture_block_height)
     deproject_kernel(const std::uint16_t *__restrict__ depth, frame_size size, intrinsics k,
                      float depth_unit_m, float near_m, float far_m, float3 *__restrict__ points,
                      std::uint8_t *__restrict__ valid)
@@ -129,7 +123,7 @@ step_result organized_points::deproject(const gpu_frame &frame,
     refusal = description_refusal(description);
     if (!refusal.empty())
         return {false, std::move(refusal)};
-    const dim3 block(block_width, block_height);
+    const dim3 block = picture_block();
     return launch_kernel("the organized points' kernel", &deproject_kernel,
                          grid_for(description.size, block), block, stream, frame.depth().data(),
                          description.size, description.intrinsics, description.depth_unit_m,
@@ -148,6 +142,16 @@ const gpu_image<float3> &organized_points::points() const noexcept
 }
 
 const gpu_image<std::uint8_t> &organized_points::validity_mask() const noexcept
+{
+    return m_validity_mask;
+}
+
+gpu_image<float3> &organized_points::points_to_write(pyramid_key) noexcept
+{
+    return m_points;
+}
+
+gpu_image<std::uint8_t> &organized_points::validity_mask_to_write(pyramid_key) noexcept
 {
     return m_validity_mask;
 }

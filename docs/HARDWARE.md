@@ -197,6 +197,28 @@ and 2.969 ms back to back], so it was not kept.
 | 1280x800 | 30 fps | 9.488 / 9.499 / 9.509 ms | 0.019 ms |
 | 1280x800 | back to back | 2.934 / 2.938 / 2.949 ms | 0.005 ms |
 
+**The frame's pyramid** (docs/methods/frame-pyramid.md): `frame_pyramid::build()`, its seven
+kernels timed together by CUDA events, and the host's call, over 20 s per case after 5 s, on the
+frame of the organized points and the normals, range 0.30 m to 1.0 m, the normals' starting
+parameters [M 2026-11-14, 16:18 to 16:23]; valid pixels at level 0, 1 and 2: 126118, 31441 and
+7815 at 640x400, 504939, 126058 and 31425 at 1280x800. In the same runs level 0's stages alone,
+the organized points and their normals on buffers of their own, and the normals of level 1 and 2
+alone on the pyramid's points; the rest of the build, level 0's intensity and the two
+combinings, is the difference. Paced at 30 fps the governor keeps the GPU at 306 MHz throughout;
+back to back it runs at 1020 MHz throughout.
+
+| size | pace | build median / p95 / max | host call median | level 0's stages | normals of level 1 and 2 | the rest |
+|---|---|---|---|---|---|---|
+| 640x400 | 30 fps | 3.845 / 3.856 / 3.868 ms | 0.085 ms | 2.622 ms | 0.922 ms | 0.30 ms |
+| 640x400 | back to back | 1.198 / 1.203 / 1.211 ms | 0.029 ms | 0.811 ms | 0.286 ms | 0.10 ms |
+| 1280x800 | 30 fps | 14.201 / 14.215 / 14.240 ms | 0.079 ms | 10.029 ms | 3.160 ms | 1.01 ms |
+| 1280x800 | back to back | 4.439 / 4.446 / 4.489 ms | 0.029 ms | 3.102 ms | 0.972 ms | 0.37 ms |
+
+The normals of level 1 and 2 cost 31 % to 35 % of level 0's stages [M 2026-11-14: the table,
+0.972 / 3.102 ms to 0.286 / 0.811 ms], their share of the pixels, 31 % [S: 1/4 + 1/16];
+combining the finer level's normals instead is a candidate, built only on a measured need
+(docs/methods/frame-pyramid.md, "Normals at every level").
+
 **The allocation near a frame's surface** (docs/methods/sparse-tsdf.md): the reset of the list's
 count and the kernel, timed together by CUDA events, and the host's call, over 20 s per case
 after 5 s, the same frame allocated again and again into a sparse TSDF of 1.0 GB that holds its

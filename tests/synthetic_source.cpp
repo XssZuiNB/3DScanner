@@ -5,6 +5,7 @@
 
 #include "synthetic_source.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -242,6 +243,17 @@ std::array<double, 3> texture_color(synthetic_texture texture, const Eigen::Vect
 Eigen::Vector3d pixel_ray(const gca::intrinsics &k, double u, double v)
 {
     return {(u - double{k.cx}) / k.fx, (v - double{k.cy}) / k.fy, 1.0};
+}
+
+double distance_from(const synthetic_surface &surface, const Eigen::Vector3d &world)
+{
+    const Eigen::Vector3d local = world - surface.centre_m;
+    const double s = local.dot(surface.axis_u);
+    const double t = local.dot(surface.axis_v);
+    const double h = local.dot(surface.axis_u.cross(surface.axis_v));
+    const double ds = std::abs(s) - std::min(std::abs(s), surface.half_u_m);
+    const double dt = std::abs(t) - std::min(std::abs(t), surface.half_v_m);
+    return std::sqrt(ds * ds + dt * dt + h * h);
 }
 
 std::optional<synthetic_hit> first_hit(const std::vector<synthetic_surface> &surfaces,
