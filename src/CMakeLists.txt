@@ -6,6 +6,7 @@
 #                    sequence; threads)
 #   camera <- orbbec_camera (OrbbecSDK, OpenCV)
 #   types <- camera <- gpu (CUDA runtime) <- geometry (Eigen) <- registration
+#   gpu <- fusion (the sparse TSDF)
 #   types <- camera <- scan (Eigen, OpenCV's core)
 # Every library includes from src/ ("gpu/cuda_container.hpp"); types carries that directory.
 
@@ -73,6 +74,7 @@ add_library(
     gpu/cuda_depth_frame_container.cu
     gpu/cuda_frame.cuh
     gpu/cuda_util.cuh
+    gpu/gpu_array.hpp
     gpu/gpu_check.cu
     gpu/gpu_check.hpp
     gpu/gpu_frame.cpp
@@ -130,6 +132,12 @@ add_library(
 )
 target_link_libraries(registration PUBLIC geometry Eigen3::Eigen)
 
+# ---------------------------------------------------------------- fusion
+# The sparse TSDF (docs/methods/sparse-tsdf.md): today its hash of blocks and its pool.
+add_library(fusion STATIC fusion/block_hash.cuh fusion/sparse_tsdf.cu fusion/sparse_tsdf.hpp)
+# PUBLIC: the header holds gpu's arrays, its pool and CUDA's half float.
+target_link_libraries(fusion PUBLIC gpu)
+
 # ---------------------------------------------------------------- scan
 # The files a scan keeps and the parameters of each object class (docs/SCAN_FILES.md); host only.
 # OpenCV's core reads and writes the parameters' JSON.
@@ -161,6 +169,7 @@ set_target_properties(
     gpu
     geometry
     registration
+    fusion
     PROPERTIES
     CUDA_ARCHITECTURES "${GCA_CUDA_ARCHITECTURES}"
 )

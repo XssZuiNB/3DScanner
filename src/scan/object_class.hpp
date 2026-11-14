@@ -32,8 +32,9 @@ struct object_class_parameters
     double full_voxel_size_m; ///< the voxel edge of the final models, refinement's fusion, in m
     double min_depth_m;       ///< the nearest depth a frame contributes, along the camera's z, in m
     double max_depth_m; ///< the farthest depth a frame contributes, along the camera's z, in m
-    std::uint64_t memory_budget_bytes; ///< the size of the scan's pool of blocks, in bytes,
-                                       ///< from 1 to 2^53, so that JSON holds it exactly
+    std::uint64_t memory_budget_bytes; ///< all of the device memory of the scan's sparse TSDF
+                                       ///< (docs/methods/sparse-tsdf.md), in bytes, from 1 to
+                                       ///< 2^53, so that JSON holds it exactly
 
     /// Compares two sets value by value.
     /// @param other [in] the other set.

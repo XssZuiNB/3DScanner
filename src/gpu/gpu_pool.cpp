@@ -68,36 +68,41 @@ std::string gpu_pool::refuse_closed(const std::string &what) noexcept
            " was requested after its closing, and the per-frame path allocates nothing";
 }
 
-request_status gpu_pool::allocate_image(const frame_size &size, std::size_t pixel_bytes,
-                                        void *&data, std::string &message) noexcept
+std::string gpu_pool::describe(std::size_t count, const frame_size *image_size)
+{
+    return image_size != nullptr ? "an image of " + size_text(*image_size)
+                                 : "an array of " + std::to_string(count) + " elements";
+}
+
+request_status gpu_pool::allocate_device(std::size_t count, std::size_t element_bytes,
+                                         const frame_size *image_size, void *&data,
+                                         std::string &message) noexcept
 {
     data = nullptr;
     // Before every other check, so that a closed pool calls no allocator at all.
     if (m_closed)
     {
-        message = refuse_closed("an image of " + size_text(size));
+        message = refuse_closed(describe(count, image_size));
         return request_status::closed;
     }
-    if (size.width == 0 || size.height == 0)
+    if (count == 0)
     {
-        message = "an image of " + size_text(size) + " holds no pixel";
+        message = describe(count, image_size) +
+                  (image_size != nullptr ? " holds no pixel" : " holds no element");
         return request_status::failure;
     }
-    // width * height is at most (2^32 - 1)^2 < 2^64 [S], so it fits; the bytes may not.
-    static_assert(sizeof(std::size_t) >= 8, "the pixel count of two 32-bit factors fits");
-    const std::size_t pixels = static_cast<std::size_t>(size.width) * size.height;
-    if (pixels > std::numeric_limits<std::size_t>::max() / pixel_bytes)
+    if (count > std::numeric_limits<std::size_t>::max() / element_bytes)
     {
-        message = "an image of " + size_text(size) + " of " + std::to_string(pixel_bytes) +
+        message = describe(count, image_size) + " of " + std::to_string(element_bytes) +
                   " bytes each has more bytes than std::size_t holds";
         return request_status::failure;
     }
-    const cudaError_t error = cudaMalloc(&data, pixels * pixel_bytes);
+    const cudaError_t error = cudaMalloc(&data, count * element_bytes);
     if (error != cudaSuccess)
     {
         data = nullptr;
         message =
-            cuda_failure(("CUDA could not allocate an image of " + size_text(size)).c_str(), error);
+            cuda_failure(("CUDA could not allocate " + describe(count, image_size)).c_str(), error);
         return request_status::failure;
     }
     return request_status::granted;

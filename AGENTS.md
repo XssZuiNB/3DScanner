@@ -22,23 +22,24 @@ the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the frame, t
 seam and the sequence on disk (`src/camera/`); the GPU image, the pool that closes and a
 frame's upload (`src/gpu/`); the organized points from a frame's depth
 (`src/geometry/organized_points.*`) and their normals (`src/geometry/organized_normals.*`); the
-files a scan keeps and the parameters of each object class (`src/scan/`). The tree is CUDA_3D
-cleaned up (dead code, RealSense and PCL removed), made to build here and given the Orbbec
-camera. It is the rewrite's prototype: its methods carry over, and its code is the test oracle
-until new code replaces it (CODING_STANDARDS.md, "The rewrite's code").
+sparse TSDF's hash of blocks and its pool (`src/fusion/`); the files a scan keeps and the
+parameters of each object class (`src/scan/`). The tree is CUDA_3D cleaned up (dead code,
+RealSense and PCL removed), made to build here and given the Orbbec camera. It is the rewrite's
+prototype: its methods carry over, and its code is the test oracle until new code replaces it
+(CODING_STANDARDS.md, "The rewrite's code").
 
-The tree today: `src/` is six static libraries and the header-only `types`, each linking only
+The tree today: `src/` is seven static libraries and the header-only `types`, each linking only
 the ones below it: `types`, `camera`, `orbbec_camera`, `gpu`, `geometry`, `registration`,
-`scan` (`src/CMakeLists.txt`; `gpu` links `camera` for the frame it uploads, `scan` for the
-POSIX file calls). There is one library per directory, except `src/camera/`, which holds two so
-that only the Orbbec camera links OrbbecSDK: `camera`, the frame, the frame source seam, the
-sequence on disk and the Orbbec camera's rules that need no camera, which the offline tests
-link without OrbbecSDK; and `orbbec_camera`, where `orbbec_device` is the camera as a frame
-source and delivers depth aligned to color, so the GPU code sees one resolution and one set of
-intrinsics. `orbbec_viewer` in `apps/` runs its loop (`apps/viewer_loop.*`) on the camera as a
-frame source, and the offline tests run the same loop on their synthetic source; the loop turns
-each frame's color to BGR8 for the prototype's GPU code. `distortion_check` reads the viewer's
-snapshots without the camera; there is no daemon.
+`fusion`, `scan` (`src/CMakeLists.txt`; `gpu` links `camera` for the frame it uploads, `scan`
+for the POSIX file calls). There is one library per directory, except `src/camera/`, which
+holds two so that only the Orbbec camera links OrbbecSDK: `camera`, the frame, the frame source
+seam, the sequence on disk and the Orbbec camera's rules that need no camera, which the offline
+tests link without OrbbecSDK; and `orbbec_camera`, where `orbbec_device` is the camera as a
+frame source and delivers depth aligned to color, so the GPU code sees one resolution and one
+set of intrinsics. `orbbec_viewer` in `apps/` runs its loop (`apps/viewer_loop.*`) on the
+camera as a frame source, and the offline tests run the same loop on their synthetic source;
+the loop turns each frame's color to BGR8 for the prototype's GPU code. `distortion_check`
+reads the viewer's snapshots without the camera; there is no daemon.
 
 ## 2. Before you run anything
 
@@ -213,10 +214,11 @@ checkers; these are the rules no checker holds.
    | the sequence on disk (docs/SEQUENCE_FILE.md): its layout, writer and reader; the POSIX file calls the writers and readers share | `src/camera/sequence_*`; `src/camera/posix_file.*` |
    | Orbbec: alignment, color decoding, OrbbecSDK's report as plain data | `src/camera/orbbec_device.*` |
    | Orbbec: the choice of streams, the checks of a frame, the rule for timestamps, the refusals of an opening | `src/camera/orbbec_rules.*` |
-   | the GPU image, the pinned host buffer, the pool that closes, a frame's upload, a GPU step's result, their messages, a stage kernel's launch | `src/gpu/gpu_image.hpp`, `src/gpu/pinned_buffer.hpp`, `src/gpu/gpu_pool.*`, `src/gpu/gpu_frame.*`, `src/gpu/step_result.hpp`, `src/gpu/gpu_messages.*`, `src/gpu/kernel_launch.cuh` |
+   | the GPU array, the one owner of device memory; the GPU image, an array of pixels; the pinned host buffer, the pool that closes, a frame's upload, a GPU step's result, their messages, a stage kernel's launch | `src/gpu/gpu_array.hpp`, `src/gpu/gpu_image.hpp`, `src/gpu/pinned_buffer.hpp`, `src/gpu/gpu_pool.*`, `src/gpu/gpu_frame.*`, `src/gpu/step_result.hpp`, `src/gpu/gpu_messages.*`, `src/gpu/kernel_launch.cuh` |
    | the prototype's frames and camera parameters on the GPU, CUDA helpers, GPU checks | `src/gpu/` |
    | organized points from a frame's depth, their validity mask | `src/geometry/organized_points.*` |
    | the organized points' normals in image space | `src/geometry/organized_normals.*` |
+   | the sparse TSDF (docs/methods/sparse-tsdf.md): its voxel, its hash of blocks, its pool and the division of the memory budget; the hash's insertion and lookup as device code, which every fusion kernel calls | `src/fusion/sparse_tsdf.*`; `src/fusion/block_hash.cuh` |
    | point clouds: creation, filters, normals, search; the 3x3 eigensolver, `float3` arithmetic and its Eigen conversion | `src/geometry/` |
    | registration (colored ICP); the 3x3 LDLT solve | `src/registration/` |
    | the files a scan keeps (docs/SCAN_FILES.md); the parameters of each object class | `src/scan/` |
@@ -248,7 +250,7 @@ checkers; these are the rules no checker holds.
 | `CODING_STANDARDS.md` | the style guides, what they leave to this tree, the rules for the rewrite's code, the checkers |
 | `GLOSSARY.md`, `docs/adr/` | the scanner's terms; the decisions in force and why |
 | `docs/SCAN_FILES.md` | the formats of the files a scan keeps: the models (PLY), the trajectory, the parameters |
-| `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md` and `normals.md` |
+| `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md`, `normals.md` and `sparse-tsdf.md` |
 | `docs/SEQUENCE_FILE.md` | the format of a sequence: a scan's frames with their poses, which the scanner, the viewer and the replay tool are planned to write or read |
 | `docs/agents/` | how the workflow skills in `.claude/skills/` find the tracker and the domain docs |
 

@@ -51,6 +51,12 @@ _Avoid_: preview cloud, draft
 The work on a scan after the operator's stop that turns its frames into the final model.
 _Avoid_: post-processing, offline pass
 
+**Voxel size**:
+The edge of the small cubes the model's space is divided into; nothing smaller than a voxel is
+resolved, in shape or in color. Each object class sets two: the live model's, coarser, and the
+final model's, which refinement uses.
+_Avoid_: resolution, grid size, cell size
+
 **Support plane**:
 The table or floor surface the scanned object stands on.
 _Avoid_: ground, table plane, turntable plane

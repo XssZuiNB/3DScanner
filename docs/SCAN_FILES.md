@@ -127,7 +127,7 @@ library). Example, a large object's set:
 | `full_voxel_size_m` | the voxel edge of the final models, in m, finite and > 0 |
 | `min_depth_m` | the nearest depth a frame contributes, along the camera's z, in m, finite and > 0 |
 | `max_depth_m` | the farthest depth, in m, finite and greater than `min_depth_m` |
-| `memory_budget_bytes` | the size of the scan's pool of blocks, in bytes, a whole number from 1 to 2^53 |
+| `memory_budget_bytes` | all of the device memory of the scan's sparse TSDF, its pool of blocks, its hash and their lists and counts (docs/methods/sparse-tsdf.md, "The pool and the memory budget"), in bytes, a whole number from 1 to 2^53 |
 
 Every key stands in every file; there is no optional key. A field added later that can lack a
 value states its empty form here when it is added, so the file keeps one version.

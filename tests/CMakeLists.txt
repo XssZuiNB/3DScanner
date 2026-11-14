@@ -74,3 +74,8 @@ add_test(NAME organized_points COMMAND test_organized_points)
 add_executable(test_organized_normals test_organized_normals.cpp)
 target_link_libraries(test_organized_normals PRIVATE geometry synthetic_source)
 add_test(NAME organized_normals COMMAND test_organized_normals)
+
+# The sparse TSDF's hash of blocks and its pool, fed with block coordinates the test builds.
+add_executable(test_sparse_tsdf_blocks test_sparse_tsdf_blocks.cpp)
+target_link_libraries(test_sparse_tsdf_blocks PRIVATE fusion)
+add_test(NAME sparse_tsdf_blocks COMMAND test_sparse_tsdf_blocks)

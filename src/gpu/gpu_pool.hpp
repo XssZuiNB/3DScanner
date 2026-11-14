@@ -2,17 +2,19 @@
 /// @file gpu_pool.hpp
 /// The pool that closes: the gate the per-frame path's buffers pass through (CODING_STANDARDS.md,
 /// "The rewrite's code": the path's buffers exist before a scan starts, and it allocates
-/// nothing). While it is open, a request is granted a GPU image (gpu/gpu_image.hpp) of its own
-/// device memory, or a pinned host buffer (gpu/pinned_buffer.hpp) of its own page-locked memory;
+/// nothing). While it is open, a request is granted a GPU image (gpu/gpu_image.hpp) or a GPU
+/// array (gpu/gpu_array.hpp) of its own device memory, or a pinned host buffer
+/// (gpu/pinned_buffer.hpp) of its own page-locked memory;
 /// every buffer of the path is requested before a scan's first frame, and the pool is closed
 /// then. After that every request is refused as a value and counted, so a stage that asks for
 /// memory during a scan fails where its caller sees it, and a test sees the count. The pool holds
 /// no memory itself: what it granted is the sum of its requests, and each buffer frees its
 /// memory at its own end, before or after the pool's. It is not the pool of the sparse TSDF's
-/// blocks (docs/adr/0004-sparse-tsdf-model.md).
+/// blocks (docs/methods/sparse-tsdf.md), which is one of the arrays it grants.
 
 #pragma once
 
+#include "gpu/gpu_array.hpp"
 #include "gpu/gpu_image.hpp"
 #include "gpu/pinned_buffer.hpp"
 #include "types/frame_description.hpp"
@@ -88,12 +90,41 @@ public:
     {
         request_result<gpu_image<Pixel>> result;
         void *data = nullptr;
-        result.status = allocate_image(size, sizeof(Pixel), data, result.message);
+        // width * height is at most (2^32 - 1)^2 < 2^64 [S], so it fits; the bytes may not.
+        static_assert(sizeof(std::size_t) >= 8, "the pixel count of two 32-bit factors fits");
+        const std::size_t pixels = static_cast<std::size_t>(size.width) * size.height;
+        result.status = allocate_device(pixels, sizeof(Pixel), &size, data, result.message);
         if (result.status == request_status::granted)
         {
             // cudaMalloc's memory is "suitably aligned for any kind of variable" [S:
             // cuda_runtime_api.h, cudaMalloc, CUDA 12.6], so it holds Pixels.
-            result.granted = gpu_image<Pixel>(static_cast<Pixel *>(data), size);
+            result.granted =
+                gpu_image<Pixel>(gpu_array<Pixel>(static_cast<Pixel *>(data), pixels), size);
+        }
+        return result;
+    }
+
+    /// Requests a GPU array of a number of elements.
+    /// @param count [in] the number of elements, > 0.
+    /// @return granted, with an array of that many elements whose contents are not cleared;
+    ///         closed, with an empty array, when the pool is closed, whatever the count; failure,
+    ///         with an empty array and the reason, when count is 0, when the array's bytes exceed
+    ///         what std::size_t holds, or when CUDA cannot allocate them.
+    /// @note Allocates device memory with cudaMalloc when granted, and nothing when closed, as
+    ///       request() does; whether cudaMalloc waits for the GPU's work is not stated by CUDA
+    ///       [?]. When CUDA fails, its last error is cleared. Allocates for the message when it
+    ///       refuses; a failed allocation ends the program (std::terminate): the function is
+    ///       noexcept. Two threads may not request at once.
+    template <typename Element>
+    request_result<gpu_array<Element>> request_array(std::size_t count) noexcept
+    {
+        request_result<gpu_array<Element>> result;
+        void *data = nullptr;
+        result.status = allocate_device(count, sizeof(Element), nullptr, data, result.message);
+        if (result.status == request_status::granted)
+        {
+            // Aligned for any kind of variable, as for request().
+            result.granted = gpu_array<Element>(static_cast<Element *>(data), count);
         }
         return result;
     }
@@ -131,17 +162,29 @@ private:
     /// @pre The pool is closed; the request is counted all the same when it is not.
     std::string refuse_closed(const std::string &what) noexcept;
 
-    /// Allocates the device memory of an image request, unless the pool is closed or the size is
-    /// not one to allocate.
-    /// @param size [in] the image's width and height, in px.
-    /// @param pixel_bytes [in] the size of one pixel, in bytes, > 0.
+    /// Writes what a request of device memory asked for, for a message.
+    /// @param count [in] the elements asked for.
+    /// @param image_size [in] the image's width and height, in px, for an image; nullptr for an
+    ///        array.
+    /// @return "an image of <width>x<height> px" or "an array of <count> elements".
+    /// @note Allocates for the string; throws std::bad_alloc when that fails.
+    static std::string describe(std::size_t count, const frame_size *image_size);
+
+    /// Allocates the device memory of an image's or an array's request, unless the pool is
+    /// closed or the count is not one to allocate.
+    /// @param count [in] the elements: an image's width * height, or an array's count.
+    /// @param element_bytes [in] the size of one element, in bytes, > 0.
+    /// @param image_size [in] the image's width and height, in px, for an image's request, for
+    ///        the message; nullptr for an array's.
     /// @param data [out] the allocated device memory when granted, owned by the caller from then
     ///        on; nullptr otherwise.
-    /// @param message [out] why nothing was granted; left empty when granted.
-    /// @return granted, closed or failure, as request() says.
+    /// @param message [out] why nothing was granted; left empty when granted, so that a granted
+    ///        request writes no string.
+    /// @return granted, closed or failure, as request() and request_array() say.
     /// @note Allocates with cudaMalloc as request() says.
-    request_status allocate_image(const frame_size &size, std::size_t pixel_bytes, void *&data,
-                                  std::string &message) noexcept;
+    request_status allocate_device(std::size_t count, std::size_t element_bytes,
+                                   const frame_size *image_size, void *&data,
+                                   std::string &message) noexcept;
 
     bool m_closed = false;
     std::uint64_t m_refused_while_closed = 0;
