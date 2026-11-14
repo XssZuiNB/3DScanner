@@ -132,9 +132,10 @@ measurement"]; the rule here keeps that difference to the frame's own step at ev
 incidence above θ_l, the pixels of level l down its slope from the centre lie beyond the rule,
 and those along its level line, whose segment lies across the line of sight, within it: level
 l + 1 then combines along the level line only, a smoothing in that direction alone, and still
-nothing from across an edge. θ is at most 89° (docs/methods/normals.md, "Input"), so that sin² θ_l
-stays below 1 by far more than float's rounding of the rule, and the point (0, 0, 0) of an
-invalid pixel never lies on one surface with a valid one.
+nothing from across an edge. θ is at most 89° [?: a choice, the user's, 2026-11-14]
+(docs/methods/normals.md, "Input"), so that sin² θ_l stays below 1 by far more than float's
+rounding of the rule, and the point (0, 0, 0) of an invalid pixel never lies on one surface with a
+valid one.
 
 ### The intrinsics of a level
 
@@ -219,8 +220,9 @@ pixels of level 1 lie beyond the rule: there level 2 leaves them out, as the rul
 ## On the GPU
 
 On the caller's stream, in this order, each a kernel of one thread for each pixel of its level,
-in the stages' block of 32 x 8 threads (`src/gpu/kernel_launch.cuh`): the organized points of level 0
-from the frame's depth; the intensity of level 0 from the frame's color and the level's marks; the
+in the stages' block of 32 x 8 threads [?: a choice, the user's, 2026-11-14]
+(`src/gpu/kernel_launch.cuh`): the organized points of level 0 from the frame's depth; the
+intensity of level 0 from the frame's color and the level's marks; the
 normals of level 0; then for level 1 and level 2 the combining, which writes the level's points,
 marks and intensity from the level before, and the level's normals. The step allocates nothing,
 waits for nothing and reads nothing back; every launch goes through the stages' one launch

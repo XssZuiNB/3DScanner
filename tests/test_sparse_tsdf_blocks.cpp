@@ -4,12 +4,14 @@
 /// coordinates the test builds; the method is docs/methods/sparse-tsdf.md. Each case requests
 /// its sparse TSDF and its arrays, then closes the pool, so that every operation runs with the
 /// pool closed; the largest sparse TSDF here holds 16385 blocks, 69275668 bytes of device memory
-/// [S: computed], below the memory budget's 1.0 GB, which is divided but not allocated. The
-/// coordinates go to the GPU and the numbers come back by copies on the stream the kernels run
-/// on. The request's check of one frame against the hash's room is
-/// test_sparse_tsdf_allocation.cpp's; the cases here take parameters it grants at their budgets.
+/// [S: computed], far below the object classes' memory budget; the budgets of 1.0 GB and 2.0 GB
+/// are divided but not allocated. The coordinates go to the GPU and the numbers come back by
+/// copies on the stream the kernels run on. The request's check of one frame against the hash's
+/// room is test_sparse_tsdf_allocation.cpp's; the cases here take parameters it grants at their
+/// budgets.
 /// - The division of a budget: at the budget of exactly 1024 blocks and one byte below it, at
-///   the smallest that holds one block and one byte below it, at 1.0 GB and at 2^53 bytes.
+///   the smallest that holds one block and one byte below it, at 1.0 GB, at 2.0 GB and at 2^53
+///   bytes.
 /// - Collisions on purpose and duplicates: coordinates that share a home slot, among them one
 ///   run that wraps from the last slot to the first and runs into another group's home, each
 ///   inserted by 65 threads of one launch in a shuffled order: every coordinate is found, the
@@ -312,6 +314,7 @@ void check_layout(cudaStream_t stream)
         {"layout, one block exactly", 4180, {1, 4, 4180}},
         {"layout, one byte below one block", 4179, {0, 0, 0}},
         {"layout, 1.0 GB", 1'000'000'000, {239'810, 1'048'576, 999'998'232}},
+        {"layout, 2.0 GB", 2'000'000'000, {479'620, 2'097'152, 1'999'996'448}},
         {"layout, 2^53 bytes, 2^29 blocks at most",
          std::uint64_t{1} << 53,
          {std::uint32_t{1} << 29, std::uint32_t{1} << 31, 2'235'530'477'584}},

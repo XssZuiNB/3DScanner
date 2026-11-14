@@ -23,9 +23,9 @@
 namespace gca
 {
 /// The block of threads of a stage's kernel over a picture: 32 x 8 threads, one warp along a row
-/// and 8 rows, one thread for each pixel [?: a choice; the stages' times on the board stand in
-/// docs/HARDWARE.md, "The per-frame path's stages"; no other block was measured]. A kernel
-/// declares it in its __launch_bounds__ and launches with picture_block().
+/// and 8 rows, one thread for each pixel [?: a choice, the user's, 2026-11-14; the stages' times
+/// on the board stand in docs/HARDWARE.md, "The per-frame path's stages"; no other block was
+/// measured]. A kernel declares it in its __launch_bounds__ and launches with picture_block().
 inline constexpr unsigned int picture_block_width = 32;
 inline constexpr unsigned int picture_block_height = 8;
 

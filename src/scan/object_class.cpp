@@ -40,10 +40,10 @@ constexpr std::optional<class_row> row_of(object_class kind) noexcept
                 .min_depth_m = 0.30,
                 // [?: initial, the user's choice, 2026-11-14].
                 .max_depth_m = 1.0,
-                // 1.0 GB, a quarter of the about 4.0 GB available to CPU and GPU together
-                // [M 2026-11-13, docs/HARDWARE.md, "Memory, storage, network"], until a scan's
-                // memory is measured [?: initial, the user's choice, 2026-11-14].
-                .memory_budget_bytes = 1'000'000'000,
+                // 2.0 GB, 2'000'000'000 bytes as 1.0 GB is 10^9: while a scan runs no other
+                // program runs, and the budget may rise later [?: the user's choice, 2026-11-14];
+                // memory-budget-and-refinement-time-measured sets its measured value.
+                .memory_budget_bytes = 2'000'000'000,
             }};
     case object_class::large_object:
         return class_row{
@@ -59,8 +59,9 @@ constexpr std::optional<class_row> row_of(object_class kind) noexcept
                 .min_depth_m = 0.4,
                 // [?: initial, the user's choice, 2026-11-14].
                 .max_depth_m = 3.0,
-                // 1.0 GB, as the tabletop object's [?: initial, the user's choice, 2026-11-14].
-                .memory_budget_bytes = 1'000'000'000,
+                // 2.0 GB, as the tabletop object's [?: the user's choice, 2026-11-14]; the ticket
+                // memory-budget-and-refinement-time-measured sets its measured value.
+                .memory_budget_bytes = 2'000'000'000,
             }};
     }
     return std::nullopt;

@@ -221,8 +221,8 @@ combining the finer level's normals instead is a candidate, built only on a meas
 
 **The allocation near a frame's surface** (docs/methods/sparse-tsdf.md): the reset of the list's
 count and the kernel, timed together by CUDA events, and the host's call, over 20 s per case
-after 5 s, the same frame allocated again and again into a sparse TSDF of the object class's
-1.0 GB, 239810 blocks and 1048576 slots, that holds its blocks already, as a scan's frame finds
+after 5 s, the same frame allocated again and again into a sparse TSDF of 1.0 GB, 239810 blocks
+and 1048576 slots, that holds its blocks already, as a scan's frame finds
 most of its blocks held [M 2026-11-14, 18:23 to 18:27, MAXN_SUPER by `nvpmodel -q`, no compiler
 running]. The scenes of `tests/test_sparse_tsdf_allocation.cpp`: the tabletop box on its plane
 from the first pose of its walk, at 2 mm voxels and the range 0.30 m to 1.0 m; a box of 1.2 m x

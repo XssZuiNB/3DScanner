@@ -113,7 +113,7 @@ library). Example, a large object's set:
             "full_voxel_size_m": 4.0000000000000001e-03,
             "min_depth_m": 4.0000000000000002e-01,
             "max_depth_m": 3.0,
-            "memory_budget_bytes": 1000000000.0
+            "memory_budget_bytes": 2000000000.0
         }
     }
 

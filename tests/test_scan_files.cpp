@@ -485,7 +485,7 @@ const std::string parameters_by_hand = R"({
         "full_voxel_size_m": 4.0000000000000001e-03,
         "min_depth_m": 4.0000000000000002e-01,
         "max_depth_m": 3.0,
-        "memory_budget_bytes": 1000000000.0
+        "memory_budget_bytes": 2000000000.0
     }
 }
 )";
@@ -538,7 +538,7 @@ void test_parameters_round_trip(const temporary_directory &directory)
     write_bytes(hand_path, parameters_by_hand);
     const gca::read_result<gca::scan_parameters> hand = gca::read_parameters(hand_path);
     const gca::scan_parameters expected = {
-        "db91e0d", gca::object_class::large_object, {0.008, 0.004, 0.4, 3.0, 1000000000u}};
+        "db91e0d", gca::object_class::large_object, {0.008, 0.004, 0.4, 3.0, 2000000000u}};
     check(hand.value && *hand.value == expected,
           ("parameters: the document's example is read as the document says; " + hand.reason)
               .c_str());
@@ -652,7 +652,7 @@ void test_parameters_refusals(const temporary_directory &directory)
          "\"max_depth_m\" " + not_real},
         {"a length written as a string", replaced(valid, min_text, "\"0.4\""),
          "\"min_depth_m\" " + not_real},
-        {"a budget written as an integer", replaced(valid, "1000000000.0", "1000000000"),
+        {"a budget written as an integer", replaced(valid, "2000000000.0", "2000000000"),
          "\"memory_budget_bytes\" " + not_real},
         {"a voxel size below 0", replaced(valid, full_text, "-4.0e-03"),
          "\"full_voxel_size_m\" is -0.004, not a finite number > 0"},
@@ -663,11 +663,11 @@ void test_parameters_refusals(const temporary_directory &directory)
          "\"min_depth_m\" 3 is not less than \"max_depth_m\" 3"},
         {"min_depth_m above max_depth_m", replaced(valid, min_text, "3.5"),
          "\"min_depth_m\" 3.5 is not less than \"max_depth_m\" 3"},
-        {"a budget with a fraction", replaced(valid, "1000000000.0", "1000000000.5"),
-         "\"memory_budget_bytes\" is 1000000000.5, not a whole number from 1 to 2^53"},
-        {"a budget of 0", replaced(valid, "1000000000.0", "0.0"),
+        {"a budget with a fraction", replaced(valid, "2000000000.0", "2000000000.5"),
+         "\"memory_budget_bytes\" is 2000000000.5, not a whole number from 1 to 2^53"},
+        {"a budget of 0", replaced(valid, "2000000000.0", "0.0"),
          "\"memory_budget_bytes\" is 0, not a whole number from 1 to 2^53"},
-        {"a budget above 2^53", replaced(valid, "1000000000.0", "9007199254740994.0"),
+        {"a budget above 2^53", replaced(valid, "2000000000.0", "9007199254740994.0"),
          "\"memory_budget_bytes\" is 9007199254740994, not a whole number from 1 to 2^53"},
         {"a file cut short", valid.substr(0, valid.find("\"parameters\"")),
          "no JSON that OpenCV reads"},

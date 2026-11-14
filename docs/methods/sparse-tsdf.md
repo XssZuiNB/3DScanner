@@ -101,17 +101,19 @@ farthest depth a frame contributes, as its parameters when it is requested
 (`gca::sparse_tsdf_parameters`) and keeps them for every operation, so that the allocation, the
 integration and the ray cast use the same μ. The scan fills them, v and z_max from the object
 class; the tests name the values above. The request refuses a value outside its range, so that a
-mistaken value, a unit's factor of 1000 among them, is a refusal by name [?: a choice, each for
-the reason given]:
+mistaken value, a unit's factor of 1000 among them, is a refusal by name [?: a choice, the
+user's, 2026-11-14, each for the reason given]:
 
 * **v from 0.5 mm to 16 mm**, half the object classes' finest voxel size and twice their
   coarsest. It is not narrowed to the object classes' sizes: the live models' sizes are still to
   be set by measurement, and the check of one frame below limits every size at its budget.
 * **c above 0 up to 0.02 /m**, twice the datasheet's bound: the measured c is likely below the
   bound, which holds the plane's flatness besides the noise, and twice it leaves room for a camera
-  noisier than its datasheet. Above 0.0175 /m no final model passes the check of one frame at
-  1.0 GB, the large object's only up to 0.0132 /m [S: computed, "One frame's blocks"], so a
-  measured c above those needs a larger budget or a nearer far depth.
+  noisier than its datasheet. At the object classes' budget, 2.0 GB, every final model passes
+  the check of one frame over the whole range, the large object's at 0.02 /m with N at 0.80 of
+  the room; so does every budget from 1.11 GB, where S becomes 2^21, up to the board's memory.
+  Below that the final models pass only part of the range, at 1.0 GB the large object's up to
+  0.0132 /m [S: computed, "One frame's blocks"], so a smaller budget can refuse a measured c.
 * **k from 1 to 5**: five standard deviations hold all but 6e-7 of a Gaussian
   noise's measurements [S: the normal distribution], and a wider band only lets nearer surfaces
   interfere.
@@ -242,7 +244,7 @@ processed" [S: 2013, section 4.2]: a block is then missing for a frame. Here non
 
 **Probes.** At a load α of keys per slot, linear probing needs about (1 + 1 / (1 - α)) / 2
 probes to find a key and (1 + 1 / (1 - α)²) / 2 to find it absent [S: Knuth, section 6.4]: at
-the 1.0 GB budget's full pool, α = 0.23, that is 1.15 and 1.34 [S: computed].
+the 2.0 GB budget's full pool, α = 0.23, that is 1.15 and 1.34 [S: computed].
 
 **What is the same in every run.** The set of coordinates that get a block, when the pool holds
 them all, and every count. What is not: which slot a key takes when keys collide, and which
@@ -261,16 +263,17 @@ between GPU and host [S: 2013, sections 6 and 8]; neither is built here.)
 each); the hash's keys, blocks' numbers and stamps of the last frame (16 bytes a slot); the
 frame's list of slots (4 bytes a block, "The allocation near a frame's surface"); and four
 32-bit counts, of claims, of refusals, of the list and of the rays not walked. The object class
-sets it (`src/scan/object_class.cpp`), 1.0 GB to start with [?: initial]. The pool holds the
-largest number of blocks B for which
+sets it (`src/scan/object_class.cpp`): 2.0 GB, 2 · 10^9 bytes, for both object classes until a
+scan's memory is measured [?: the user's choice, 2026-11-14]. The pool holds the largest number
+of blocks B for which
 
     4100 B + 16 S + 16 <= budget,   S = the least power of two >= 4 B
 
-so at 1.0 GB, B = 239810 blocks and S = 1048576 slots, 999998232 bytes, of which the keys and
-numbers take 12.6 MB and the stamps and the list 5.2 MB [S: computed]. B is at most 2^29, so that
+so at 2.0 GB, B = 479620 blocks and S = 2097152 slots, 1999996448 bytes, of which the keys and
+numbers take 25.2 MB and the stamps and the list 10.3 MB [S: computed]. B is at most 2^29, so that
 S fits 32 bits. The stamps and the list are the allocation's ("The allocation near a frame's
 surface"). S is four times B, not twice, so that one frame of a final model fits the hash ("One
-frame's blocks") [?: a choice, the user's, 2026-11-14]: at 1.0 GB that costs 2046 blocks, 0.85 %
+frame's blocks") [?: a choice, the user's, 2026-11-14]: at 2.0 GB that costs 4092 blocks, 0.85 %
 of the pool, against S at twice B [S: computed].
 
 **One sparse TSDF exists at a time.** Refinement's, at the full voxel size, is requested from a
@@ -278,12 +281,12 @@ pool of its own after the live model's is released, within the same budget.
 
 **What the budget holds** [S: computed]: a surface facing the camera at depth z crosses about
 2 μ(z) / (8 v) + 1 blocks along each column of blocks, so a square metre of it takes about
-(2 μ / (8 v) + 1) / (8 v)² blocks. With c at the datasheet's bound, 1.0 GB holds:
+(2 μ / (8 v) + 1) / (8 v)² blocks. With c at the datasheet's bound, 2.0 GB holds:
 
 | voxel size | at 0.3 m | at 0.5 m | at 1.0 m |
 |---|---|---|---|
-| 1 mm (tabletop, final) | 7.7 m² | 5.3 m² | 1.8 m² |
-| 2 mm (tabletop, live) | 31 m² | 31 m² | 13 m² |
+| 1 mm (tabletop, final) | 15 m² | 11 m² | 3.6 m² |
+| 2 mm (tabletop, live) | 61 m² | 61 m² | 26 m² |
 
 A surface seen at a slant, or from several sides, takes more.
 
@@ -341,10 +344,11 @@ and S doubles.
 (The starting values of the truncation's rule; N [S: computed], rounded up; the last column a
 count of the distinct blocks met by the bands of the 1024000 pixels' rays, each sampled every
 eighth of a block, at three poses: the identity, a turn of 30° about x and one of 54.7° about
-(1, -1, 0) [S: computed, a CPU count].) At 1.0 GB the room is 808766 blocks, so every model is
-granted, the final ones with 1.58 and 1.34 times their N [S: computed]. Each final model's frame
-of this kind still uses up its pool alone, as its count exceeds B. The allocation's test measures
-N's margin at its edge: a wall at 3.119 m filling 1280x800 at 8 mm voxels, N = 105778.4 against
+(1, -1, 0) [S: computed, a CPU count].) At 2.0 GB the room is 1617532 blocks, so every model is
+granted, the final ones with 3.15 and 2.67 times their N [S: computed]. A final model's frame of
+this kind takes 72 % to 79 % of its pool for the tabletop object and 93 % to 94 % for the large
+object [S: computed, the counts over B]. The allocation's test measures N's margin at its edge:
+a wall at 3.119 m filling 1280x800 at 8 mm voxels, N = 105778.4 against
 a room of 105779, touches 68321 blocks at the identity and 74437 turned by 54.7° about
 (1, -1, 0), 1.55 and 1.42 times fewer [M 2026-11-14, `tests/test_sparse_tsdf_allocation.cpp`].
 A point past z_max is not walked ("The allocation near a frame's surface", step 1), so the model's

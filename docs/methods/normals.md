@@ -67,10 +67,11 @@ exactly that [S: the projection of the line of sight onto the plane has length s
 rule keeps every pair on a plane seen at φ <= θ, and it takes a pair whose segment lies within
 90° - θ of the line of sight for a jump in depth between two surfaces, one behind the other.
 The rule is symmetric in a and b, and it needs neither the focal length nor the depth unit. θ is
-at most 89° [?: a choice]: the stage compares in float with sin² θ, 0.99970 at 89°, 3.0e-4 below
-1, far more than the rounding of the rule's products, a few float steps of 1e-7; from 89.990° on
-sin² θ rounds to 1, and the rule would take every pair for one surface, by the Cauchy-Schwarz
-inequality, a point and the camera's centre included [S: computed]. Its
+at most 89° [?: a choice, the user's, 2026-11-14]: the stage compares in float with sin² θ,
+0.99970 at 89°, 3.0e-4 below 1, far more than the rounding of the rule's products, a few float
+steps of 1e-7; from 89.990° on sin² θ rounds to 1, and the rule would take every pair for one
+surface, by the Cauchy-Schwarz inequality, a point and the camera's centre included
+[S: computed]. Its
 code, `src/geometry/one_surface.cuh`, is shared with the frame's pyramid, whose coarser levels
 combine only points on one surface by it (docs/methods/frame-pyramid.md).
 
@@ -243,9 +244,10 @@ and there 8 of its 324773 pixels lie at a depth edge, none at 640x400 [M 2026-11
 ## On the GPU
 
 One kernel on the caller's stream, one thread for each pixel, in blocks of 32 x 8 threads
-[?: a choice]. Its first pass reads the points and the marks of the pixel's window, its second
-only the points of the neighbourhood, and it writes the normal. The stage allocates nothing,
-waits for nothing and reads nothing back: the host checks the arguments, asks CUDA whether an
+[?: a choice, the user's, 2026-11-14]. Its first pass reads the points and the marks of the
+pixel's window, its second only the points of the neighbourhood, and it writes the normal. The
+stage allocates nothing, waits for nothing and reads nothing back: the host checks the arguments,
+asks CUDA whether an
 error is set (`cudaPeekAtLastError`), launches, and asks whether the launch was accepted
 (`cudaGetLastError`), the per-frame path's stages' one launch (`src/gpu/kernel_launch.cuh`);
 neither waits. Work queued on the stream

@@ -93,8 +93,9 @@ contents are unspecified.
 ## On the GPU
 
 One kernel on the caller's stream, one thread for each pixel, in blocks of 32 x 8 threads
-[?: a choice]. It reads the depth picture and writes both images. The stage allocates nothing,
-waits for nothing and reads nothing back: the host checks the arguments, asks CUDA whether an
+[?: a choice, the user's, 2026-11-14]. It reads the depth picture and writes both images. The
+stage allocates nothing, waits for nothing and reads nothing back: the host checks the arguments,
+asks CUDA whether an
 error is set (`cudaPeekAtLastError`), launches, and asks whether the launch was accepted
 (`cudaGetLastError`); neither waits. Work queued on the stream after it sees the points. Its
 time on the board stands in docs/HARDWARE.md, "The per-frame path's stages".

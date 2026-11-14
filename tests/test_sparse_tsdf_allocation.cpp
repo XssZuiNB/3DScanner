@@ -39,7 +39,10 @@
 ///   request's refusals of a single value are test_sparse_tsdf_blocks.cpp's.
 /// - One frame's bound (docs/methods/sparse-tsdf.md, "One frame's blocks"), computed here in
 ///   double from the method's formula with the camera's 1280x800 intrinsics: every object class's
-///   live and final models are granted at its budget and far depth; at the edge the request is
+///   live and final models pass the request's checks at its budget and far depth, each requested
+///   from a closed pool, which refuses the first claim, so that no device memory is claimed for
+///   them; each final model at the farthest depth the request takes, 10 m, is refused by the
+///   bound before any claim, at its object class's budget; at the edge the request is
 ///   granted with a budget of B blocks and refused with B + 1, granted at a far depth whose bound
 ///   lies 50 blocks inside the room and refused 50 blocks outside it. The edge frame, a wall
 ///   facing the camera that fills 1280x800 at the far depth, at two poses: it touches no more
@@ -752,9 +755,39 @@ void check_refused_by_bound(const std::string &what,
                   made.message, made.message.find("cannot hold one frame") != std::string::npos);
 }
 
-/// Every object class's live and final models are granted at its budget and far depth, with the
-/// method's starting values of the truncation's rule (parameters_of()); their bounds are printed
-/// against the room.
+/// What a request from a closed pool gave: the request's result and the claims the pool refused.
+struct unclaimed_request
+{
+    gca::request_result<gca::sparse_tsdf> made; ///< closed when every check of the request passed,
+                                                ///< failure when one refused; nothing granted
+    std::uint64_t claims_refused;               ///< 1 when every check passed: the request's
+                                                ///< first claim; 0 when a check refused before it
+};
+
+/// Requests a sparse TSDF from a closed pool of its own: the request checks the parameters and
+/// the budget, one frame's bound against the room among them, before its first claim, which the
+/// closed pool refuses (sparse_tsdf::request()), so that no device memory is claimed.
+/// @param parameters [in] the sparse TSDF's parameters.
+/// @param stream [in] the stream the request would queue its clearing on; nothing is queued.
+/// @return the request's result and the claims the closed pool refused.
+unclaimed_request request_from_closed(const gca::sparse_tsdf_parameters &parameters,
+                                      cudaStream_t stream)
+{
+    gca::gpu_pool pool;
+    pool.close();
+    unclaimed_request checked{gca::sparse_tsdf::request(pool, parameters, stream), 0};
+    checked.claims_refused = pool.refused_while_closed();
+    return checked;
+}
+
+/// Every object class's live and final models pass the request's checks at its budget and far
+/// depth, with the method's starting values of the truncation's rule (parameters_of()), without
+/// device memory: each is requested from a closed pool, comes back closed with its first claim
+/// refused, and the room of its budget's layout (layout_for_budget()) lies above its bound
+/// computed here; the bounds are printed against the room. Each final model at the farthest depth
+/// the request takes, 10 m, is refused by the same check at its object class's budget before any
+/// claim: its bound, 5.4e9 blocks at 1 mm and 8.7e7 at 4 mm, lies above the room of every budget
+/// the board's 7607 MB could hold, 7.3e6 blocks at most, at 4.43 GB [S: computed].
 /// @param stream [in] the stream.
 void check_object_classes(cudaStream_t stream)
 {
@@ -762,6 +795,7 @@ void check_object_classes(cudaStream_t stream)
          {gca::object_class::tabletop_object, gca::object_class::large_object})
     {
         const gca::object_class_parameters p = gca::parameters_of(kind);
+        const gca::sparse_tsdf_layout layout = gca::layout_for_budget(p.memory_budget_bytes);
         for (const auto &[model, voxel_m] :
              {std::pair{"live", p.live_voxel_size_m}, std::pair{"final", p.full_voxel_size_m}})
         {
@@ -769,17 +803,27 @@ void check_object_classes(cudaStream_t stream)
             const gca::sparse_tsdf_parameters parameters = {
                 p.memory_budget_bytes, static_cast<float>(voxel_m), method_truncation,
                 static_cast<float>(p.max_depth_m)};
-            const gca::sparse_tsdf tsdf =
-                granted(what + " at its budget and far depth: the sparse TSDF",
-                        request_alone(parameters, stream));
-            const gca::sparse_tsdf_layout layout = tsdf.layout();
+            const unclaimed_request checked = request_from_closed(parameters, stream);
             std::printf("%s: %.0f mm voxels to %.1f m, one frame's bound %.1f blocks, room %.0f "
                         "(%u blocks, %u slots)\n",
                         what.c_str(), 1e3 * voxel_m, p.max_depth_m, frame_bound_blocks(parameters),
                         room_of(layout), layout.capacity_blocks, layout.slot_count);
+            check(checked.made.status == gca::request_status::closed && checked.claims_refused == 1,
+                  (what + " at its budget and far depth: every check passed, the first claim "
+                          "refused by the closed pool")
+                      .c_str());
             check(frame_bound_blocks(parameters) < room_of(layout),
                   (what + ": one frame's bound below the room").c_str());
         }
+        const std::string what = std::string(gca::name_of(kind)) + ", final model at 10 m";
+        const gca::sparse_tsdf_parameters farthest = {p.memory_budget_bytes,
+                                                      static_cast<float>(p.full_voxel_size_m),
+                                                      method_truncation, gca::farthest_max_depth_m};
+        const unclaimed_request refused = request_from_closed(farthest, stream);
+        std::printf("%s: one frame's bound %.3g blocks, room %.0f\n", what.c_str(),
+                    frame_bound_blocks(farthest), room_of(layout));
+        check_refused_by_bound(what + " at its budget", refused.made);
+        check(refused.claims_refused == 0, (what + ": refused before any claim").c_str());
     }
 }
 

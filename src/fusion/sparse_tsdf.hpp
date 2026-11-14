@@ -113,11 +113,11 @@ __host__ __device__ constexpr std::uint32_t home_slot(const block_coordinate &b,
 
 /// The ranges the request takes the voxel size, the truncation's rule and the far depth from,
 /// inclusive (docs/methods/sparse-tsdf.md, "The truncation distance", which states why)
-/// [?: a choice]: the voxel size from half the object classes' finest, 1 mm, to twice their
-/// coarsest, 8 mm; c up to twice the datasheet's bound, 0.01 /m; k from 1 to 5 standard
-/// deviations; mu_min from 1 to 8 voxels; the far depth over the camera's depth range, 0.25 m to
-/// 10 m [S: datasheet, docs/HARDWARE.md]. Besides, the request refuses a combination with the
-/// memory budget whose one frame could fill the hash (sparse_tsdf::request()).
+/// [?: a choice, the user's, 2026-11-14]: the voxel size from half the object classes' finest,
+/// 1 mm, to twice their coarsest, 8 mm; c up to twice the datasheet's bound, 0.01 /m; k from 1 to
+/// 5 standard deviations; mu_min from 1 to 8 voxels; the far depth over the camera's depth range,
+/// 0.25 m to 10 m [S: datasheet, docs/HARDWARE.md]. Besides, the request refuses a combination
+/// with the memory budget whose one frame could fill the hash (sparse_tsdf::request()).
 constexpr float min_voxel_size_m = 0.0005f;
 constexpr float max_voxel_size_m = 0.016f;
 constexpr float max_noise_per_m = 0.02f;
@@ -267,8 +267,10 @@ public:
     ///         blocks"); as that room shrinks while the blocks grow within one slot_count, a budget
     ///         one block larger can be refused where a smaller one is granted. Else the first of
     ///         its requests that was refused, with its status and message
-    ///         (gpu_pool::request_array()); or failure with CUDA's error, then cleared, when the
-    ///         clearing could not be queued.
+    ///         (gpu_pool::request_array()): a closed pool gives closed, with nothing allocated,
+    ///         to parameters that pass every check above, so it checks them without device
+    ///         memory. Or failure with CUDA's error, then cleared, when the clearing could not be
+    ///         queued.
     /// @note Allocates device memory (cudaMalloc, six times) and page-locked host memory
     ///       (cudaMallocHost), so it is called before the pool is closed; whether CUDA's
     ///       allocators wait for the GPU is not stated by CUDA [?]. Queues five cudaMemsetAsync

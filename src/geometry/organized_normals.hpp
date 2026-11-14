@@ -23,12 +23,12 @@
 
 namespace gca
 {
-/// The steepest incidence the stage takes, in degrees: 89 [?: a choice]. The rule of one surface
-/// needs the square of its sine below 1 in float, far enough that the rounding of the rule's
-/// products cannot close the gap: at 89 degrees it is 0.99970, 3.0e-4 below 1, against a few
-/// float steps, 1e-7 each; from 89.990 degrees on it rounds to 1, and the rule takes every pair for
-/// one surface, a point and the camera's centre included [S: computed; docs/methods/normals.md,
-/// "One surface, or a depth edge"].
+/// The steepest incidence the stage takes, in degrees: 89 [?: a choice, the user's, 2026-11-14].
+/// The rule of one surface needs the square of its sine below 1 in float, far enough that the
+/// rounding of the rule's products cannot close the gap: at 89 degrees it is 0.99970, 3.0e-4 below
+/// 1, against a few float steps, 1e-7 each; from 89.990 degrees on it rounds to 1, and the rule
+/// takes every pair for one surface, a point and the camera's centre included [S: computed;
+/// docs/methods/normals.md, "One surface, or a depth edge"].
 inline constexpr float max_steepest_incidence_deg = 89.0f;
 
 /// The stage's parameters (docs/methods/normals.md, "Input"): the window, the fewest points of a
