@@ -172,7 +172,7 @@ gca_test::synthetic_scene large_scene()
     const std::optional<Eigen::Isometry3d> pose =
         gca_test::look_at(Eigen::Vector3d(2.2, -1.2, 1.5), Eigen::Vector3d(0.0, 0.0, 0.5), 0.0);
     check(pose.has_value(), "large: the camera's pose");
-    return {.plane = {4.0, 4.0},
+    return {.plane = gca_test::synthetic_plane{4.0, 4.0},
             .box = gca_test::synthetic_box{0.0, 0.0, 20.0, 1.2, 0.8, 1.0},
             .trajectory =
                 pose ? std::vector<Eigen::Isometry3d>{*pose} : std::vector<Eigen::Isometry3d>{}};

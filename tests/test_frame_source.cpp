@@ -61,7 +61,7 @@ gca_test::synthetic_source_options make_options(std::uint64_t frame_count,
     check(pose.has_value(), "the scene: look_at() gives the camera's pose");
     gca_test::synthetic_source_options options;
     options.description = {test_size, test_intrinsics, test_depth_unit_m};
-    options.scene = {.plane = {0.30, 0.25},
+    options.scene = {.plane = gca_test::synthetic_plane{0.30, 0.25},
                      .trajectory = std::vector<Eigen::Isometry3d>(
                          pose ? frame_count : 0, pose.value_or(Eigen::Isometry3d::Identity()))};
     options.ending = ending;

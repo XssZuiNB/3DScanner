@@ -3,15 +3,18 @@
 /// The offline tests' reader of the colored-ICP fixtures (data/frag_115.ply, frag_116.ply) and of
 /// the scanner's models (docs/SCAN_FILES.md), apart from the scanner's code:
 /// binary little-endian PLY whose first element is the vertex, with float x, y, z, nx, ny, nz
-/// and uchar red, green, blue in that order [S: the fixtures' headers]. It reads the vertices and
-/// stops; the elements after them (the fixtures' faces) are declared in the header and never
-/// read. A header outside that layout is refused with a message naming its line. Header only;
-/// each test program is one translation unit.
+/// and uchar red, green, blue in that order [S: the fixtures' headers]. read_ply() reads the
+/// vertices and stops; the elements after them are declared in the header and not read.
+/// read_ply_mesh() reads the fixtures' faces too, the one element after the vertices, each a uchar
+/// count of 3 and three int indices, the triangles the synthetic source renders the fixture from
+/// (synthetic_source.hpp). A header outside that layout is refused with a message naming its line.
+/// Header only; each test program is one translation unit.
 
 #pragma once
 
 #include "geometry/type.hpp"
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -19,6 +22,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace gca_test
@@ -30,16 +34,43 @@ struct ply_vertices
     std::vector<float3> normals;      ///< the file's normals, one per point
 };
 
+/// The vertices and the triangles of a PLY file, in file order.
+struct ply_mesh
+{
+    ply_vertices vertices; ///< the vertices
+    /// The triangles: three indices into the vertices each, every one below their count.
+    std::vector<std::array<std::uint32_t, 3>> triangles;
+};
+
+/// What a PLY header in the fixtures' layout declares.
+struct ply_header
+{
+    std::int32_t vertex_count; ///< the vertices
+    /// The lines of the elements after the vertex, from the first "element" line to the line
+    /// before "end_header", without line ends.
+    std::vector<std::string> later_lines;
+};
+
+/// Decodes four little-endian bytes as a 32-bit value whatever the host's byte order.
+/// @tparam Value the value's type, 4 bytes: float or std::int32_t.
+/// @param bytes the four bytes, the least significant first.
+/// @return the value whose bits they are.
+template <typename Value> inline Value little_endian(const unsigned char *bytes)
+{
+    static_assert(sizeof(Value) == 4, "a PLY float or int is 4 bytes");
+    const std::uint32_t bits = std::uint32_t{bytes[0]} | std::uint32_t{bytes[1]} << 8 |
+                               std::uint32_t{bytes[2]} << 16 | std::uint32_t{bytes[3]} << 24;
+    Value value;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
 /// Decodes a little-endian float32 whatever the host's byte order.
 /// @param bytes the four bytes, the least significant first.
 /// @return the float.
 inline float little_endian_float(const unsigned char *bytes)
 {
-    const std::uint32_t bits = std::uint32_t{bytes[0]} | std::uint32_t{bytes[1]} << 8 |
-                               std::uint32_t{bytes[2]} << 16 | std::uint32_t{bytes[3]} << 24;
-    float value;
-    std::memcpy(&value, &bits, sizeof(value));
-    return value;
+    return little_endian<float>(bytes);
 }
 
 /// Quotes a header line for a message, each byte outside printable ASCII written as \xNN, so a
@@ -61,13 +92,15 @@ inline std::string printable(const std::string &line)
     return text + "\"";
 }
 
-/// Parses the vertex element's header line, "element vertex <count>".
+/// Parses an element's header line, "element <name> <count>".
 /// @param line the header line.
+/// @param name the element's name, "vertex" or "face".
 /// @return the count, or nothing when the line has another form or the count is not a decimal
 ///     number of at most gca::index_t's maximum.
-inline std::optional<std::int32_t> parse_vertex_count(const std::string &line)
+inline std::optional<std::int32_t> parse_element_count(const std::string &line,
+                                                       const std::string &name)
 {
-    const std::string prefix = "element vertex ";
+    const std::string prefix = "element " + name + " ";
     constexpr size_t max_digits = 10;
     if (line.rfind(prefix, 0) != 0 || line.size() == prefix.size() ||
         line.size() > prefix.size() + max_digits)
@@ -89,8 +122,9 @@ inline std::optional<std::int32_t> parse_vertex_count(const std::string &line)
 /// property lines of later elements may follow before "end_header".
 /// @param in the file, opened in binary mode, at its start; left at the first byte of data.
 /// @param error the reason, set when the header is refused.
-/// @return the vertex count, or nothing when the header has another layout.
-inline std::optional<std::int32_t> read_ply_header(std::istream &in, std::string &error)
+/// @return the vertex count and the later elements' lines, or nothing when the header has another
+///     layout.
+inline std::optional<ply_header> read_ply_header(std::istream &in, std::string &error)
 {
     static const char *const vertex_properties[] = {
         "property float x",   "property float y",     "property float z",
@@ -114,7 +148,8 @@ inline std::optional<std::int32_t> read_ply_header(std::istream &in, std::string
         return refusal("\"ply\"");
     if (!next_line() || line != "format binary_little_endian 1.0")
         return refusal("\"format binary_little_endian 1.0\"");
-    const std::optional<std::int32_t> count = next_line() ? parse_vertex_count(line) : std::nullopt;
+    const std::optional<std::int32_t> count =
+        next_line() ? parse_element_count(line, "vertex") : std::nullopt;
     if (!count)
         return refusal("\"element vertex <count>\", the count at most 2147483647");
     for (const char *property : vertex_properties)
@@ -123,18 +158,19 @@ inline std::optional<std::int32_t> read_ply_header(std::istream &in, std::string
             return refusal("\"" + std::string(property) + "\"");
     }
     // A property line before the next element line would be a tenth vertex property.
-    bool later_element = false;
+    ply_header header{*count, {}};
     while (next_line() && line != "end_header")
     {
-        if (line.rfind("element ", 0) == 0)
-            later_element = true;
-        else if (!later_element || line.rfind("property ", 0) != 0)
-            return refusal(later_element ? "\"element ...\", \"property ...\" or \"end_header\""
-                                         : "\"element ...\" or \"end_header\"");
+        if (line.rfind("element ", 0) != 0 &&
+            (header.later_lines.empty() || line.rfind("property ", 0) != 0))
+            return refusal(header.later_lines.empty()
+                               ? "\"element ...\" or \"end_header\""
+                               : "\"element ...\", \"property ...\" or \"end_header\"");
+        header.later_lines.push_back(line);
     }
     if (at_end)
         return refusal("\"end_header\"");
-    return count;
+    return header;
 }
 
 /// Reads the vertex data that follows a header in the fixtures' layout. Colors are scaled by
@@ -182,10 +218,104 @@ inline std::optional<ply_vertices> read_ply_vertices(std::istream &in, std::int3
 ///     the vertex data.
 inline std::optional<ply_vertices> read_ply(std::istream &in, std::string &error)
 {
-    const std::optional<std::int32_t> count = read_ply_header(in, error);
-    if (!count)
+    const std::optional<ply_header> header = read_ply_header(in, error);
+    if (!header)
         return std::nullopt;
-    return read_ply_vertices(in, *count, error);
+    return read_ply_vertices(in, header->vertex_count, error);
+}
+
+/// Reads the vertices and the triangles of a PLY file in the fixtures' layout: read_ply_header(),
+/// whose elements after the vertex must be exactly "element face <count>" and "property list uchar
+/// int vertex_indices"; read_ply_vertices(); then each face, a uchar count of 3 and three
+/// little-endian int indices, each 0 to the vertex count less 1.
+/// @param in the file, opened in binary mode, at its start.
+/// @param error the reason, set when the file is refused.
+/// @return the vertices and the triangles, or nothing when the header has another layout or no
+///     such face element, the file ends within the data, a face is not a triangle, or an index
+///     lies outside the vertices.
+inline std::optional<ply_mesh> read_ply_mesh(std::istream &in, std::string &error)
+{
+    const std::optional<ply_header> header = read_ply_header(in, error);
+    if (!header)
+        return std::nullopt;
+    const std::optional<std::int32_t> faces =
+        header->later_lines.size() == 2 &&
+                header->later_lines[1] == "property list uchar int vertex_indices"
+            ? parse_element_count(header->later_lines[0], "face")
+            : std::nullopt;
+    if (!faces)
+    {
+        error = "PLY header: after the vertex expected \"element face <count>\" and \"property "
+                "list uchar int vertex_indices\" alone";
+        return std::nullopt;
+    }
+    std::optional<ply_vertices> vertices = read_ply_vertices(in, header->vertex_count, error);
+    if (!vertices)
+        return std::nullopt;
+    ply_mesh mesh{std::move(*vertices), {}};
+    constexpr size_t face_bytes = 1 + 3 * sizeof(std::int32_t);
+    for (std::int32_t k = 0; k < *faces; k++)
+    {
+        unsigned char record[face_bytes];
+        const std::string which = "face " + std::to_string(k) + " of " + std::to_string(*faces);
+        if (!in.read(reinterpret_cast<char *>(record), face_bytes))
+        {
+            error = "PLY data: the file ends within " + which;
+            return std::nullopt;
+        }
+        if (record[0] != 3)
+        {
+            error = "PLY data: " + which + " has " + std::to_string(record[0]) + " corners, not 3";
+            return std::nullopt;
+        }
+        std::array<std::uint32_t, 3> triangle{};
+        for (size_t i = 0; i < 3; i++)
+        {
+            const std::int32_t index = little_endian<std::int32_t>(record + 1 + 4 * i);
+            if (index < 0 || index >= header->vertex_count)
+            {
+                error = "PLY data: " + which + " names vertex " + std::to_string(index) + " of " +
+                        std::to_string(header->vertex_count);
+                return std::nullopt;
+            }
+            triangle[i] = static_cast<std::uint32_t>(index);
+        }
+        mesh.triangles.push_back(triangle);
+    }
+    return mesh;
+}
+
+/// Reads a PLY file on disk with a reader of a stream.
+/// @param path the file's path.
+/// @param error the reason, prefixed by the path, set when the file cannot be opened or is
+///     refused.
+/// @param read the reader, read_ply() or read_ply_mesh(), called as read(stream, error).
+/// @return what the reader read, or nothing.
+template <typename Reader>
+inline auto read_file(const std::string &path, std::string &error,
+                      Reader read) -> decltype(read(std::declval<std::istream &>(), error))
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+    {
+        error = path + ": cannot open";
+        return std::nullopt;
+    }
+    auto read_back = read(file, error);
+    if (!read_back)
+        error = path + ": " + error;
+    return read_back;
+}
+
+/// Reads the vertices and the triangles of a PLY file on disk in the fixtures' layout; see
+/// read_ply_mesh().
+/// @param path the file's path.
+/// @param error the reason, prefixed by the path, set when the file cannot be opened or is
+///     refused.
+/// @return the vertices and the triangles, or nothing.
+inline std::optional<ply_mesh> read_ply_mesh_file(const std::string &path, std::string &error)
+{
+    return read_file(path, error, read_ply_mesh);
 }
 
 /// Reads the vertices of a PLY file on disk in the fixtures' layout; see read_ply().
@@ -195,15 +325,6 @@ inline std::optional<ply_vertices> read_ply(std::istream &in, std::string &error
 /// @return the vertices, or nothing.
 inline std::optional<ply_vertices> read_ply_file(const std::string &path, std::string &error)
 {
-    std::ifstream file(path, std::ios::binary);
-    if (!file)
-    {
-        error = path + ": cannot open";
-        return std::nullopt;
-    }
-    std::optional<ply_vertices> vertices = read_ply(file, error);
-    if (!vertices)
-        error = path + ": " + error;
-    return vertices;
+    return read_file(path, error, read_ply);
 }
 } // namespace gca_test

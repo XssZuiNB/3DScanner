@@ -266,11 +266,35 @@ count [B 2026-11-14: `cuobjdump -sass` of `allocate_kernel`, VOTEU.ANY, POPC, RE
 is not gathered by hand; the difference between the two frames holds the read of the 6.3 MB of
 points besides that count, not timed apart [?].
 
-**One iteration of the registration** (docs/methods/registration.md): the host's call of
-`registration::align()` with one iteration, which queues the system's kernel and the totals'
-kernel, copies the 280 bytes of the sums, waits for them and solves the system, on level 0 of the
-tabletop object's pair of `tests/test_registration.cpp` (a box and a sphere on a plane from 0.5 m,
-fitness 0.92 to 0.93 at the start), the medians of 20 s per case after 5 s [M 2026-11-14, 19:54 to
+**The registration of one frame** (docs/methods/registration.md): the host's call of
+`registration::align()` by the full method, both terms coarse to fine with the tabletop object's
+starting values, on the tabletop object's pair of `tests/test_registration.cpp` (a box and a sphere
+on a plane from 0.5 m, moved by 1.5° and 10.8 mm), every run converged; the surface's gradient
+kernel alone on its three levels, a copy of the tree's kernel timed by CUDA events; and the call
+with one iteration on level 0 alone, its gradient kernel included. The medians of 20 s per case
+after 5 s [M 2026-11-15, 00:01 to 00:06, MAXN_SUPER by `nvpmodel -q`, no compiler running, a
+scratch program; `/sys/class/devfreq/17000000.gpu/cur_freq` sampled every 16 runs]. Paced at 30 fps
+the governor keeps the GPU at 306 MHz throughout; back to back it runs at 1020 MHz throughout.
+
+| size | pace | one frame: call median / p95 / max | systems | gradient kernel, three levels | one iteration on level 0 |
+|---|---|---|---|---|---|
+| 640x400 | 30 fps | 6.835 / 6.990 / 8.134 ms | 15 | 0.658 ms | 2.165 ms |
+| 640x400 | back to back | 2.311 / 2.362 / 4.401 ms | 15 | 0.219 ms | 0.530 ms |
+| 1280x800 | 30 fps | 19.529 / 19.662 / 20.246 ms | 11 | 2.442 ms | 6.356 ms |
+| 1280x800 | back to back | 6.484 / 6.558 / 6.891 ms | 11 | 0.803 ms | 1.893 ms |
+
+Paced at 30 fps, at the governor's 306 MHz, the frame's pyramid (above, 14.2 ms) and its
+registration take 33.7 ms at 1280x800, more than a frame's 33 ms before the ray cast and the
+fusion, and 10.7 ms at 640x400 [S: computed, the medians]. The stream size is settled by the rule
+of the replay's measurement of the whole path, not before (the user's decision, 2026-11-14, late
+evening; `per-stage-times-from-replay`).
+
+**One iteration of the point-to-plane term** (docs/methods/registration.md), before the color term
+joined, kept as the evidence of the decision that live tracking sums in float within a warp (the
+user's, 2026-11-14; docs/methods/registration.md, "Precision"): the host's call of
+`registration::align()` with one iteration, which queues the system's kernel and the totals' kernel,
+copies the 280 bytes of the sums, waits for them and solves the system, on level 0 of the same pair
+(fitness 0.92 to 0.93 at the start), the medians of 20 s per case after 5 s [M 2026-11-14, 19:54 to
 19:58, MAXN_SUPER by `nvpmodel -q`, no compiler running, a scratch program;
 `/sys/class/devfreq/17000000.gpu/cur_freq` sampled every 16 runs]. Paced at 30 fps the governor
 keeps the GPU at 306 MHz throughout; back to back it runs at 1020 MHz throughout.
@@ -285,9 +309,7 @@ keeps the GPU at 306 MHz throughout; back to back it runs at 1020 MHz throughout
 With each warp adding in double instead (docs/methods/registration.md, "Precision"), the same
 runs took 13.718, 3.988, 22.813 and 15.712 ms, the last paced case at a GPU clock of 714 MHz; with
 each warp's 35 sums converted to double in its own lane, 1.49 and 4.34 ms back to back
-[M 2026-11-14, as the table, but 1 s per case after 0.2 s, at 19:50]. A registration takes several
-iterations at each level of the pyramid; their count is the coarse-to-fine registration's to
-measure.
+[M 2026-11-14, as the table, but 1 s per case after 0.2 s, at 19:50].
 
 ## Connections
 

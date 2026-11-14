@@ -23,7 +23,7 @@ seam and the sequence on disk (`src/camera/`); the GPU image, the pool that clos
 frame's upload (`src/gpu/`); the organized points from a frame's depth
 (`src/geometry/organized_points.*`), their normals (`src/geometry/organized_normals.*`) and the
 frame's pyramid of them with the intensity (`src/geometry/frame_pyramid.*`); the registration of
-a frame against a surface by the point-to-plane term on one level
+a frame against a surface by colored ICP, coarse to fine over the pyramid
 (`src/registration/registration.*`); the sparse TSDF's hash of blocks, its pool and the allocation
 of the blocks near a frame's surface (`src/fusion/`); the files a scan keeps and the parameters of
 each object class (`src/scan/`). The tree is CUDA_3D cleaned up (dead code, RealSense and PCL
@@ -225,16 +225,16 @@ checkers; these are the rules no checker holds.
    | the prototype's frames and camera parameters on the GPU, CUDA helpers, GPU checks | `src/gpu/` |
    | organized points from a frame's depth, their validity mask | `src/geometry/organized_points.*` |
    | the organized points' normals in image space | `src/geometry/organized_normals.*` |
-   | the frame's pyramid: the intensity, the coarser levels and their intrinsics; the rule of one surface the stages share | `src/geometry/frame_pyramid.*`; `src/geometry/one_surface.cuh` |
+   | the frame's pyramid: the intensity, the coarser levels, their sizes and their intrinsics; the rule of one surface the stages share | `src/geometry/frame_pyramid.*`; `src/geometry/one_surface.cuh` |
    | the sparse TSDF (docs/methods/sparse-tsdf.md): its voxel, its parameters (the voxel size, the truncation's rule, the far depth) and their check against one frame's bound, its hash of blocks, its pool and the division of the memory budget, the allocation of the blocks near a frame's surface; the hash's insertion and lookup as device code, which every fusion kernel calls | `src/fusion/sparse_tsdf.*`; `src/fusion/block_hash.cuh` |
    | point clouds: creation, filters, normals, search; the 3x3 eigensolver, `float3` arithmetic and its Eigen conversion | `src/geometry/` |
-   | the registration of a frame against a surface (docs/methods/registration.md): the surface's view, the parameters, the result, the association and the system on the GPU | `src/registration/registration.*` |
+   | the registration of a frame against a surface (docs/methods/registration.md): the surface's view at each level, the parameters, the result, the surface's intensity gradient, the association and the system of both terms on the GPU, the levels coarse to fine | `src/registration/registration.*` |
    | one iteration's normal equations solved on the host: the sums' positions, the centring, the degeneracy test and the damped step, the constants that judge a system | `src/registration/normal_equations.*` |
    | the SE(3) exponential, the registration's pose update, its one copy | `src/registration/se3.*` |
    | the prototype's colored ICP, the oracle until it is retired; the 3x3 LDLT solve | `src/registration/` |
    | the files a scan keeps (docs/SCAN_FILES.md); the parameters of each object class | `src/scan/` |
    | `orbbec_viewer`'s loop on a frame source: the first frame, the report line, the window, the snapshots, the sequence it writes | `apps/viewer_loop.*` |
-   | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, a point's distance from a known surface, the trajectories it renders along | `tests/synthetic_source.*` |
+   | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, a mesh's frames (the colored-ICP fixture's), a point's distance from a known surface, the trajectories it renders along | `tests/synthetic_source.*` |
    | the tests' copy of a frame, to check a source left it as it was | `tests/frame_copy.hpp` |
    | the sparse TSDF tests' lookups of blocks, their readings of the usage and the method's starting truncation | `tests/sparse_tsdf_helpers.hpp` |
    | the stages' test frames: the camera's stream sizes and intrinsics, the tabletop sphere, a scene's frames rendered, frames built from functions of the pixel | `tests/stage_frames.hpp` |

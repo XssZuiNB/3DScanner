@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: 0BSD
 /// @file test_ply_reader.cpp
 /// Offline test of the tests' PLY reader (ply_reader.hpp) on files built in memory: a file in
-/// the fixtures' layout, a face element after its vertices, is read exactly; each kind of header
-/// outside that layout, vertex data cut short and a file that does not exist are refused, each
-/// with a message that locates the reason. Needs no GPU and no camera.
+/// the fixtures' layout, a face element after its vertices, is read exactly, its vertices alone
+/// and with its triangles; each kind of header outside that layout, vertex data cut short, a face
+/// that is no triangle or names a vertex the file lacks, face data cut short, and a file that does
+/// not exist are refused, each with a message that locates the reason. Needs no GPU and no camera.
 
 #include "check.hpp"
 #include "ply_reader.hpp"
@@ -21,9 +22,12 @@ using gca_test::check;
 using gca_test::check_refusal;
 using gca_test::check_summary;
 using gca_test::float_step;
+using gca_test::ply_mesh;
 using gca_test::ply_vertices;
 using gca_test::read_ply;
 using gca_test::read_ply_file;
+using gca_test::read_ply_mesh;
+using gca_test::read_ply_mesh_file;
 
 namespace
 {
@@ -71,11 +75,11 @@ std::string vertex_data()
 }
 
 /// Returns the test file's face data: one triangle, a uchar count and three little-endian int
-/// indices.
+/// indices, 2, 0 and 1, so that an index read from the wrong place shows.
 /// @return the bytes.
 std::string face_data()
 {
-    return std::string("\x03\x00\x00\x00\x00\x01\x00\x00\x00\x02\x00\x00\x00", 13);
+    return std::string("\x03\x02\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00", 13);
 }
 
 /// Returns the test file's header lines: the fixtures' layout [S: data/frag_116.ply's header]
@@ -163,6 +167,65 @@ void test_read()
     check(inactive, "read: every point inactive");
 }
 
+/// read_ply_mesh() reads the test file's three vertices as read_ply() does, and its one triangle.
+void test_read_mesh()
+{
+    std::istringstream in(join(valid_header()) + vertex_data() + face_data());
+    std::string error;
+    const std::optional<ply_mesh> read = read_ply_mesh(in, error);
+    check(read.has_value(), ("mesh: the test file accepted; " + error).c_str());
+    if (!read)
+        return;
+    check(read->vertices.points.size() == std::size(test_vertices) &&
+              read->vertices.points[1].coordinates.y == test_vertices[1].position[1],
+          "mesh: the vertices read");
+    check(read->triangles.size() == 1 && read->triangles[0][0] == 2 && read->triangles[0][1] == 0 &&
+              read->triangles[0][2] == 1,
+          "mesh: one triangle, its indices 2, 0 and 1 in order");
+}
+
+/// read_ply_mesh() refuses a file without the face element, with another face property, with a
+/// face that is no triangle, one that names a vertex the file lacks, and face data cut short; and
+/// read_ply_mesh_file() a file that does not exist; each with a message that locates the reason.
+void test_mesh_refusals()
+{
+    const std::vector<std::string> header = valid_header();
+    const std::string vertices = vertex_data();
+    std::string quad = face_data();
+    quad[0] = '\x04';
+    std::string beyond = face_data();
+    beyond[1] = '\x03';
+    const struct
+    {
+        const char *what;
+        std::string file;
+        const char *location;
+    } cases[] = {
+        {"mesh, no face element", join(replaced(header, 12, 2, {})) + vertices, "after the vertex"},
+        {"mesh, unsigned indices",
+         join(replaced(header, 13, 1, {"property list uchar uint vertex_indices"})) + vertices +
+             face_data(),
+         "after the vertex"},
+        {"mesh, a face of 4 corners", join(header) + vertices + quad, "4 corners"},
+        {"mesh, an index beyond the vertices", join(header) + vertices + beyond,
+         "names vertex 3 of 3"},
+        {"mesh, face data one byte short",
+         join(header) + vertices + face_data().substr(0, face_data().size() - 1),
+         "ends within face 0 of 1"},
+    };
+    for (const auto &c : cases)
+    {
+        std::istringstream in(c.file);
+        std::string error;
+        const bool refused = !read_ply_mesh(in, error).has_value();
+        check_refusal(c.what, refused, error, error.find(c.location) != std::string::npos);
+    }
+    std::string error;
+    const bool refused = !read_ply_mesh_file("/nonexistent/frag.ply", error).has_value();
+    check_refusal("mesh, missing file", refused, error,
+                  error.find("cannot open") != std::string::npos);
+}
+
 /// A file read_ply() has to refuse, and the part of its message that locates the reason.
 struct refusal_case
 {
@@ -237,5 +300,7 @@ int main()
 {
     test_read();
     test_refusals();
+    test_read_mesh();
+    test_mesh_refusals();
     return check_summary("test_ply_reader");
 }

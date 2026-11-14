@@ -20,19 +20,23 @@ namespace gca
 {
 /// The positions of the 35 numbers one iteration reads back, the system and its sums over its
 /// correspondences, each point s and centre c in the surface's frame, in m (docs/methods/
-/// registration.md, "The system, centred and scaled"). The kernel writes them in this order.
+/// registration.md, "The system, centred and scaled"). The kernel writes them in this order. The
+/// system holds both terms of colored ICP, each residual with its weight w, λ w_G for the
+/// point-to-plane term and (1 - λ) w_C for the color term; the weight sums, the offset and the
+/// spread are the point-to-plane term's alone, its weights λ w_G.
 inline constexpr std::size_t sum_hessian = 0; ///< 21: H = Σ w J J^T, its upper triangle row by row
-inline constexpr std::size_t sum_gradient = 21;         ///< 6: g = Σ w J r_G
-inline constexpr std::size_t sum_weight = 27;           ///< W = Σ w, the robust weights' sum
-inline constexpr std::size_t sum_offset = 28;           ///< 3: Σ w (s - c), in m
-inline constexpr std::size_t sum_spread = 31;           ///< Σ w |s - c|², in m²
+inline constexpr std::size_t sum_gradient = 21;         ///< 6: g = Σ w J r
+inline constexpr std::size_t sum_weight = 27;           ///< W = Σ λ w_G
+inline constexpr std::size_t sum_offset = 28;           ///< 3: Σ λ w_G (s - c), in m
+inline constexpr std::size_t sum_spread = 31;           ///< Σ λ w_G |s - c|², in m²
 inline constexpr std::size_t sum_squared_residual = 32; ///< Σ r_G², unweighted, in m²
 inline constexpr std::size_t sum_correspondences = 33;  ///< the correspondences' count
 inline constexpr std::size_t sum_candidates = 34; ///< the frame's pixels with a point and a normal
 inline constexpr std::size_t sum_count = 35;      ///< the numbers read back
 
 /// The system and its sums of one iteration, at the positions above; J = [(s - c) x n; n] for a
-/// correspondence of point s, normal n and residual r_G, in the surface's frame.
+/// correspondence's point-to-plane residual r_G of point s and normal n, J = [(s - c) x d_q; d_q]
+/// for its color residual r_C of gradient d_q, in the surface's frame.
 using normal_sums = std::array<double, sum_count>;
 
 /// f_min, the least fitness of a system that is solved: 0.1 [?: initial; docs/methods/
@@ -40,8 +44,9 @@ using normal_sums = std::array<double, sum_count>;
 inline constexpr double registration_min_fitness = 0.1;
 
 /// τ, the least eigenvalue of the centred, scaled and normalized system that is not degenerate:
-/// 0.01 of the system's information along its weakest motion [?: initial; the planes' and the
-/// test scenes' smallest eigenvalues stand in docs/methods/registration.md, "Accuracy"].
+/// along its weakest motion 0.01 of what the point-to-plane term holds per correspondence, the
+/// system being normalized by that term's weights [?: initial; the planes' and the test scenes'
+/// smallest eigenvalues stand in docs/methods/registration.md, "Accuracy"].
 inline constexpr double registration_degeneracy_threshold = 0.01;
 
 /// μ, the damping added to the normalized system's diagonal: τ / 10, so that a step along an
@@ -72,8 +77,9 @@ struct system_solution
     system_verdict verdict = system_verdict::few_correspondences; ///< what the system gives
     double fitness = 0.0;       ///< correspondences / candidates, 0 to 1; 0 with no candidate
     double inlier_rmse_m = 0.0; ///< sqrt(Σ r_G² / correspondences), in m; 0 with none
-    /// The eigenvalues of the centred, scaled and normalized system Â, ascending, each from 0 to 2
-    /// up to rounding; zeros when the verdict is few_correspondences or the spread is none.
+    /// The eigenvalues of the centred, scaled and normalized system Â, ascending: the
+    /// point-to-plane term's part holds each within 0 to 2 up to rounding, and the color term only
+    /// adds; zeros when the verdict is few_correspondences or the spread is none.
     std::array<double, 6> eigenvalues{};
     /// Whether the system is degenerate: its smallest eigenvalue below τ, or not a number. A step
     /// is taken all the same, damped; the registration judges its last system by it.

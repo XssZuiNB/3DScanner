@@ -49,6 +49,16 @@ public:
     /// The number of levels, 3 [?: initial; docs/methods/frame-pyramid.md, "Input"].
     static constexpr std::size_t level_count = 3;
 
+    /// Gives the size of a level of the pyramid of frames of a size: level 0 the frame's, each next
+    /// level half the rows and columns of the one before, rounded up, so that every pixel of the
+    /// next level has its centre pixel, twice its index, in the level before
+    /// (docs/methods/frame-pyramid.md, "Output").
+    /// @param size [in] level 0's width and height, in px.
+    /// @param level [in] the level, any value: level_count and above go on halving.
+    /// @return the level's width and height, in px; 0 stays 0.
+    /// @note Host only; allocates nothing.
+    static frame_size level_size(const frame_size &size, std::size_t level) noexcept;
+
     /// An empty pyramid: no levels; build() into it is refused.
     frame_pyramid() noexcept = default;
 

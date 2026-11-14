@@ -136,15 +136,6 @@ __global__ void __launch_bounds__(picture_block_width *picture_block_height)
     coarse_intensity[pixel] = intensity_sum / weight_sum;
 }
 
-/// Returns the size of the level after a level: half its rows and columns, rounded up, so that
-/// every pixel of the next level has its centre pixel, twice its index, in the level.
-/// @param size [in] the level's width and height, in px.
-/// @return ceil(width / 2) x ceil(height / 2), in px; 0 stays 0.
-frame_size half_size(const frame_size &size)
-{
-    return {size.width / 2 + size.width % 2, size.height / 2 + size.height % 2};
-}
-
 /// Returns the square of the sine of a level's steepest incidence for the combining: the
 /// incidence θ_l with tan θ_l = tan θ / 2^level (docs/methods/frame-pyramid.md, "One surface, at
 /// every level").
@@ -161,27 +152,34 @@ float sin2_of_level(float max_incidence_deg, std::size_t level)
 }
 } // namespace
 
+frame_size frame_pyramid::level_size(const frame_size &size, std::size_t level) noexcept
+{
+    frame_size halved = size;
+    for (std::size_t l = 0; l < level; l++)
+        halved = {halved.width / 2 + halved.width % 2, halved.height / 2 + halved.height % 2};
+    return halved;
+}
+
 request_result<frame_pyramid> frame_pyramid::request(gpu_pool &pool,
                                                      const frame_size &size) noexcept
 {
     request_result<frame_pyramid> result;
-    frame_size level_size = size;
     for (std::size_t level = 0; level < level_count; level++)
     {
-        request_result<organized_points> points = organized_points::request(pool, level_size);
+        const frame_size sized = level_size(size, level);
+        request_result<organized_points> points = organized_points::request(pool, sized);
         if (points.status != request_status::granted)
             return refused_as<frame_pyramid>(points);
-        request_result<organized_normals> normals = organized_normals::request(pool, level_size);
+        request_result<organized_normals> normals = organized_normals::request(pool, sized);
         if (normals.status != request_status::granted)
             return refused_as<frame_pyramid>(normals);
-        request_result<gpu_image<float>> intensity = pool.request<float>(level_size);
+        request_result<gpu_image<float>> intensity = pool.request<float>(sized);
         if (intensity.status != request_status::granted)
             return refused_as<frame_pyramid>(intensity);
         level_images &granted = result.granted.m_levels[level];
         granted.points = std::move(points.granted);
         granted.normals = std::move(normals.granted);
         granted.intensity = std::move(intensity.granted);
-        level_size = half_size(level_size);
     }
     result.status = request_status::granted;
     return result;

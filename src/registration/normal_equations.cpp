@@ -59,7 +59,8 @@ system_solution solve_normal_equations(const normal_sums &sums,
         return solution;
     }
 
-    // The shift from c to the centroid c' = c + d, exactly: (s - c - d) x n = (s - c) x n - d x n.
+    // The shift from c to the centroid c' = c + d, exactly: (s - c - d) x n = (s - c) x n - d x n,
+    // and the same for the color term's d_q in place of n.
     const Eigen::Vector3d d(sums[sum_offset] / weight, sums[sum_offset + 1] / weight,
                             sums[sum_offset + 2] / weight);
     solution.centroid_m = centre_m + d;
