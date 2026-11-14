@@ -37,7 +37,7 @@ Ask once, with what is needed, why, and the exact command or the choices. Record
 
 **Finish** on an uncommitted working tree. Append one section of at most 30 lines to the ticket's `## Comments`: what was built, the decisions taken, how it was verified (the commands and their results), the live checks it still needs. Report in at most 15 lines; the details are in the ticket and the diff.
 
-**The ticket's model.** An orchestrator runs the implementer and its reviewer on the model the ticket's `Model:` line names (to-tickets), with the effort, both passed explicitly: on opus the implementer at effort xhigh and the reviewer at max, on sonnet both at high. A ticket without the line runs on opus. A sonnet implementer whose work reaches what that line rules out (AGENTS.md §3's hardware, a thread, a lock, a format another program reads) stops, says so, and the ticket goes to opus; so does a sonnet ticket that fails `tools/verify.sh` twice or whose review finds a correctness defect.
+**The ticket's model.** An orchestrator runs the implementer and its reviewer on the model the ticket's `Model:` line names (to-tickets), with the effort, both passed explicitly: on opus the implementer at effort xhigh and the reviewer at high, on sonnet both at high. A ticket without the line runs on opus. A sonnet implementer whose work reaches what that line rules out (AGENTS.md §3's hardware, a thread, a lock, a format another program reads) stops, says so, and the ticket goes to opus; so does a sonnet ticket that fails `tools/verify.sh` twice or whose review finds a correctness defect.
 
 **Review by the change's risk**, always by someone who did not write it; you fix what the review finds:
 

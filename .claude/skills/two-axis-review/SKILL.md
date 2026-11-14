@@ -57,7 +57,7 @@ Each smell reads *what it is* → *how to fix*; match it against the diff:
 
 ### 4. Spawn the reviewer
 
-The reviewer runs on the model of the ticket's `Model:` line (to-tickets); with no ticket, or no line, on opus; at effort max on opus and high on sonnet, passed explicitly. By default ONE fresh sub-agent reviews both axes and reports them under separate headings: the two briefs below, in one prompt. Split them into two parallel sub-agents only for a large diff (more than about 800 changed lines), issuing both calls together.
+The reviewer runs on the model of the ticket's `Model:` line (to-tickets); with no ticket, or no line, on opus; at effort high on opus and on sonnet, passed explicitly. By default ONE fresh sub-agent reviews both axes and reports them under separate headings: the two briefs below, in one prompt. Split them into two parallel sub-agents only for a large diff (more than about 800 changed lines), issuing both calls together.
 
 Every reviewer prompt also carries:
 
