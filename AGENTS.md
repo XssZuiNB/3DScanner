@@ -18,20 +18,23 @@ written for Intel RealSense (its history ends at 5e568d9).
 
 What the rewrite builds: an operator scans a tabletop object or a large object with the
 hand-held camera and works the scan from a web page the Jetson serves (the terms: GLOSSARY.md;
-the decisions: docs/adr/; the next step: ROADMAP.md). None of it is built yet. The tree is
-CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to build here and given the
-Orbbec camera. It is the rewrite's prototype: its methods carry over, and its code is the test
-oracle until new code replaces it (CODING_STANDARDS.md, "The rewrite's code").
+the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the frame and the frame
+source seam (`src/camera/`); the GPU image, the pool that closes and a frame's upload
+(`src/gpu/`). The tree is CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to
+build here and given the Orbbec camera. It is the rewrite's prototype: its methods carry over,
+and its code is the test oracle until new code replaces it (CODING_STANDARDS.md, "The rewrite's
+code").
 
 The tree today: `src/` is five static libraries and the header-only `types`, each linking only
 the ones below it: `types`, `camera`, `orbbec_camera`, `gpu`, `geometry`, `registration`
-(`src/CMakeLists.txt`). There is one library per directory, except `src/camera/`, which holds
-two so that only the Orbbec camera links OrbbecSDK: `camera`, the frame and the frame source
-seam, which the offline tests link without OrbbecSDK; and `orbbec_camera`, which puts the
-camera behind `gca::device`, where `orbbec_device` delivers depth aligned to color, so the GPU
-code sees one resolution and one set of intrinsics. The camera is not on the seam yet.
-`orbbec_viewer` in `apps/` opens the camera itself, and `distortion_check` reads the viewer's
-snapshots without it; there is no daemon.
+(`src/CMakeLists.txt`; `gpu` links `camera` for the frame it uploads). There is one library per
+directory, except `src/camera/`, which holds two so that only the Orbbec camera links
+OrbbecSDK: `camera`, the frame and the frame source seam, which the offline tests link without
+OrbbecSDK; and `orbbec_camera`, which puts the camera behind `gca::device`, where
+`orbbec_device` delivers depth aligned to color, so the GPU code sees one resolution and one
+set of intrinsics. The camera is not on the seam yet. `orbbec_viewer` in `apps/` opens the
+camera itself, and `distortion_check` reads the viewer's snapshots without it; there is no
+daemon.
 
 ## 2. Before you run anything
 
@@ -203,7 +206,8 @@ checkers; these are the rules no checker holds.
    | the frame; the frame source seam | `src/camera/frame.*`; `src/camera/frame_source.hpp` |
    | a camera behind one interface | `src/camera/camera_device.hpp` (`gca::device`) |
    | Orbbec: profiles, alignment, color decoding | `src/camera/orbbec_device.*` |
-   | frames and camera parameters on the GPU, CUDA helpers, GPU checks | `src/gpu/` |
+   | the GPU image, the pinned host buffer, the pool that closes, a frame's upload, their messages | `src/gpu/gpu_image.hpp`, `src/gpu/pinned_buffer.hpp`, `src/gpu/gpu_pool.*`, `src/gpu/gpu_frame.*`, `src/gpu/gpu_messages.*` |
+   | the prototype's frames and camera parameters on the GPU, CUDA helpers, GPU checks | `src/gpu/` |
    | point clouds: creation, filters, normals, search; the 3x3 eigensolver, `float3` arithmetic and its Eigen conversion | `src/geometry/` |
    | registration (colored ICP); the 3x3 LDLT solve | `src/registration/` |
    | the tests' synthetic source of frames, their one renderer, the trajectories it renders along | `tests/synthetic_source.*` |

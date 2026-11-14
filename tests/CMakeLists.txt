@@ -42,3 +42,7 @@ add_test(NAME checkerboard_measure COMMAND test_checkerboard_measure)
 add_executable(test_distortion_options test_distortion_options.cpp)
 target_link_libraries(test_distortion_options PRIVATE distortion_options)
 add_test(NAME distortion_options COMMAND test_distortion_options)
+
+add_executable(test_gpu_images test_gpu_images.cpp)
+target_link_libraries(test_gpu_images PRIVATE gpu synthetic_source)
+add_test(NAME gpu_images COMMAND test_gpu_images)

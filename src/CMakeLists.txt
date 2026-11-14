@@ -4,7 +4,7 @@
 # types is header only, and camera/ holds two, so that only the Orbbec camera links OrbbecSDK:
 #   types <- camera (the frame and the frame source seam)
 #   types <- orbbec_camera (OrbbecSDK, OpenCV)
-#   types <- gpu (CUDA runtime) <- geometry (Eigen) <- registration
+#   types <- camera <- gpu (CUDA runtime) <- geometry (Eigen) <- registration
 # Every library includes from src/ ("gpu/cuda_container.hpp"); types carries that directory.
 
 # ---------------------------------------------------------------- types (header only)
@@ -58,9 +58,17 @@ add_library(
     gpu/cuda_util.cuh
     gpu/gpu_check.cu
     gpu/gpu_check.hpp
+    gpu/gpu_frame.cpp
+    gpu/gpu_frame.hpp
+    gpu/gpu_image.hpp
+    gpu/gpu_messages.cpp
+    gpu/gpu_messages.hpp
+    gpu/gpu_pool.cpp
+    gpu/gpu_pool.hpp
+    gpu/pinned_buffer.hpp
 )
-# PUBLIC: the headers hold thrust and CUDA types.
-target_link_libraries(gpu PUBLIC types CUDA::cudart)
+# PUBLIC: the headers hold thrust and CUDA types, and gpu_frame.hpp the frame of camera.
+target_link_libraries(gpu PUBLIC types camera CUDA::cudart)
 
 # ---------------------------------------------------------------- geometry
 add_library(
