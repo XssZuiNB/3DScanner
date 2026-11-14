@@ -23,4 +23,4 @@ use (reconsider) or a gap (note it for `domain-modeling`).
 
 If your output contradicts an ADR, say so explicitly rather than silently overriding it:
 
-> _Contradicts ADR-0002 (one process owns the device), but worth reopening because…_
+> _Contradicts ADR-0003 (the camera is hand-held; there is no turntable), but worth reopening because…_

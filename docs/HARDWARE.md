@@ -10,11 +10,23 @@ The board this tree runs on. Every fact carries its tag (AGENTS.md).
 |---|---|---|
 | computer | NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super, 7.4 GiB RAM | [M 2026-11-13] `/proc/device-tree/model`, `free` |
 | power mode | MAXN_SUPER | [M 2026-11-13] `nvpmodel -q` |
-| OS | L4T R36.5.0 (JetPack 6), Ubuntu 22.04, kernel 5.15.185-tegra, aarch64 | [M 2026-11-13] `/etc/nv_tegra_release`, `uname -a` |
-| toolchain | CUDA 12.6.68, GCC 11.4.0, CMake 3.22.1, OpenCV 4.8.0 | [M 2026-11-13] |
+| OS | L4T R36, revision 5.2 (JetPack 6), Ubuntu 22.04, kernel 5.15.199-tegra, aarch64 | [M 2026-11-13, since the boot at 20:13] `/etc/nv_tegra_release`, `uname -a` |
+| toolchain | CUDA 12.6.68, GCC 11.4.0, OpenCV 4.8.0; CMake 4.4.4 from PyPI in `~/.local/bin`, before apt's 3.22.1 in `/usr/bin` (CODING_STANDARDS.md, "Tools") | [M 2026-11-13]; CMake [M 2026-11-14] |
 | GPU | Ampere, compute capability 8.7 | [S] CUDA documentation |
 | camera | Orbbec Gemini 2 L, USB `2bc5:0673`, firmware 1.4.38 | [M 2026-11-13] `lsusb`, `orbbec_viewer --list` |
 | camera SDK | OrbbecSDK v2.10.6, linux arm64, in `~/.local/share/3dscanner` | tools/fetch_deps.sh |
+
+## Memory, storage, network
+
+What the scanner has to fit into and how it is reached [M 2026-11-13].
+
+| what | value | evidence |
+|---|---|---|
+| memory | 7607 MB, shared by CPU and GPU; about 4.0 GB available with a remote editor session open and no build running | `free -m` |
+| swap | six zram devices of 634 MB each, and `/swapfile`, 8 GB, on the NVMe | `swapon --show` |
+| storage | one NVMe, 937 GB, 852 GB free | `df -h /` |
+| network | Wi-Fi `wlP1p1s0` connected; Ethernet `eno1` without a cable | `nmcli device` |
+| the user's services | `Linger=no`: they start at the user's login, not at boot; `sudo loginctl enable-linger <user>` changes it, a root step | `loginctl show-user` |
 
 ## The camera on USB 3
 

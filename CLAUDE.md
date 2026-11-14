@@ -20,6 +20,8 @@ Then, depending on what you came for:
 | you want | read |
 |---|---|
 | to work on the next thing | [ROADMAP.md](ROADMAP.md), which says who can do each step |
+| what the scanner is to do, in its own words | [GLOSSARY.md](GLOSSARY.md), [docs/adr/](docs/adr/) |
+| to write code for the rewrite | [CODING_STANDARDS.md, "The rewrite's code"](CODING_STANDARDS.md#the-rewrites-code) |
 | to build and verify | [AGENTS.md §4](AGENTS.md#4-build-and-verify) |
 | a hardware fact about this board | [docs/HARDWARE.md](docs/HARDWARE.md) |
 | whether a kernel log line is harmful | [docs/HARDWARE.md, "Kernel log"](docs/HARDWARE.md#kernel-log) |

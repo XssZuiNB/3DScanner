@@ -14,10 +14,14 @@ unverified. A number without a tag is a mistake; treat it as [?].
 
 3DScanner: a 3D scanner built from an Orbbec Gemini 2 L RGB-D camera and a Jetson Orin Nano
 (docs/HARDWARE.md). It is a full rewrite of CUDA_3D, the user's GPU point-cloud library
-written for Intel RealSense (its history ends at 5e568d9). The rewrite starts from a list of
-requirements the user checks (ROADMAP.md); until then the tree is CUDA_3D cleaned up (dead
-code, RealSense and PCL removed), made to build here and given the Orbbec camera, and serves as
-the reference for what the rewrite keeps.
+written for Intel RealSense (its history ends at 5e568d9).
+
+What the rewrite builds: an operator scans a tabletop object or a large object with the
+hand-held camera and works the scan from a web page the Jetson serves (the terms: GLOSSARY.md;
+the decisions: docs/adr/; the next step: ROADMAP.md). None of it is built yet. The tree is
+CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to build here and given the
+Orbbec camera. It is the rewrite's prototype: its methods carry over, and its code is the test
+oracle until new code replaces it (CODING_STANDARDS.md, "The rewrite's code").
 
 The tree today: `src/` is four static libraries and the header-only `types`, one per
 directory, each linking only the ones below it: `types`, `camera`, `gpu`, `geometry`,
@@ -99,7 +103,11 @@ it say yes again. It covers the tree only: after a toolchain update or a new dow
 **Jobs.** Builds run four parallel compile jobs, not one per core (six): `BUILD_JOBS` in
 `tools/build_common.sh` sets it for `tools/build.sh`, `tools/verify.sh` and, through verify,
 `tools/run_mutant.sh`, and holds the measurements: one compiler process peaks at up to 1.5 GB and
-a -j6 build froze the board on 2026-11-13 [M 2026-11-13].
+a -j6 build froze the board on 2026-11-13 [M 2026-11-13]. One heavy build runs at a time.
+While it runs, `~/.local/state/3dscanner/monitor.sh` (outside the tree) logs available
+memory, free swap, the over-current counters, the input power and the hottest zone every 2 s
+into `monitor.log` beside it, syncing each line so that a hard reset leaves the last state on
+disk [S: the script]; start it in the background and end it with the session.
 
 **ccache.** Every compile of the three tools goes through ccache (CODING_STANDARDS.md,
 "Tools"), set in the build directory's compiler launcher, so that the builds of one tree hit
@@ -141,6 +149,8 @@ Free choices: the stream size 640x400 at 30 fps [?: a choice; it exists on USB 2
   and on USB 2 Y14 and RLE are the only depth formats [M 2026-11-13]. `orbbec_device` asks for
   Y16, Z16, Y14, RLE in that order and refuses at start a depth frame that does not arrive as
   16 bit; Y14 arrives as 16 bit [M 2026-11-13].
+* **`/tmp` is emptied at boot** [S: `D /tmp` in `/usr/lib/tmpfiles.d/tmp.conf`]: what must outlive a reset goes elsewhere, and
+  a scratch directory there is created anew.
 * **Thrust's `make_pair` forwards its arguments since CUDA 12.x's Thrust 2.x**:
   `thrust::make_pair<float, float3>(a, b)` no longer compiles with lvalues; construct
   `thrust::pair<float, float3>(a, b)` [M 2026-11-13, CUDA 12.6].
@@ -166,7 +176,17 @@ checkers; these are the rules no checker holds.
    for each parameter, even one whose name looks obvious, and `@return` for every function
    that returns a value. Shell: the Google Shell Style Guide's function comment. Python: the
    Google Python Style Guide's docstring. A fact in a comment carries the same tags as the
-   documents.
+   documents. A kernel and a device function are functions like any other.
+
+   The rewrite's code states more, each part wherever it applies; the prototype's code keeps
+   the three parts above until it is replaced.
+
+   | part | states |
+   |---|---|
+   | `@param` | its direction (`[in]`, `[out]`, `[in,out]`); its unit (m, mm, px, rad, s); for a geometric value its coordinate frame; its valid range; for a pointer or a buffer who owns it, how long it must live, and whether it is host or device memory |
+   | `@return` | unit and frame as for a parameter; what comes back on each failure |
+   | `@pre` | what the caller guarantees, and what the function does when it does not hold |
+   | `@note` | for GPU code: the stream it runs on, whether it allocates, whether it waits for the GPU; whether two threads may call it at once |
 3. **`main()` is a composition of named steps.** Options, setup, the loop and the report are
    separate functions.
 4. **One copy.** Each shared thing lives in one place, the lowest layer that needs it.
@@ -200,8 +220,8 @@ checkers; these are the rules no checker holds.
 | `README.md` | what the tree is, its layout, how to build, install and run it |
 | `ROADMAP.md` | what to do next, in order, with a definition of done and who can do each step |
 | `docs/HARDWARE.md` | the board: platform, connections, permissions, kernel log lines |
-| `CODING_STANDARDS.md` | the style guides, what they leave to this tree, the checkers |
-| `GLOSSARY.md`, `docs/adr/` | the project's terms; the decisions in force and why (created as they are resolved) |
+| `CODING_STANDARDS.md` | the style guides, what they leave to this tree, the rules for the rewrite's code, the checkers |
+| `GLOSSARY.md`, `docs/adr/` | the scanner's terms; the decisions in force and why |
 | `docs/agents/` | how the workflow skills in `.claude/skills/` find the tracker and the domain docs |
 
 Rules for these documents: each opens with the notice line above; plain, concise English,

@@ -7,6 +7,11 @@ from CUDA_3D, a GPU point-cloud library (point clouds from RGB-D, voxel filter, 
 [colored ICP](https://openaccess.thecvf.com/content_ICCV_2017/papers/Park_Colored_Point_Cloud_ICCV_2017_paper.pdf);
 its RealSense SLAM demo: https://youtu.be/5NcDEhguzGU). Agents start at [CLAUDE.md](CLAUDE.md).
 
+What the rewrite builds, none of it yet: an operator walks the hand-held camera around a
+tabletop object or a large object and works the scan from a web page the Jetson serves; the
+result is a colored model of the object, later a mesh and measurements
+([GLOSSARY.md](GLOSSARY.md), [docs/adr/](docs/adr/), [ROADMAP.md](ROADMAP.md)).
+
 ## Layout
 
 | directory | what |
@@ -16,11 +21,12 @@ its RealSense SLAM demo: https://youtu.be/5NcDEhguzGU). Agents start at [CLAUDE.
 | `tests/` | offline tests, run by ctest; they need the GPU, no camera |
 | `tools/` | fetch the dependencies, build, verify (AGENTS.md §4) |
 | `data/` | the two colored-ICP fragments, `frag_115.ply` and `frag_116.ply` |
-| `docs/` | the hardware, the workflow's tracker and domain conventions |
+| `docs/` | the hardware, the decisions (`adr/`), the workflow's tracker and domain conventions |
 
 ## Build
 
-Needs CUDA 12 (12.6 tested), CMake 3.18+, OpenCV 4 and ccache (CODING_STANDARDS.md, "Tools").
+Needs CUDA 12 (12.6 tested), CMake 3.18+ (4.4.4 tested), OpenCV 4 and ccache
+(CODING_STANDARDS.md, "Tools").
 Then:
 
     tools/fetch_deps.sh     # OrbbecSDK v2 and Eigen into ~/.local/share/3dscanner
@@ -38,7 +44,8 @@ Once per machine, as root: the Orbbec udev rule, from the SDK
 
 ## License
 
-[0BSD](LICENSE), except:
+[0BSD](LICENSE). Dependencies carry permissive licenses only
+([ADR-0002](docs/adr/0002-own-reconstruction-code.md)). Except:
 
 * The workflow skills in `.claude/skills/` are MIT (`.claude/skills/LICENSE-mattpocock-skills`).
 * `data/`: Open3D test data [?], license unchecked.

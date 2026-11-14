@@ -27,7 +27,9 @@
 # the user has since added an 8 GB swap file on the NVMe, which backs four jobs.
 # Confirmed at four: a cold build at -j4 with an empty ccache had a lowest
 # MemAvailable of 1238 MB, swap grew by about 161 MB, and it took 171 s
-# [M 2026-11-13].
+# [M 2026-11-13]. Later cold builds at -j4 with a remote editor session open,
+# the tree as C++20 among them, had a lowest MemAvailable of 1011 MB
+# [M 2026-11-14].
 # shellcheck disable=SC2034  # read by the tools that source this file
 readonly BUILD_JOBS=4
 
