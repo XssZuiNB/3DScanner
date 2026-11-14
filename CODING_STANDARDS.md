@@ -22,27 +22,43 @@ deviation. This document adds what the guides leave to the project.
 - **Floating-point contraction stays on** (C, C++): a fused multiply-add rounds once and is
   the more accurate form. `-ffp-contract=off` goes only on a target whose bit-exact
   reference changes without it, with that measurement written beside the flag.
-- **C++20** for C++ and CUDA, in the rewrite's code; CUDA for compute capability 8.7
-  (`GCA_CUDA_ARCHITECTURES`). Today's build passes no `-std` and so gets the compilers'
-  default, gnu++17 [M 2026-11-13: `build/compile_commands.json`; S: GCC 11]; the rewrite's
-  first ticket switches it. C++17 is the fallback where C++20 fails on this board's tools;
-  such a failure is written here with its measurement. What the tools do with C++20
-  [M 2026-11-13, a copy of the tree and a test file outside it, `-std=c++20` for g++ and
-  nvcc]:
-  - The whole tree builds without a warning and its five tests pass, Eigen 3.4.0, Thrust,
-    OpenCV and OrbbecSDK included, once one construct is changed: `src/gpu/cuda_frame.cuh`
-    names its constructors `cuda_frame<T, N_CHANNEL>(...)`, which C++20 removed; g++ 11
-    refuses it, nvcc takes it. `cuda_frame(...)` is right in both dialects.
-  - nvcc 12.6 takes `-std=c++20`: a concept on a `__host__ __device__` function, designated
-    initializers and `std::span` compile clean under `-Wall -Wextra`.
-  - Device code cannot call a `constexpr` function of the standard library (`std::popcount`):
-    nvcc refuses it without the experimental `--expt-relaxed-constexpr`.
-  - The dialect is set through `CMAKE_CXX_STANDARD 20` and `CMAKE_CUDA_STANDARD 20`: with
-    CMake 4.4.4 ("Tools") the copy builds so without a warning and passes its tests, g++
-    getting `-std=gnu++20` and nvcc `-std=c++20` [M 2026-11-14]. CMake knows the CUDA dialect
-    from 3.25.2 on, with nvcc 12.0 and above [S: CMake 3.25's release notes, "Updates",
-    3.25.2]; apt's 3.22.1 refuses it, also when only `CMAKE_CXX_STANDARD 20` is set
-    [M 2026-11-13]. The switch raises `cmake_minimum_required` with it.
+- **C++20** for C++ and CUDA, CUDA for compute capability 8.7 (`GCA_CUDA_ARCHITECTURES`).
+  The top-level `CMakeLists.txt` sets `CMAKE_CXX_STANDARD 20` and `CMAKE_CUDA_STANDARD 20`,
+  both required, extensions at CMake's default: every compile command carries `-std=gnu++20`
+  for g++ and `-std=c++20` for nvcc [M 2026-11-14: `compile_commands.json` of a configure of
+  the tree, 20 of 20 entries]. C++17 is the fallback where C++20 fails on this board's tools;
+  such a failure is written here with its measurement.
+  - The tree builds without a warning and its five tests pass as C++20, Eigen 3.4.0, Thrust,
+    OpenCV and OrbbecSDK included [M 2026-11-14: `tools/verify.sh`]. C++20 removed the
+    constructor spelling `cuda_frame<T, N_CHANNEL>(...)`: g++ 11 refuses it and nvcc takes it
+    [M 2026-11-13]; `cuda_frame(...)`, as `src/gpu/cuda_frame.cuh` spells it, is right in both
+    dialects.
+  - CMake knows the CUDA dialect from 3.25.2 on, with nvcc 12.0 and above [S: CMake 3.25's
+    release notes, "Updates", 3.25.2]; apt's 3.22.1 refuses it, also when only
+    `CMAKE_CXX_STANDARD 20` is set [M 2026-11-13]. `cmake_minimum_required` is 3.25.2, and a
+    configure of the tree with CMake 3.25.2 and with 4.4.4 ("Tools") accepts it [M 2026-11-14].
+    Raising the minimum from 3.18 changed no compile command and no link line besides the
+    dialect and `EIGEN_MPL2_ONLY` [M 2026-11-14: `compile_commands.json` and every `link.txt`
+    of three configures compared].
+  - What the tools do with C++20 [M 2026-11-13, a copy of the tree and a test file outside it,
+    `-std=c++20` for g++ and nvcc]: nvcc 12.6 takes `-std=c++20`, a concept on a
+    `__host__ __device__` function, designated initializers and `std::span` compile clean under
+    `-Wall -Wextra`; device code cannot call a `constexpr` function of the standard library
+    (`std::popcount`), nvcc refuses it without the experimental `--expt-relaxed-constexpr`.
+- **Eigen: MPL2 files only.** Eigen 3.4.0 ships files under the LGPL; the two that include
+  `Eigen/src/Core/util/NonMPL2.h` are `unsupported/Eigen/src/IterativeSolvers/ConstrainedConjGrad.h`
+  and `IterationController.h` [S: `grep NonMPL2.h` over Eigen 3.4.0]. With `EIGEN_MPL2_ONLY`
+  defined, including one of them is an `#error` [S: `NonMPL2.h`, `COPYING.README`]. The module
+  header `unsupported/Eigen/IterativeSolvers` leaves both out under the define
+  (`#ifndef EIGEN_MPL2_ONLY`), so including the module compiles but lacks their classes; only a
+  direct include of one of the files stops the compile [S: that header, line 36; M 2026-11-14:
+  a mutant including `IterationController.h` is caught by `tools/run_mutant.sh` with that
+  `#error`]. The top-level `CMakeLists.txt` defines it on the target `Eigen3::Eigen`, so every
+  target that includes Eigen has it, whether `find_package` finds an installed Eigen or the copy
+  in `GCA_DEPS_DIR` is used [M 2026-11-14: configures with each; the define is on 13 of 20
+  compile commands, those of the targets that link Eigen].
+  [ADR-0002](docs/adr/0002-own-reconstruction-code.md)'s permissive-license rule holds for Eigen
+  through it.
 - **Warnings:** `-Wall -Wextra` for C and C++, and through `-Xcompiler` for nvcc's host
   compiler; nvcc's own warnings are its defaults, none suppressed (no `-w`, no
   `-diag-suppress`), and `-Wreorder`. The top-level `CMakeLists.txt` sets them on every target;

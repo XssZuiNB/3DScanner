@@ -12,12 +12,12 @@ namespace gca
 template <typename T, size_t N_CHANNEL> class cuda_frame
 {
 public:
-    cuda_frame<T, N_CHANNEL>(uint32_t width, uint32_t height)
+    cuda_frame(uint32_t width, uint32_t height)
         : m_data_vec(width * height * N_CHANNEL)
     {
     }
 
-    cuda_frame<T, N_CHANNEL>(const T *frame, uint32_t width, uint32_t height)
+    cuda_frame(const T *frame, uint32_t width, uint32_t height)
         : m_data_vec(width * height * N_CHANNEL)
     {
         if (frame)

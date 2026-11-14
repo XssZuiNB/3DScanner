@@ -25,8 +25,9 @@ result is a colored model of the object, later a mesh and measurements
 
 ## Build
 
-Needs CUDA 12 (12.6 tested), CMake 3.18+ (4.4.4 tested), OpenCV 4 and ccache
-(CODING_STANDARDS.md, "Tools").
+Needs CUDA 12 (12.6 tested), CMake 3.25.2+ (4.4.4 tested), OpenCV 4 and ccache
+(CODING_STANDARDS.md, "Tools"). The tree builds as C++20 for C++ and CUDA, and Eigen's LGPL
+files are shut out (CODING_STANDARDS.md, "What the guides leave to this tree").
 Then:
 
     tools/fetch_deps.sh     # OrbbecSDK v2 and Eigen into ~/.local/share/3dscanner
@@ -45,7 +46,8 @@ Once per machine, as root: the Orbbec udev rule, from the SDK
 ## License
 
 [0BSD](LICENSE). Dependencies carry permissive licenses only
-([ADR-0002](docs/adr/0002-own-reconstruction-code.md)). Except:
+([ADR-0002](docs/adr/0002-own-reconstruction-code.md)); the build refuses Eigen's LGPL files
+(CODING_STANDARDS.md, "What the guides leave to this tree"). Except:
 
 * The workflow skills in `.claude/skills/` are MIT (`.claude/skills/LICENSE-mattpocock-skills`).
 * `data/`: Open3D test data [?], license unchecked.

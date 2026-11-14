@@ -1,12 +1,21 @@
 # SPDX-License-Identifier: 0BSD
 #
-# CMakeLists.txt - the tree's build: the build type and CUDA architecture, the warning set,
-# the dependencies (CUDA, Eigen, OrbbecSDK, OpenCV), then the libraries (src/), the programs
-# (apps/) and the tests (tests/).
+# CMakeLists.txt - the tree's build: the C++20 dialect for C++ and CUDA, the build type and
+# CUDA architecture, the warning set, the dependencies (CUDA, Eigen, OrbbecSDK, OpenCV), then
+# the libraries (src/), the programs (apps/) and the tests (tests/).
 
-cmake_minimum_required(VERSION 3.18)
+# 3.25.2 is the first CMake that knows the CUDA dialect C++20 with nvcc 12 (CODING_STANDARDS.md,
+# "What the guides leave to this tree", C++20).
+cmake_minimum_required(VERSION 3.25.2)
 
 project(3DScanner LANGUAGES C CXX CUDA)
+
+# C++20 for C++ and CUDA, on every target of the tree and required; extensions stay at CMake's
+# default, which gives g++ -std=gnu++20 and nvcc -std=c++20 (CODING_STANDARDS.md, same bullet).
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_STANDARD 20)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
@@ -72,6 +81,10 @@ if(NOT TARGET Eigen3::Eigen)
     set_target_properties(Eigen3::Eigen PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${GCA_EIGEN_DIR}")
     message(STATUS "Using bundled Eigen: ${GCA_EIGEN_DIR}")
 endif()
+# Only Eigen's MPL2 files are used: with this definition an include of one of its LGPL files
+# stops the compile, for an installed Eigen and the bundled one alike (CODING_STANDARDS.md,
+# "What the guides leave to this tree", Eigen).
+set_property(TARGET Eigen3::Eigen APPEND PROPERTY INTERFACE_COMPILE_DEFINITIONS EIGEN_MPL2_ONLY)
 
 # ---------------------------------------------------------------- Camera backends
 # The camera library and the viewer, the only users of OpenCV, are built with the Orbbec backend.

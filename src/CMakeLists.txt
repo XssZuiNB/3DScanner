@@ -10,7 +10,6 @@
 # The plain camera-parameter structs and the console colors, which camera and gpu both use.
 add_library(types INTERFACE)
 target_include_directories(types INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_features(types INTERFACE cxx_std_17)
 
 # ---------------------------------------------------------------- camera
 if(GCA_WITH_ORBBEC)

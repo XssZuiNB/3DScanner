@@ -17,8 +17,9 @@ reads first. What outlives them is in GLOSSARY.md, docs/adr/ 0002 to 0004 and
 CODING_STANDARDS.md, "The rewrite's code".
 
 The user agreed on 2026-11-14 to the choices the spec marks (spec) and to the breakdown into
-tickets. The frontier is `build-as-cpp20` (agent) and `choose-web-libraries` (decision). Done
-when `accept-the-colored-model` is done. `.scratch/cleanup/` can go on the user's word: the
+tickets. The frontier is `frame-source-with-synthetic-frames` and
+`aligned-frame-distortion-tool` (agent) and `choose-web-libraries` (decision). Done when
+`accept-the-colored-model` is done. `.scratch/cleanup/` can go on the user's word: the
 requirements hold what it recorded of the old loop.
 
 ## 2. What the first phase needs from the user (hardware, decision)
