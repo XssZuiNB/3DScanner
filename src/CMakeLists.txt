@@ -82,6 +82,7 @@ add_library(
     gpu/gpu_messages.hpp
     gpu/gpu_pool.cpp
     gpu/gpu_pool.hpp
+    gpu/kernel_launch.cuh
     gpu/pinned_buffer.hpp
     gpu/step_result.hpp
 )
@@ -103,6 +104,8 @@ add_library(
     geometry/float3_eigen.cuh
     geometry/float3_ops.cuh
     geometry/geometry_util.cuh
+    geometry/organized_normals.cu
+    geometry/organized_normals.hpp
     geometry/organized_points.cu
     geometry/organized_points.hpp
     geometry/point_cloud.cu

@@ -35,6 +35,7 @@
 #include "gpu/gpu_pool.hpp"
 #include "gpu/step_result.hpp"
 #include "gpu_test_helpers.hpp"
+#include "stage_frames.hpp"
 #include "synthetic_source.hpp"
 #include "types/camera_param.hpp"
 #include "types/frame_description.hpp"
@@ -58,39 +59,23 @@
 
 namespace
 {
+using gca_test::camera_depth_unit_m;
 using gca_test::check;
 using gca_test::check_max_error;
 using gca_test::check_no_cuda_error;
-using gca_test::check_refusal;
+using gca_test::check_refused;
 using gca_test::check_within;
 using gca_test::create_stream;
 using gca_test::granted;
+using gca_test::large_description;
 using gca_test::max_error;
-
-/// The frames' size: the smaller stream size [S: docs/HARDWARE.md, the camera's sizes at 30 fps].
-constexpr gca::frame_size test_size = {640, 400};
-
-/// A size that is no multiple of the kernel's block of 32 x 8: one column past 20 blocks and one
-/// row past 50, so that the last column and row of blocks each hold one pixel of the picture and
-/// most of their threads lie outside it [?: a choice; S: organized_points.cu, the block].
-constexpr gca::frame_size odd_size = {641, 401};
-
-/// The camera's intrinsics at 640x400: fx and fy differ, and the principal point lies off the
-/// picture's centre at no whole or half pixel [M 2026-11-13: docs/HARDWARE.md]. The pictures at
-/// odd_size take them too.
-constexpr gca::intrinsics test_intrinsics = {306.18f, 306.14f, 317.41f, 199.13f};
-
-/// The depth unit: 1 mm, the camera's default [S: AGENTS.md §5].
-constexpr float test_depth_unit_m = 0.001f;
-
-/// A size other than the frames': the larger stream size, so that a stage that took the frame's
-/// size for the points' would still write inside them [S: docs/HARDWARE.md].
-constexpr gca::frame_size other_size = {1280, 800};
-
-/// A frame of one column and 600000 rows: its rows need 75000 blocks of 8 rows, more than the
-/// 65535 a grid holds along y [S: CUDA C++ Programming Guide, "Compute Capabilities"], so that
-/// CUDA refuses the kernel's launch.
-constexpr gca::frame_size tall_size = {1, 600000};
+using gca_test::odd_description;
+using gca_test::render;
+using gca_test::small_description;
+using gca_test::tabletop_box;
+using gca_test::tabletop_plane;
+using gca_test::tabletop_sphere;
+using gca_test::tall_size;
 
 /// The analytic pictures' depth range: 0.4005 m to 0.8005 m, each limit half a depth unit off a
 /// depth value, so that whether a pixel lies within it does not depend on rounding [S: the depth
@@ -142,16 +127,6 @@ constexpr double oracle_tolerance_m = 1e-6;
 /// [M 2026-11-14].
 constexpr double oracle_pixel_tolerance_px = 1e-2;
 
-/// The support plane: 0.9 m x 0.8 m [?: a choice].
-constexpr gca_test::synthetic_plane test_plane = {0.45, 0.40};
-
-/// The sphere: 8 cm in radius, resting on the plane off its centre [?: a choice, a tabletop
-/// object's size].
-const gca_test::synthetic_sphere test_sphere = {Eigen::Vector3d(0.03, -0.02, 0.08), 0.08};
-
-/// The box of the oracle's walk: 0.20 m x 0.14 m x 0.10 m, turned by 25 degrees [?: a choice].
-constexpr gca_test::synthetic_box test_box = {0.03, -0.02, 25.0, 0.20, 0.14, 0.10};
-
 /// What the stage works on at one size: a GPU frame and organized points of that size, both from
 /// the pool, and the stream the work runs on.
 struct stage_buffers
@@ -167,31 +142,6 @@ struct downloaded_points
     std::vector<float3> points;     ///< in the camera frame, in m
     std::vector<std::uint8_t> mask; ///< 1 valid, 0 invalid
 };
-
-/// Renders the frames of a scene from the synthetic source.
-/// @param scene [in] the scene, one frame for each pose of its trajectory.
-/// @param size [in] the frames' size, in px; the intrinsics are test_intrinsics.
-/// @return the frames; fewer, with a failed check, when the source refuses or ends early.
-std::vector<gca::frame> render(const gca_test::synthetic_scene &scene, const gca::frame_size &size)
-{
-    gca_test::synthetic_source_options options;
-    options.description = {size, test_intrinsics, test_depth_unit_m};
-    options.scene = scene;
-    gca_test::synthetic_source source(std::move(options));
-    std::vector<gca::frame> frames;
-    check(source.open(size).opened, "the synthetic source opened");
-    for (std::size_t i = 0; i < scene.trajectory.size(); i++)
-    {
-        gca::frame frame;
-        if (source.next(frame).status != gca::next_status::frame)
-        {
-            check(false, "the synthetic source gave every frame of its trajectory");
-            break;
-        }
-        frames.push_back(std::move(frame));
-    }
-    return frames;
-}
 
 /// Builds a frame of one depth and one color, for the cases whose pictures do not matter.
 /// @param description [in] its size, intrinsics and depth unit.
@@ -264,7 +214,7 @@ downloaded_points download(const std::string &name, const gca::organized_points 
 /// @return ((u - cx) / fx, (v - cy) / fy, 1), in the camera frame, with the test's intrinsics.
 Eigen::Vector3d pixel_ray(std::uint32_t u, std::uint32_t v)
 {
-    const gca::intrinsics &k = test_intrinsics;
+    const gca::intrinsics &k = small_description.intrinsics;
     return {(u - double{k.cx}) / k.fx, (v - double{k.cy}) / k.fy, 1.0};
 }
 
@@ -272,10 +222,10 @@ Eigen::Vector3d pixel_ray(std::uint32_t u, std::uint32_t v)
 /// once to float. The product of two floats is exact in double, so its cast is the float
 /// product's rounding [S: IEEE 754, a float's 24-bit and a double's 53-bit significand].
 /// @param d [in] the depth value, in depth units.
-/// @return d * test_depth_unit_m rounded to float, in m.
+/// @return d * camera_depth_unit_m rounded to float, in m.
 float rounded_z(std::uint16_t d)
 {
-    return static_cast<float>(static_cast<double>(d) * test_depth_unit_m);
+    return static_cast<float>(static_cast<double>(d) * camera_depth_unit_m);
 }
 
 /// A point's distance from the nearest analytic surface, and which surface that is.
@@ -366,7 +316,8 @@ analytic_counts compare_analytic(const gca::frame &frame, const downloaded_point
             const Eigen::Vector3d ray = pixel_ray(u, v);
             counts.from_pinhole_m.add((point - double{z_m} * ray).norm());
             const surface_distance surface = distance_from_surface(scene, camera_to_world * point);
-            counts.surface_over_unit_ray.add(surface.distance_m / (test_depth_unit_m * ray.norm()));
+            counts.surface_over_unit_ray.add(surface.distance_m /
+                                             (camera_depth_unit_m * ray.norm()));
             counts.on_sphere += surface.on_sphere ? 1 : 0;
         }
     }
@@ -426,7 +377,7 @@ std::optional<gca::organized_points_parameters> limits_on_rounded_z(const gca::f
     std::vector<bool> present(std::numeric_limits<std::uint16_t>::max() + 1, false);
     for (const std::uint16_t d : frame.depth())
         present[d] = true;
-    const auto exact = [](std::uint16_t d) { return static_cast<double>(d) * test_depth_unit_m; };
+    const auto exact = [](std::uint16_t d) { return static_cast<double>(d) * camera_depth_unit_m; };
     std::optional<std::uint16_t> near;
     for (std::uint16_t d = near_search_from; d < far_search_from && !near; d++)
     {
@@ -452,15 +403,15 @@ std::optional<gca::organized_points_parameters> limits_on_rounded_z(const gca::f
 /// kernel's block.
 struct analytic_stages
 {
-    stage_buffers &test;      ///< of test_size
-    stage_buffers &odd_sized; ///< of odd_size
+    stage_buffers &test;      ///< of the smaller stream size
+    stage_buffers &odd_sized; ///< of the odd size
 };
 
 /// Checks the analytic plane and the analytic sphere. The plane is seen from 0.65 m, looking down
 /// at about 32 degrees and rolled by 10 degrees, so that its picture has pixels nearer than the
 /// range, inside it, farther, and past the plane's far edge without depth [?: a choice]. It is
 /// deprojected again with a range from 0, whose pixels without depth stay invalid; with limits
-/// on rounded z values; and at odd_size. The sphere rests on the plane and is seen from 0.46 m,
+/// on rounded z values; and at the odd size. The sphere rests on the plane and is seen from 0.46 m,
 /// looking at its centre [?: a choice].
 /// @param stages [in,out] the stages at both sizes.
 void check_analytic_surfaces(analytic_stages stages)
@@ -468,17 +419,17 @@ void check_analytic_surfaces(analytic_stages stages)
     const std::optional<Eigen::Isometry3d> plane_pose =
         gca_test::look_at({0.0, -0.55, 0.35}, {0.0, 0.0, 0.0}, 10.0);
     const std::optional<Eigen::Isometry3d> sphere_pose =
-        gca_test::look_at({0.15, -0.40, 0.30}, test_sphere.centre_m, -7.0);
+        gca_test::look_at({0.15, -0.40, 0.30}, tabletop_sphere.centre_m, -7.0);
     check(plane_pose && sphere_pose, "the analytic pictures: look_at() gives both poses");
     if (!plane_pose || !sphere_pose)
         return;
-    const gca_test::synthetic_scene plane_scene = {.plane = test_plane,
+    const gca_test::synthetic_scene plane_scene = {.plane = tabletop_plane,
                                                    .trajectory = {*plane_pose}};
     const gca_test::synthetic_scene sphere_scene = {
-        .plane = test_plane, .sphere = test_sphere, .trajectory = {*sphere_pose}};
-    const std::vector<gca::frame> plane_frame = render(plane_scene, test_size);
-    const std::vector<gca::frame> odd_frame = render(plane_scene, odd_size);
-    const std::vector<gca::frame> sphere_frame = render(sphere_scene, test_size);
+        .plane = tabletop_plane, .sphere = tabletop_sphere, .trajectory = {*sphere_pose}};
+    const std::vector<gca::frame> plane_frame = render(plane_scene, small_description).frames;
+    const std::vector<gca::frame> odd_frame = render(plane_scene, odd_description).frames;
+    const std::vector<gca::frame> sphere_frame = render(sphere_scene, small_description).frames;
     if (plane_frame.empty() || odd_frame.empty() || sphere_frame.empty())
         return;
 
@@ -524,7 +475,7 @@ std::vector<std::uint8_t> bgr_of(const gca::frame &frame)
 
 /// Runs the oracle, the prototype's create_from_rgbd(), on a frame: depth aligned to color, both
 /// with the frame's intrinsics, identity extrinsics.
-/// @param frame [in] the frame, of test_size.
+/// @param frame [in] the frame, of the smaller stream size.
 /// @param parameters [in] the depth range.
 /// @return the oracle's points, the invalid ones dropped.
 /// @note The oracle runs on the default stream and waits for the whole device.
@@ -533,11 +484,14 @@ std::vector<gca::point_t> oracle_points(const gca::frame &frame,
 {
     gca::extrinsics identity{};
     identity.rotation[0] = identity.rotation[4] = identity.rotation[8] = 1.0f;
-    const gca::cuda_camera_param param(test_intrinsics, test_intrinsics, identity, test_size.width,
-                                       test_size.height, test_depth_unit_m);
+    const gca::cuda_camera_param param(small_description.intrinsics, small_description.intrinsics,
+                                       identity, small_description.size.width,
+                                       small_description.size.height, camera_depth_unit_m);
     const std::vector<std::uint8_t> bgr = bgr_of(frame);
-    const gca::cuda_depth_frame depth(frame.depth().data(), test_size.width, test_size.height);
-    const gca::cuda_color_frame color(bgr.data(), test_size.width, test_size.height);
+    const gca::cuda_depth_frame depth(frame.depth().data(), small_description.size.width,
+                                      small_description.size.height);
+    const gca::cuda_color_frame color(bgr.data(), small_description.size.width,
+                                      small_description.size.height);
     return gca::point_cloud::create_from_rgbd(depth, color, param, parameters.near_m,
                                               parameters.far_m)
         ->download();
@@ -560,12 +514,12 @@ struct oracle_counts
 /// pixel no other oracle point took; there the point must be the oracle's plus
 /// (0.5 z / fx, 0.5 z / fy, 0).
 /// @param oracle [in] the oracle's points.
-/// @param got [in] the stage's points and marks, of test_size.
+/// @param got [in] the stage's points and marks, of the smaller stream size.
 /// @param counts [in,out] the counts and errors are added.
 void compare_oracle(const std::vector<gca::point_t> &oracle, const downloaded_points &got,
                     oracle_counts &counts)
 {
-    const gca::intrinsics &k = test_intrinsics;
+    const gca::intrinsics &k = small_description.intrinsics;
     std::vector<bool> taken(got.mask.size(), false);
     counts.oracle_points += oracle.size();
     counts.valid_pixels += static_cast<std::size_t>(std::ranges::count(got.mask, 1));
@@ -579,14 +533,14 @@ void compare_oracle(const std::vector<gca::point_t> &oracle, const downloaded_po
         const double u_whole = std::round(u);
         const double v_whole = std::round(v);
         counts.off_pixel_px.add(std::max(std::abs(u - u_whole), std::abs(v - v_whole)));
-        if (!(u_whole >= 0.0 && u_whole < test_size.width && v_whole >= 0.0 &&
-              v_whole < test_size.height))
+        if (!(u_whole >= 0.0 && u_whole < small_description.size.width && v_whole >= 0.0 &&
+              v_whole < small_description.size.height))
         {
             counts.unmatched++;
             continue;
         }
-        const std::size_t pixel =
-            static_cast<std::size_t>(v_whole) * test_size.width + static_cast<std::size_t>(u_whole);
+        const std::size_t pixel = static_cast<std::size_t>(v_whole) * small_description.size.width +
+                                  static_cast<std::size_t>(u_whole);
         if (got.mask[pixel] != 1 || taken[pixel])
         {
             counts.unmatched++;
@@ -607,26 +561,20 @@ void compare_oracle(const std::vector<gca::point_t> &oracle, const downloaded_po
 
 /// Compares the stage with the oracle on three frames of a walk around a box on the plane, with
 /// a range narrower than 0.5 m, where the oracle's bilateral filter does nothing.
-/// @param stage [in,out] the GPU frame, organized points and stream of test_size.
+/// @param stage [in,out] the GPU frame, organized points and stream of the smaller stream size.
 void check_oracle(stage_buffers &stage)
 {
-    // Three views 120 degrees apart, 0.40 m to 0.50 m from the box's centre and 0.30 m to 0.40 m
-    // above the plane [?: a choice, a hand-held walk around a tabletop box].
-    const gca_test::synthetic_walk walk = {
-        Eigen::Vector3d(test_box.centre_x_m, test_box.centre_y_m, 0.5 * test_box.height_m),
-        3,
-        0.45,
-        0.05,
-        0.35,
-        0.05,
-        10.0,
-        0.02};
+    // Three views of the tabletop walk, 120 degrees apart [?: a choice].
+    gca_test::synthetic_walk walk = gca_test::tabletop_walk();
+    walk.pose_count = 3;
     const std::optional<std::vector<Eigen::Isometry3d>> trajectory = gca_test::walk_around(walk);
     check(trajectory.has_value(), "oracle: walk_around() gives the walk");
     if (!trajectory)
         return;
     const std::vector<gca::frame> frames =
-        render({.plane = test_plane, .box = test_box, .trajectory = *trajectory}, test_size);
+        render({.plane = tabletop_plane, .box = tabletop_box, .trajectory = *trajectory},
+               small_description)
+            .frames;
     oracle_counts counts;
     for (const gca::frame &frame : frames)
     {
@@ -653,22 +601,12 @@ void check_oracle(stage_buffers &stage)
                     counts.after_half_pixel_m, oracle_tolerance_m);
 }
 
-/// Checks that a deprojection is refused with a message that holds a text.
-/// @param what [in] the case, printed.
-/// @param made [in] what deproject() gave.
-/// @param expected [in] a text the message holds.
-void check_refused(const std::string &what, const gca::step_result &made,
-                   const std::string &expected)
-{
-    check_refusal(what, !made.done, made.message, made.message.find(expected) != std::string::npos);
-}
-
 /// The GPU memory the refusals use, all requested before the pool closes.
 struct refusal_buffers
 {
     gca::gpu_frame never_uploaded; ///< a GPU frame of the test size that holds no frame
     gca::gpu_frame described;      ///< a GPU frame of the test size for the descriptions
-    gca::organized_points other;   ///< organized points of other_size
+    gca::organized_points other;   ///< organized points of the larger stream size
     gca::gpu_frame tall_frame;     ///< a GPU frame of tall_size
     gca::organized_points tall;    ///< organized points of tall_size
 };
@@ -688,13 +626,13 @@ std::array<unusable_description, 8> unusable_descriptions()
 {
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float infinite = std::numeric_limits<float>::infinity();
-    const gca::intrinsics k = test_intrinsics;
-    return {{{"fx 0", {0.0f, k.fy, k.cx, k.cy}, test_depth_unit_m},
-             {"fx infinite", {infinite, k.fy, k.cx, k.cy}, test_depth_unit_m},
-             {"fy -1", {k.fx, -1.0f, k.cx, k.cy}, test_depth_unit_m},
-             {"fy not a number", {k.fx, nan, k.cx, k.cy}, test_depth_unit_m},
-             {"cx not a number", {k.fx, k.fy, nan, k.cy}, test_depth_unit_m},
-             {"cy infinite", {k.fx, k.fy, k.cx, infinite}, test_depth_unit_m},
+    const gca::intrinsics k = small_description.intrinsics;
+    return {{{"fx 0", {0.0f, k.fy, k.cx, k.cy}, camera_depth_unit_m},
+             {"fx infinite", {infinite, k.fy, k.cx, k.cy}, camera_depth_unit_m},
+             {"fy -1", {k.fx, -1.0f, k.cx, k.cy}, camera_depth_unit_m},
+             {"fy not a number", {k.fx, nan, k.cx, k.cy}, camera_depth_unit_m},
+             {"cx not a number", {k.fx, k.fy, nan, k.cy}, camera_depth_unit_m},
+             {"cy infinite", {k.fx, k.fy, k.cx, infinite}, camera_depth_unit_m},
              {"depth unit 0", k, 0.0f},
              {"depth unit infinite", k, infinite}}};
 }
@@ -702,7 +640,8 @@ std::array<unusable_description, 8> unusable_descriptions()
 /// Checks the refusals that leave the points as they were: empty organized points, depth ranges
 /// that are none, a GPU frame that holds no frame, a frame of another size, each kind of
 /// description that cannot be used, and CUDA's last error left by an earlier call.
-/// @param stage [in,out] the stage of test_size, its GPU frame holding a frame of the scene and
+/// @param stage [in,out] the stage of the smaller stream size, its GPU frame holding a frame of the
+/// scene and
 ///        its points made from it.
 /// @param buffers [in,out] the other GPU memory the refusals use.
 void check_refusals_leave_points(stage_buffers &stage, refusal_buffers &buffers)
@@ -732,7 +671,7 @@ void check_refusals_leave_points(stage_buffers &stage, refusal_buffers &buffers)
     for (const unusable_description &c : unusable_descriptions())
     {
         const gca::step_result up = buffers.described.upload(
-            uniform_frame({test_size, c.intrinsics, c.depth_unit_m}), stream);
+            uniform_frame({small_description.size, c.intrinsics, c.depth_unit_m}), stream);
         check(up.done, (std::string(c.what) + ": uploaded, " + up.message).c_str());
         check_refused(c.what, out.deproject(buffers.described, analytic_range, stream),
                       "cannot be used");
@@ -760,7 +699,7 @@ void check_refusals_leave_points(stage_buffers &stage, refusal_buffers &buffers)
 void check_refused_launch(refusal_buffers &buffers, cudaStream_t stream)
 {
     const gca::step_result up = buffers.tall_frame.upload(
-        uniform_frame({tall_size, test_intrinsics, test_depth_unit_m}), stream);
+        uniform_frame({tall_size, small_description.intrinsics, camera_depth_unit_m}), stream);
     check(up.done, ("the tall frame uploaded, " + up.message).c_str());
     check_refused("a frame of 1x600000 px, 75000 blocks along y",
                   buffers.tall.deproject(buffers.tall_frame, analytic_range, stream),
@@ -776,17 +715,18 @@ void check_with_closed_pool(cudaStream_t stream)
     gca::gpu_pool pool;
     const std::string frame_name = "a GPU frame";
     const std::string points_name = "organized points";
-    stage_buffers test{granted(frame_name, gca::gpu_frame::request(pool, test_size)),
-                       granted(points_name, gca::organized_points::request(pool, test_size)),
-                       stream};
-    stage_buffers odd_sized{granted(frame_name, gca::gpu_frame::request(pool, odd_size)),
-                            granted(points_name, gca::organized_points::request(pool, odd_size)),
-                            stream};
-    refusal_buffers buffers{granted(frame_name, gca::gpu_frame::request(pool, test_size)),
-                            granted(frame_name, gca::gpu_frame::request(pool, test_size)),
-                            granted(points_name, gca::organized_points::request(pool, other_size)),
-                            granted(frame_name, gca::gpu_frame::request(pool, tall_size)),
-                            granted(points_name, gca::organized_points::request(pool, tall_size))};
+    stage_buffers test{
+        granted(frame_name, gca::gpu_frame::request(pool, small_description.size)),
+        granted(points_name, gca::organized_points::request(pool, small_description.size)), stream};
+    stage_buffers odd_sized{
+        granted(frame_name, gca::gpu_frame::request(pool, odd_description.size)),
+        granted(points_name, gca::organized_points::request(pool, odd_description.size)), stream};
+    refusal_buffers buffers{
+        granted(frame_name, gca::gpu_frame::request(pool, small_description.size)),
+        granted(frame_name, gca::gpu_frame::request(pool, small_description.size)),
+        granted(points_name, gca::organized_points::request(pool, large_description.size)),
+        granted(frame_name, gca::gpu_frame::request(pool, tall_size)),
+        granted(points_name, gca::organized_points::request(pool, tall_size))};
     pool.close();
     check_analytic_surfaces({test, odd_sized});
     check_oracle(test);

@@ -6,6 +6,7 @@
 #include "geometry/organized_points.hpp"
 
 #include "gpu/gpu_messages.hpp"
+#include "gpu/kernel_launch.cuh"
 
 #include <cmath>
 #include <cstddef>
@@ -59,15 +60,6 @@ __global__ void __launch_bounds__(block_width *block_height)
                                            (static_cast<float>(v) - k.cy) * z / k.fy, z)
                              : make_float3(0.0f, 0.0f, 0.0f);
     valid[pixel] = is_valid ? 1 : 0;
-}
-
-/// Returns the number of blocks that cover a length.
-/// @param length [in] the length, in px.
-/// @param block [in] a block's length, in px, > 0.
-/// @return ceil(length / block), without overflow for any 32-bit length.
-unsigned int blocks_for(std::uint32_t length, unsigned int block)
-{
-    return static_cast<unsigned int>((std::uint64_t{length} + block - 1) / block);
 }
 
 /// Checks the depth range.
@@ -137,23 +129,12 @@ step_result organized_points::deproject(const gpu_frame &frame,
     refusal = description_refusal(description);
     if (!refusal.empty())
         return {false, std::move(refusal)};
-    // An error an earlier call left as CUDA's last error would come back from the check after
-    // the launch as if the launch had failed: it is reported, and cleared, before it.
-    const cudaError_t earlier = cudaPeekAtLastError();
-    if (earlier != cudaSuccess)
-        return {false, cuda_failure("CUDA's last error, left by an earlier call, before the "
-                                    "organized points' kernel",
-                                    earlier)};
     const dim3 block(block_width, block_height);
-    const dim3 grid(blocks_for(description.size.width, block_width),
-                    blocks_for(description.size.height, block_height));
-    deproject_kernel<<<grid, block, 0, stream>>>(
-        frame.depth().data(), description.size, description.intrinsics, description.depth_unit_m,
-        parameters.near_m, parameters.far_m, m_points.data(), m_validity_mask.data());
-    const cudaError_t error = cudaGetLastError();
-    if (error != cudaSuccess)
-        return {false, cuda_failure("CUDA could not launch the organized points' kernel", error)};
-    return {true, {}};
+    return launch_kernel("the organized points' kernel", &deproject_kernel,
+                         grid_for(description.size, block), block, stream, frame.depth().data(),
+                         description.size, description.intrinsics, description.depth_unit_m,
+                         parameters.near_m, parameters.far_m, m_points.data(),
+                         m_validity_mask.data());
 }
 
 frame_size organized_points::size() const noexcept

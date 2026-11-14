@@ -181,6 +181,22 @@ the GPU at 306 MHz throughout; back to back it runs at 1020 MHz throughout.
 | 1280x800 | 30 fps | 0.546 / 0.549 / 0.552 ms | 0.025 ms |
 | 1280x800 | back to back | 0.196 / 0.199 / 0.349 ms | 0.003 ms |
 
+**The normals** (docs/methods/normals.md): measured as the organized points, on the organized
+points of the same frame, with the starting parameters, a 7x7 window, 25 points and 75°
+[M 2026-11-14, 12:40 to 12:42]: 126118 valid pixels at 640x400 and 504939 at 1280x800, 99.5 %
+and 99.8 % of them with a normal. Paced at 30 fps the governor keeps the GPU at 306 MHz
+throughout; back to back it runs at 1020 MHz throughout. Choosing the eigenvector's column by
+comparison instead of at run time cut the kernel's stack from 88 to 40 bytes [B 2026-11-14:
+cuobjdump -res-usage] and changed the time by about +1 % [M 2026-11-14, 13:21 to 13:23: 0.772 ms
+and 2.969 ms back to back], so it was not kept.
+
+| size | pace | kernel median / p95 / max | host call median |
+|---|---|---|---|
+| 640x400 | 30 fps | 2.478 / 2.486 / 2.494 ms | 0.020 ms |
+| 640x400 | back to back | 0.763 / 0.766 / 0.781 ms | 0.004 ms |
+| 1280x800 | 30 fps | 9.488 / 9.499 / 9.509 ms | 0.019 ms |
+| 1280x800 | back to back | 2.934 / 2.938 / 2.949 ms | 0.005 ms |
+
 ## Connections
 
 The four USB-A ports sit on a Realtek USB 3.2 hub, seen twice by the host controller

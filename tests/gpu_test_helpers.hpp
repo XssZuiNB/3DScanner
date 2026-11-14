@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: 0BSD
 /// @file gpu_test_helpers.hpp
 /// The offline tests' GPU helpers, beside check.hpp's: a CUDA stream to queue the work on, what
-/// the pool granted, and the check that CUDA's last error is clear. A failure is a failed check,
-/// counted by check.hpp. Header only; each test program is one translation unit.
+/// the pool granted, the check that CUDA's last error is clear, and the check of a GPU step's
+/// refusal. A failure is a failed check, counted by check.hpp. Header only; each test program is
+/// one translation unit.
 
 #pragma once
 
 #include "check.hpp"
 #include "gpu/gpu_pool.hpp"
+#include "gpu/step_result.hpp"
 
 #include <cuda_runtime_api.h>
 
@@ -50,5 +52,15 @@ template <typename Made> Made granted(const std::string &what, gca::request_resu
     check(requested.status == gca::request_status::granted,
           (what + " granted, " + requested.message).c_str());
     return std::move(requested.granted);
+}
+
+/// Checks that a GPU step was refused with a message that holds a text.
+/// @param what [in] the case, printed and named in the check line.
+/// @param made [in] what the step gave.
+/// @param expected [in] a text the message holds.
+inline void check_refused(const std::string &what, const gca::step_result &made,
+                          const std::string &expected)
+{
+    check_refusal(what, !made.done, made.message, made.message.find(expected) != std::string::npos);
 }
 } // namespace gca_test

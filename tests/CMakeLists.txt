@@ -70,3 +70,7 @@ add_test(NAME gpu_images COMMAND test_gpu_images)
 add_executable(test_organized_points test_organized_points.cpp)
 target_link_libraries(test_organized_points PRIVATE geometry synthetic_source)
 add_test(NAME organized_points COMMAND test_organized_points)
+
+add_executable(test_organized_normals test_organized_normals.cpp)
+target_link_libraries(test_organized_normals PRIVATE geometry synthetic_source)
+add_test(NAME organized_normals COMMAND test_organized_normals)
