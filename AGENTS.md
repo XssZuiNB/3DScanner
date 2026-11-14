@@ -20,17 +20,18 @@ What the rewrite builds: an operator scans a tabletop object or a large object w
 hand-held camera and works the scan from a web page the Jetson serves (the terms: GLOSSARY.md;
 the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the frame and the frame
 source seam (`src/camera/`); the GPU image, the pool that closes and a frame's upload
-(`src/gpu/`). The tree is CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to
+(`src/gpu/`); the files a scan keeps and the parameters of each object class (`src/scan/`).
+The tree is CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to
 build here and given the Orbbec camera. It is the rewrite's prototype: its methods carry over,
 and its code is the test oracle until new code replaces it (CODING_STANDARDS.md, "The rewrite's
 code").
 
-The tree today: `src/` is five static libraries and the header-only `types`, each linking only
-the ones below it: `types`, `camera`, `orbbec_camera`, `gpu`, `geometry`, `registration`
-(`src/CMakeLists.txt`; `gpu` links `camera` for the frame it uploads). There is one library per
-directory, except `src/camera/`, which holds two so that only the Orbbec camera links
-OrbbecSDK: `camera`, the frame and the frame source seam, which the offline tests link without
-OrbbecSDK; and `orbbec_camera`, which puts the camera behind `gca::device`, where
+The tree today: `src/` is six static libraries and the header-only `types`, each linking only
+the ones below it: `types`, `camera`, `orbbec_camera`, `gpu`, `geometry`, `registration`,
+`scan` (`src/CMakeLists.txt`; `gpu` links `camera` for the frame it uploads). There is one
+library per directory, except `src/camera/`, which holds two so that only the Orbbec camera
+links OrbbecSDK: `camera`, the frame and the frame source seam, which the offline tests link
+without OrbbecSDK; and `orbbec_camera`, which puts the camera behind `gca::device`, where
 `orbbec_device` delivers depth aligned to color, so the GPU code sees one resolution and one
 set of intrinsics. The camera is not on the seam yet. `orbbec_viewer` in `apps/` opens the
 camera itself, and `distortion_check` reads the viewer's snapshots without it; there is no
@@ -210,6 +211,7 @@ checkers; these are the rules no checker holds.
    | the prototype's frames and camera parameters on the GPU, CUDA helpers, GPU checks | `src/gpu/` |
    | point clouds: creation, filters, normals, search; the 3x3 eigensolver, `float3` arithmetic and its Eigen conversion | `src/geometry/` |
    | registration (colored ICP); the 3x3 LDLT solve | `src/registration/` |
+   | the files a scan keeps (docs/SCAN_FILES.md); the parameters of each object class | `src/scan/` |
    | the tests' synthetic source of frames, their one renderer, the trajectories it renders along | `tests/synthetic_source.*` |
 
 5. **Log lines are an interface.** A tool that reads a program's output holds the strings
@@ -234,6 +236,7 @@ checkers; these are the rules no checker holds.
 | `docs/HARDWARE.md` | the board: platform, connections, permissions, kernel log lines |
 | `CODING_STANDARDS.md` | the style guides, what they leave to this tree, the rules for the rewrite's code, the checkers |
 | `GLOSSARY.md`, `docs/adr/` | the scanner's terms; the decisions in force and why |
+| `docs/SCAN_FILES.md` | the formats of the files a scan keeps: the models (PLY), the trajectory, the parameters |
 | `docs/agents/` | how the workflow skills in `.claude/skills/` find the tracker and the domain docs |
 
 Rules for these documents: each opens with the notice line above; plain, concise English,

@@ -16,12 +16,12 @@ result is a colored model of the object, later a mesh and measurements
 
 | directory | what |
 |---|---|
-| `src/` | one library per directory: `types/` (camera parameters, a frame's description and console colors, header only), `camera/`, `gpu/`, `geometry/`, `registration/`; `camera/` holds two, so that only the Orbbec camera links OrbbecSDK: `camera` (the frame and the frame source seam) and `orbbec_camera` (Orbbec behind `gca::device`) |
+| `src/` | one library per directory: `types/` (camera parameters, a frame's description and console colors, header only), `camera/`, `gpu/`, `geometry/`, `registration/`, `scan/` (the files a scan keeps, the parameters of each object class); `camera/` holds two, so that only the Orbbec camera links OrbbecSDK: `camera` (the frame and the frame source seam) and `orbbec_camera` (Orbbec behind `gca::device`) |
 | `apps/` | `orbbec_viewer` (camera test, live point cloud) and its command line, `viewer_options`; `distortion_check` (whether the aligned frames are distorted, from a snapshot of a checkerboard), its measurement, `checkerboard_measure`, and its command line, `distortion_options` |
 | `tests/` | offline tests, run by ctest; they need the GPU, no camera; the synthetic source that renders their frames |
 | `tools/` | fetch the dependencies, build, verify (AGENTS.md §4) |
 | `data/` | the two colored-ICP fragments, `frag_115.ply` and `frag_116.ply` |
-| `docs/` | the hardware, the decisions (`adr/`), the workflow's tracker and domain conventions |
+| `docs/` | the hardware, the files a scan keeps, the decisions (`adr/`), the workflow's tracker and domain conventions |
 
 ## Build
 

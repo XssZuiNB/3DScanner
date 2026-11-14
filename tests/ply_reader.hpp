@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: 0BSD
 /// @file ply_reader.hpp
-/// The offline tests' reader of the colored-ICP fixtures (data/frag_115.ply, frag_116.ply):
+/// The offline tests' reader of the colored-ICP fixtures (data/frag_115.ply, frag_116.ply) and of
+/// the scanner's models (docs/SCAN_FILES.md), apart from the scanner's code:
 /// binary little-endian PLY whose first element is the vertex, with float x, y, z, nx, ny, nz
 /// and uchar red, green, blue in that order [S: the fixtures' headers]. It reads the vertices and
 /// stops; the elements after them (the fixtures' faces) are declared in the header and never

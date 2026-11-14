@@ -15,6 +15,11 @@ add_executable(test_ply_reader test_ply_reader.cpp)
 target_link_libraries(test_ply_reader PRIVATE geometry)
 add_test(NAME ply_reader COMMAND test_ply_reader)
 
+# The files a scan keeps; the tests' PLY reader takes geometry's point type.
+add_executable(test_scan_files test_scan_files.cpp)
+target_link_libraries(test_scan_files PRIVATE scan geometry)
+add_test(NAME scan_files COMMAND test_scan_files)
+
 add_executable(test_color_icp test_color_icp.cpp)
 target_link_libraries(test_color_icp PRIVATE registration)
 add_test(NAME color_icp COMMAND test_color_icp "${PROJECT_SOURCE_DIR}/data/frag_116.ply")

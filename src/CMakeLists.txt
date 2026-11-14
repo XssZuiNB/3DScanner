@@ -5,6 +5,7 @@
 #   types <- camera (the frame and the frame source seam)
 #   types <- orbbec_camera (OrbbecSDK, OpenCV)
 #   types <- camera <- gpu (CUDA runtime) <- geometry (Eigen) <- registration
+#   types <- scan (Eigen, OpenCV's core)
 # Every library includes from src/ ("gpu/cuda_container.hpp"); types carries that directory.
 
 # ---------------------------------------------------------------- types (header only)
@@ -106,6 +107,26 @@ add_library(
     registration/ldlt_3x3.cuh
 )
 target_link_libraries(registration PUBLIC geometry Eigen3::Eigen)
+
+# ---------------------------------------------------------------- scan
+# The files a scan keeps and the parameters of each object class (docs/SCAN_FILES.md); host only.
+# OpenCV's core reads and writes the parameters' JSON.
+add_library(
+    scan
+    STATIC
+    scan/file_io.cpp
+    scan/file_io.hpp
+    scan/model_file.cpp
+    scan/model_file.hpp
+    scan/object_class.cpp
+    scan/object_class.hpp
+    scan/parameters_file.cpp
+    scan/parameters_file.hpp
+    scan/trajectory_file.cpp
+    scan/trajectory_file.hpp
+)
+# PUBLIC: the headers hold Eigen types.
+target_link_libraries(scan PUBLIC types Eigen3::Eigen PRIVATE opencv_core)
 
 # Separable compilation stays off: no device function or variable is used outside the
 # translation unit that defines it, so nothing needs a device link [M 2026-11-13: every test

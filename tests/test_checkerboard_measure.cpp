@@ -131,9 +131,9 @@ constexpr lens color_lens = {-1.01331, 0.497682,   -0.106898,  -0.994527,
 
 /// What the lens gives on the 1280x800 picture, summed over all corners, from a computation
 /// of its own (Python with SciPy, without OpenCV): homography 0.442 px rms, 1.153 px at most;
-/// plane 0.067 mm rms, 0.248 mm at most; squares -0.304 mm mean, 0.779 mm at most [S: the spec
-/// review of this ticket, 2026-11-14]. They pin the lens's direction, which the test's own
-/// numbers, rendered and expected with one lens model, cannot.
+/// plane 0.067 mm rms, 0.248 mm at most; squares -0.304 mm mean, 0.779 mm at most
+/// [M 2026-11-14: that computation, a Python script outside the tree]. They pin the lens's
+/// direction, which the test's own numbers, rendered and expected with one lens model, cannot.
 constexpr double independent_lens[] = {0.442, 1.153, 0.067, 0.248, -0.304, 0.779};
 /// independent_lens is given to 3 decimals, so it holds to 0.0005; the test's numbers came within
 /// 0.0004 [M 2026-11-14: this test].
