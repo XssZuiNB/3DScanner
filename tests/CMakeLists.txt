@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: 0BSD
 #
-# tests/CMakeLists.txt - the offline tests, one program per ctest; none touches the camera
-# (AGENTS.md §4).
+# tests/CMakeLists.txt - the offline tests, one program per ctest, and the synthetic source of
+# frames they share; none touches the camera (AGENTS.md §4).
 
 add_executable(test_point_cloud_from_rgbd test_point_cloud_from_rgbd.cpp)
 target_link_libraries(test_point_cloud_from_rgbd PRIVATE geometry)
@@ -22,3 +22,11 @@ add_test(NAME color_icp COMMAND test_color_icp "${PROJECT_SOURCE_DIR}/data/frag_
 add_executable(test_viewer_options test_viewer_options.cpp)
 target_link_libraries(test_viewer_options PRIVATE viewer_options)
 add_test(NAME viewer_options COMMAND test_viewer_options)
+
+# The tests' synthetic source of frames, for every test that needs frames; host only.
+add_library(synthetic_source STATIC synthetic_source.cpp synthetic_source.hpp)
+target_link_libraries(synthetic_source PUBLIC camera Eigen3::Eigen)
+
+add_executable(test_frame_source test_frame_source.cpp)
+target_link_libraries(test_frame_source PRIVATE synthetic_source)
+add_test(NAME frame_source COMMAND test_frame_source)

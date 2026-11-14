@@ -31,6 +31,17 @@ One continuous pass of the hand-held camera around one object that stands still,
 operator's start to the operator's stop, together with everything the scanner keeps of it.
 _Avoid_: session, capture, run
 
+**Frame**:
+One color picture and the depth picture aligned to it, taken at one time, with its index, its
+timestamp, the camera's intrinsics and the depth unit.
+_Avoid_: frameset, image pair, snapshot
+
+**Frame source**:
+What gives the scanner its frames one after another: the camera, a sequence, or the tests'
+synthetic source. When it has no frame it says why: it could not be opened, a timeout, a
+failure of the camera, the end.
+_Avoid_: device, stream, grabber
+
 **Live model**:
 The coarse model the scanner builds while a scan runs and shows to the operator, so that
 missed surfaces are seen before the scan stops.

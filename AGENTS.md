@@ -23,11 +23,14 @@ CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to build here an
 Orbbec camera. It is the rewrite's prototype: its methods carry over, and its code is the test
 oracle until new code replaces it (CODING_STANDARDS.md, "The rewrite's code").
 
-The tree today: `src/` is four static libraries and the header-only `types`, one per
-directory, each linking only the ones below it: `types`, `camera`, `gpu`, `geometry`,
-`registration` (`src/CMakeLists.txt`). `src/camera/` puts each camera behind `gca::device`, and
-`orbbec_device` delivers depth aligned to color, so the GPU code sees one resolution and one
-set of intrinsics. The programs in `apps/` each open the camera themselves; there is no daemon.
+The tree today: `src/` is five static libraries and the header-only `types`, each linking only
+the ones below it: `types`, `camera`, `orbbec_camera`, `gpu`, `geometry`, `registration`
+(`src/CMakeLists.txt`). There is one library per directory, except `src/camera/`, which holds
+two so that only the Orbbec camera links OrbbecSDK: `camera`, the frame and the frame source
+seam, which the offline tests link without OrbbecSDK; and `orbbec_camera`, which puts the
+camera behind `gca::device`, where `orbbec_device` delivers depth aligned to color, so the GPU
+code sees one resolution and one set of intrinsics. The camera is not on the seam yet. The
+programs in `apps/` each open the camera themselves; there is no daemon.
 
 ## 2. Before you run anything
 
@@ -193,12 +196,14 @@ checkers; these are the rules no checker holds.
 
    | concern | home |
    |---|---|
-   | camera parameters (plain structs), console colors | `src/types/` |
+   | camera parameters and a frame's description (plain structs), console colors | `src/types/` |
+   | the frame; the frame source seam | `src/camera/frame.*`; `src/camera/frame_source.hpp` |
    | a camera behind one interface | `src/camera/camera_device.hpp` (`gca::device`) |
    | Orbbec: profiles, alignment, color decoding | `src/camera/orbbec_device.*` |
    | frames and camera parameters on the GPU, CUDA helpers, GPU checks | `src/gpu/` |
    | point clouds: creation, filters, normals, search; the 3x3 eigensolver, `float3` arithmetic and its Eigen conversion | `src/geometry/` |
    | registration (colored ICP); the 3x3 LDLT solve | `src/registration/` |
+   | the tests' synthetic source of frames, their one renderer | `tests/synthetic_source.*` |
 
 5. **Log lines are an interface.** A tool that reads a program's output holds the strings
    it reads: before a log line, a refusal or a dump key changes, grep the tools and tests

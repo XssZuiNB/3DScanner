@@ -1,27 +1,41 @@
 # SPDX-License-Identifier: 0BSD
 #
 # src/CMakeLists.txt - the libraries, one per directory, each linking only the ones below it;
-# types is header only:
-#   types <- camera (OrbbecSDK, OpenCV)
+# types is header only, and camera/ holds two, so that only the Orbbec camera links OrbbecSDK:
+#   types <- camera (the frame and the frame source seam)
+#   types <- orbbec_camera (OrbbecSDK, OpenCV)
 #   types <- gpu (CUDA runtime) <- geometry (Eigen) <- registration
 # Every library includes from src/ ("gpu/cuda_container.hpp"); types carries that directory.
 
 # ---------------------------------------------------------------- types (header only)
-# The plain camera-parameter structs and the console colors, which camera and gpu both use.
+# The plain structs, the camera parameters and a frame's description, and the console colors,
+# which camera, orbbec_camera and gpu use.
 add_library(types INTERFACE)
 target_include_directories(types INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # ---------------------------------------------------------------- camera
+# The frame and the frame source seam (camera/frame_source.hpp), built and linked without
+# OrbbecSDK, so that the offline tests and the programs that need no camera load none.
+add_library(
+    camera
+    STATIC
+    camera/frame.cpp
+    camera/frame.hpp
+    camera/frame_source.hpp
+)
+target_link_libraries(camera PUBLIC types)
+
+# The Orbbec camera, the one part of the camera module that links OrbbecSDK.
 if(GCA_WITH_ORBBEC)
     add_library(
-        camera
+        orbbec_camera
         STATIC
         camera/camera_device.hpp
         camera/orbbec_device.cpp
         camera/orbbec_device.hpp
     )
     target_link_libraries(
-        camera
+        orbbec_camera
         PUBLIC
         types
         opencv_core

@@ -13,7 +13,6 @@ if(GCA_WITH_ORBBEC)
     target_link_libraries(
         orbbec_viewer
         PRIVATE
-        camera
         geometry
         gpu
         viewer_options
@@ -21,6 +20,7 @@ if(GCA_WITH_ORBBEC)
         opencv_highgui
         opencv_imgcodecs
         opencv_imgproc
+        orbbec_camera
     )
     set_target_properties(orbbec_viewer PROPERTIES
         BUILD_RPATH "${OrbbecSDK_DIR}")

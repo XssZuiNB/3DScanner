@@ -87,7 +87,8 @@ endif()
 set_property(TARGET Eigen3::Eigen APPEND PROPERTY INTERFACE_COMPILE_DEFINITIONS EIGEN_MPL2_ONLY)
 
 # ---------------------------------------------------------------- Camera backends
-# The camera library and the viewer, the only users of OpenCV, are built with the Orbbec backend.
+# The Orbbec camera library (orbbec_camera) and the viewer, the only users of OpenCV, are built
+# with the Orbbec backend; the camera library, the frame and its seam, is built without it too.
 option(GCA_WITH_ORBBEC "Build Orbbec camera support (OrbbecSDK v2)" ON)
 if(GCA_WITH_ORBBEC)
     if(NOT OrbbecSDK_DIR)

@@ -16,9 +16,9 @@ result is a colored model of the object, later a mesh and measurements
 
 | directory | what |
 |---|---|
-| `src/` | one library per directory: `types/` (camera parameters and console colors, header only), `camera/` (Orbbec behind `gca::device`), `gpu/`, `geometry/`, `registration/` |
+| `src/` | one library per directory: `types/` (camera parameters, a frame's description and console colors, header only), `camera/`, `gpu/`, `geometry/`, `registration/`; `camera/` holds two, so that only the Orbbec camera links OrbbecSDK: `camera` (the frame and the frame source seam) and `orbbec_camera` (Orbbec behind `gca::device`) |
 | `apps/` | `orbbec_viewer` (camera test, live point cloud) and its command line, `viewer_options` |
-| `tests/` | offline tests, run by ctest; they need the GPU, no camera |
+| `tests/` | offline tests, run by ctest; they need the GPU, no camera; the synthetic source that renders their frames |
 | `tools/` | fetch the dependencies, build, verify (AGENTS.md §4) |
 | `data/` | the two colored-ICP fragments, `frag_115.ply` and `frag_116.ply` |
 | `docs/` | the hardware, the decisions (`adr/`), the workflow's tracker and domain conventions |

@@ -28,7 +28,7 @@ deviation. This document adds what the guides leave to the project.
   for g++ and `-std=c++20` for nvcc [M 2026-11-14: `compile_commands.json` of a configure of
   the tree, 20 of 20 entries]. C++17 is the fallback where C++20 fails on this board's tools;
   such a failure is written here with its measurement.
-  - The tree builds without a warning and its five tests pass as C++20, Eigen 3.4.0, Thrust,
+  - The tree builds without a warning and its tests pass as C++20, Eigen 3.4.0, Thrust,
     OpenCV and OrbbecSDK included [M 2026-11-14: `tools/verify.sh`]. C++20 removed the
     constructor spelling `cuda_frame<T, N_CHANNEL>(...)`: g++ 11 refuses it and nvcc takes it
     [M 2026-11-13]; `cuda_frame(...)`, as `src/gpu/cuda_frame.cuh` spells it, is right in both

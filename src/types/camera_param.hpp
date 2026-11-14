@@ -2,12 +2,17 @@
 
 namespace gca
 {
+/// A pinhole camera's intrinsics, the one plain camera struct. The one pinhole convention: the
+/// camera frame has x right, y down, z forward, in m; pixel centres lie at whole numbers, so the
+/// ray of pixel (u, v) is ((u - cx) / fx, (v - cy) / fy, 1). The prototype's point-cloud kernel
+/// deviates from it: it deprojects pixel (u, v) at (u - 0.5, v - 0.5), half a pixel off
+/// (AGENTS.md §6; geometry/cuda_point_cloud_factory.cu, depth_uv) [S].
 struct intrinsics
 {
-    float fx;
-    float fy;
-    float cx;
-    float cy;
+    float fx; ///< focal length along x, in px, > 0
+    float fy; ///< focal length along y, in px, > 0
+    float cx; ///< principal point's column, in px, pixel centres at whole numbers
+    float cy; ///< principal point's row, in px, pixel centres at whole numbers
 };
 
 struct extrinsics
