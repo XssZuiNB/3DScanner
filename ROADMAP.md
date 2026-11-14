@@ -17,10 +17,13 @@ reads first. What outlives them is in GLOSSARY.md, docs/adr/ 0002 to 0004 and
 CODING_STANDARDS.md, "The rewrite's code".
 
 The user agreed on 2026-11-14 to the choices the spec marks (spec) and to the breakdown into
-tickets. The frontier is `frame-source-with-synthetic-frames` and
-`aligned-frame-distortion-tool` (agent). Done when `accept-the-colored-model` is done.
-`.scratch/cleanup/` can go on the user's word: the requirements hold what it recorded of the
-old loop.
+tickets. 14 of 51 tickets are done (git log, `Ticket ...`) [M 2026-11-14: a script over the
+tickets' Status and Blocked-by lines]. The frontier: `sparse-tsdf-allocate-near-surface`,
+`intensity-and-pyramid`, `point-to-plane-registration`, `hold-color-exposure-and-white-balance`,
+`propose-support-plane-and-box` and `box-fit-acceptance-tool` (agent), and
+`measure-aligned-frame-distortion` (hardware, the checkerboard below). Done when
+`accept-the-colored-model` is done. `.scratch/cleanup/` can go on the user's word: the
+requirements hold what it recorded of the old loop.
 
 ## 2. What the first phase needs from the user (hardware, decision)
 
@@ -39,12 +42,13 @@ old loop.
 * The license of `data/frag_115.ply` and `frag_116.ply`: unchecked (README.md, "License"),
   while ADR 0002 admits permissive licenses only.
 * The go for each `ready-for-human` ticket.
+* Optional, root: the user in group `debug`, so that `compute-sanitizer` can check the GPU's
+  kernels; today it prints "GPU debugging features are disabled", because the debugger's
+  devices (`/dev/nvhost-dbg-gpu`, `/dev/nvgpu/igpu0/dbg`) are `root:debug` 0660
+  [M 2026-11-14].
 
 ## Candidates, once measured
 
 Each needs a measurement that shows the cost first (docs/HARDWARE.md has the first ones).
 
-* `create_from_rgbd` takes 19.4 to 19.9 ms of the 33 ms frame at 1280x800, 24 to 26 ms on a
-  scene with about 1.5x the points [M 2026-11-13] (docs/HARDWARE.md):
-  where the time goes (the bilateral filter, the invalid-point removal, the upload).
 * Undistort color, or check that the SDK's aligned output needs none.
