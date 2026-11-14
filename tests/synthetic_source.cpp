@@ -316,6 +316,19 @@ std::optional<std::vector<Eigen::Isometry3d>> walk_around(const synthetic_walk &
     return trajectory;
 }
 
+synthetic_walk tabletop_walk()
+{
+    return {Eigen::Vector3d(tabletop_box.centre_x_m, tabletop_box.centre_y_m,
+                            0.5 * tabletop_box.height_m),
+            12,
+            0.45,
+            0.05,
+            0.35,
+            0.05,
+            10.0,
+            0.02};
+}
+
 synthetic_source::synthetic_source(synthetic_source_options options)
     : m_options(std::move(options))
     , m_surfaces(known_surfaces(m_options.scene))

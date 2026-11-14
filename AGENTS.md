@@ -18,20 +18,22 @@ written for Intel RealSense (its history ends at 5e568d9).
 
 What the rewrite builds: an operator scans a tabletop object or a large object with the
 hand-held camera and works the scan from a web page the Jetson serves (the terms: GLOSSARY.md;
-the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the frame and the frame
-source seam (`src/camera/`); the GPU image, the pool that closes and a frame's upload
-(`src/gpu/`); the organized points from a frame's depth (`src/geometry/organized_points.*`);
-the files a scan keeps and the parameters of each object class (`src/scan/`). The tree is
-CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to build here and given the
-Orbbec camera. It is the rewrite's prototype: its methods carry over, and its code is the test
-oracle until new code replaces it (CODING_STANDARDS.md, "The rewrite's code").
+the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the frame, the frame source
+seam and the sequence on disk (`src/camera/`); the GPU image, the pool that closes and a
+frame's upload (`src/gpu/`); the organized points from a frame's depth
+(`src/geometry/organized_points.*`); the files a scan keeps and the parameters of each object
+class (`src/scan/`). The tree is CUDA_3D cleaned up (dead code, RealSense and PCL removed),
+made to build here and given the Orbbec camera. It is the rewrite's prototype: its methods
+carry over, and its code is the test oracle until new code replaces it (CODING_STANDARDS.md,
+"The rewrite's code").
 
 The tree today: `src/` is six static libraries and the header-only `types`, each linking only
 the ones below it: `types`, `camera`, `orbbec_camera`, `gpu`, `geometry`, `registration`,
-`scan` (`src/CMakeLists.txt`; `gpu` links `camera` for the frame it uploads). There is one
-library per directory, except `src/camera/`, which holds two so that only the Orbbec camera
-links OrbbecSDK: `camera`, the frame, the frame source seam and the Orbbec camera's rules that
-need no camera, which the offline tests link without OrbbecSDK; and `orbbec_camera`, where
+`scan` (`src/CMakeLists.txt`; `gpu` links `camera` for the frame it uploads, `scan` for the POSIX
+file calls). There is one library per directory, except `src/camera/`, which holds two so that
+only the Orbbec camera links OrbbecSDK: `camera`, the frame, the frame source seam, the sequence
+on disk and the Orbbec camera's rules that need no camera, which the offline tests link without
+OrbbecSDK; and `orbbec_camera`, where
 `orbbec_device` is the camera as a frame source and delivers depth aligned to color, so the GPU
 code sees one resolution and one set of intrinsics. `orbbec_viewer` in `apps/` still reaches
 the camera through `gca::device`, an adapter in `orbbec_device` that turns its frames back to
@@ -206,8 +208,9 @@ checkers; these are the rules no checker holds.
 
    | concern | home |
    |---|---|
-   | camera parameters and a frame's description (plain structs), console colors | `src/types/` |
+   | camera parameters, a frame's description and the camera's pose (plain structs), console colors | `src/types/` |
    | the frame; the frame source seam | `src/camera/frame.*`; `src/camera/frame_source.hpp` |
+   | the sequence on disk (docs/SEQUENCE_FILE.md): its layout, writer and reader; the POSIX file calls the writers and readers share | `src/camera/sequence_*`; `src/camera/posix_file.*` |
    | the prototype's camera interface, which `orbbec_viewer` still uses | `src/camera/camera_device.hpp` (`gca::device`) |
    | Orbbec: alignment, color decoding, OrbbecSDK's report as plain data | `src/camera/orbbec_device.*` |
    | Orbbec: the choice of streams, the checks of a frame, the rule for timestamps, the refusals of an opening | `src/camera/orbbec_rules.*` |
@@ -244,6 +247,7 @@ checkers; these are the rules no checker holds.
 | `GLOSSARY.md`, `docs/adr/` | the scanner's terms; the decisions in force and why |
 | `docs/SCAN_FILES.md` | the formats of the files a scan keeps: the models (PLY), the trajectory, the parameters |
 | `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md` |
+| `docs/SEQUENCE_FILE.md` | the format of a sequence: a scan's frames with their poses, which the scanner, the viewer and the replay tool are planned to write or read |
 | `docs/agents/` | how the workflow skills in `.claude/skills/` find the tracker and the domain docs |
 
 Rules for these documents: each opens with the notice line above; plain, concise English,

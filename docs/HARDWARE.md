@@ -25,6 +25,7 @@ What the scanner has to fit into and how it is reached [M 2026-11-13].
 | memory | 7607 MB, shared by CPU and GPU; about 4.0 GB available with a remote editor session open and no build running | `free -m` |
 | swap | six zram devices of 634 MB each, and `/swapfile`, 8 GB, on the NVMe | `swapon --show` |
 | storage | one NVMe, 937 GB, 852 GB free | `df -h /` |
+| writing a sequence | a frame of 1280x800, 5.12 MB: `write()` into the page cache 5.9 ms (median of 100), with `fdatasync()` after each 12.9 ms (max 20.1 ms); the sequence's writer back to back 7.8 ms per frame once past the kernel's background limit (at most 351 MB dirty), 3.07 GB with `close()`'s sync 7.9 ms per frame, 646 MB/s, the longest wait for room in its queue of 16 46 ms; at 30 fps (154 MB/s) for 30 s, 4.61 GB, it took 900 of 900 frames | [M 2026-11-14, MAXN_SUPER, no build running, ext4 on the NVMe] a program outside the tree on `src/camera/sequence_writer.hpp` |
 | network | Wi-Fi `wlP1p1s0` connected; Ethernet `eno1` without a cable | `nmcli device` |
 | the user's services | `Linger=no`: they start at the user's login, not at boot; `sudo loginctl enable-linger <user>` changes it, a root step | `loginctl show-user` |
 

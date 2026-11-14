@@ -10,6 +10,7 @@
 #pragma once
 
 #include "scan/file_io.hpp"
+#include "types/camera_pose.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -17,28 +18,15 @@
 #include <span>
 #include <vector>
 
-#include <Eigen/Geometry>
-
 namespace gca
 {
-/// The camera's pose at a frame: it maps a point of the camera frame (x right, y down, z
-/// forward, in m) into the models' frame, the camera frame of the first fused frame, as
-/// orientation * point + position_m.
-struct camera_pose
-{
-    Eigen::Vector3d position_m;     ///< the camera's centre in the models' frame, in m, finite
-    Eigen::Quaterniond orientation; ///< the rotation from the camera frame into the models'
-                                    ///< frame, a unit quaternion (Hamilton, Eigen's); q and -q
-                                    ///< are the same rotation, and the file keeps the sign given
-};
-
 /// One frame the scanner took.
 struct trajectory_entry
 {
     std::uint64_t index;             ///< the frame's index (camera/frame.hpp, frame::index())
     std::uint64_t timestamp_us;      ///< the frame's timestamp, in µs on the source's clock
-    std::optional<camera_pose> pose; ///< the camera's pose; nothing when the frame is in
-                                     ///< tracking loss
+    std::optional<camera_pose> pose; ///< the camera's pose (types/camera_pose.hpp); nothing
+                                     ///< when the frame is in tracking loss
 };
 
 /// Writes a trajectory (docs/SCAN_FILES.md, "Trajectory").

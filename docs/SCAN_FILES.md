@@ -26,7 +26,9 @@ a value its reader would refuse, and then writes nothing.
 ## The models' frame
 
 Positions and poses are in the models' frame, the camera frame of the first fused frame: x
-right, y down, z forward, in m (`src/types/camera_param.hpp`, the one pinhole convention).
+right, y down, z forward, in m (`src/types/camera_param.hpp`, the one pinhole convention). A
+pose is `camera_pose` (`src/types/camera_pose.hpp`), which a sequence holds too
+(docs/SEQUENCE_FILE.md).
 
 ## Models
 

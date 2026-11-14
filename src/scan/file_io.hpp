@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: 0BSD
 /// @file file_io.hpp
 /// What the writers and readers of a scan's files (docs/SCAN_FILES.md) share: what they give
-/// back, a file written or the reason it was not, a value read or the reason the file was
-/// refused; a whole file written or read at once; and a number written in its shortest exact
-/// form. A file is written beside its name and renamed onto it once it is whole and on disk, so
-/// a file found under its name is whole. A failure is a value (CODING_STANDARDS.md, "The
-/// rewrite's code"); no exception leaves these functions.
+/// back, a file written or the reason it was not (write_result, camera/posix_file.hpp), a value
+/// read or the reason the file was refused; a whole file written or read at once; and a number
+/// written in its shortest exact form. A file is written beside its name and renamed onto it once
+/// it is whole and on disk, so a file found under its name is whole. A failure is a value
+/// (CODING_STANDARDS.md, "The rewrite's code"); no exception leaves these functions.
 
 #pragma once
+
+#include "camera/posix_file.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -17,14 +19,6 @@
 
 namespace gca
 {
-/// What a writer of a scan's file gave.
-struct write_result
-{
-    bool written = false; ///< whether the whole file stands under its name, synced to disk
-    std::string reason;   ///< why it does not, in plain English, naming the file; empty when
-                          ///< written
-};
-
 /// What a reader of a scan's file gave.
 /// @tparam T the value the file holds.
 template <typename T> struct read_result

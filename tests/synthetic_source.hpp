@@ -161,6 +161,25 @@ struct synthetic_walk
 ///         look_at() refuses one of them.
 std::optional<std::vector<Eigen::Isometry3d>> walk_around(const synthetic_walk &walk);
 
+/// The tabletop scene the offline tests share, its box: 0.20 m x 0.14 m x 0.10 m, a tabletop
+/// object of 10 cm to 50 cm (GLOSSARY.md), with three edge lengths, off the plane's centre and
+/// turned by 25 degrees against the world's axes, so that a swap of two edges or of two axes
+/// shows [?: a choice].
+inline constexpr synthetic_box tabletop_box = {0.03, -0.02, 25.0, 0.20, 0.14, 0.10};
+
+/// The tabletop scene's support plane under the box: 0.9 m x 0.8 m [?: a choice], around the box
+/// in every view of tabletop_walk(), whose views also look past its edges [M 2026-11-14: in the
+/// synthetic source's test, 160x120 px, 3732 to 5919 pixels of each of the walk's frames see
+/// nothing].
+inline constexpr synthetic_plane tabletop_plane = {0.45, 0.40};
+
+/// The walk once around the tabletop box: 12 poses [?: a choice], 0.40 m to 0.50 m from the box's
+/// centre along the plane, 0.30 m to 0.40 m above the plane, rolled by up to 10 degrees, looking
+/// at points within 2 cm of the box's centre along x and y [?: a choice, a hand-held walk around
+/// a tabletop box].
+/// @return the walk, for walk_around().
+synthetic_walk tabletop_walk();
+
 /// What the synthetic source reports once it has delivered its frames.
 enum class synthetic_ending
 {

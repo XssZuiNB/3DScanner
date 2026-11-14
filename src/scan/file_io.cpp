@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: 0BSD
 /// @file file_io.cpp
 /// A whole file written beside its name and renamed onto it, and a whole file read, with POSIX
-/// calls, so that each failure comes back with the system's message; and the shortest exact
-/// form of a number (see file_io.hpp).
+/// calls (camera/posix_file.hpp), so that each failure comes back with the system's message; and
+/// the shortest exact form of a number (see file_io.hpp).
 
 #include "scan/file_io.hpp"
 
-#include <cerrno>
 #include <charconv>
 #include <cstddef>
 #include <cstdio>
-#include <cstring>
 #include <utility>
 
 #include <fcntl.h>
@@ -21,37 +19,7 @@ namespace gca
 {
 namespace
 {
-/// Gives the system's message for the error in errno. GNU's strerror_r() writes into the
-/// caller's buffer or returns a static string, so two threads may call it at once; strerror(),
-/// which libstdc++'s std::error_code::message() calls [B: objdump -T libstdc++.so.6.0.30],
-/// shares one buffer.
-/// @return the message.
-std::string system_message()
-{
-    char buffer[256];
-    return ::strerror_r(errno, buffer, sizeof(buffer));
-}
-
-/// Writes all bytes to a file, again after a partial write or an interrupted call.
-/// @param fd [in] the open file's descriptor.
-/// @param bytes [in] the bytes.
-/// @return whether every byte was written; on false errno holds the reason.
-bool write_all(int fd, std::string_view bytes)
-{
-    std::size_t done = 0;
-    while (done < bytes.size())
-    {
-        const ssize_t n = ::write(fd, bytes.data() + done, bytes.size() - done);
-        if (n < 0 && errno == EINTR)
-            continue;
-        if (n < 0)
-            return false;
-        done += static_cast<std::size_t>(n);
-    }
-    return true;
-}
-
-/// Reads all bytes of a file, again after a short read or an interrupted call.
+/// Reads all bytes of a file.
 /// @param fd [in] the open file's descriptor, at its start.
 /// @param out [out] the file's bytes, appended.
 /// @return whether the file was read to its end; on false errno holds the reason.
@@ -60,31 +28,13 @@ bool read_all(int fd, std::string &out)
     char buffer[1 << 16];
     for (;;)
     {
-        const ssize_t n = ::read(fd, buffer, sizeof(buffer));
-        if (n < 0 && errno == EINTR)
-            continue;
-        if (n < 0)
+        const std::optional<std::size_t> n = read_up_to(fd, buffer, sizeof(buffer));
+        if (!n)
             return false;
-        if (n == 0)
+        out.append(buffer, *n);
+        if (*n < sizeof(buffer))
             return true;
-        out.append(buffer, static_cast<std::size_t>(n));
     }
-}
-
-/// Syncs a directory, so that a rename in it survives a power cut.
-/// @param directory [in] the directory; empty for the working directory.
-/// @return whether it was synced; on false errno holds the reason.
-bool sync_directory(const std::filesystem::path &directory)
-{
-    const int fd =
-        ::open(directory.empty() ? "." : directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (fd < 0)
-        return false;
-    const bool synced = ::fsync(fd) == 0;
-    const int saved = errno;
-    ::close(fd);
-    errno = saved;
-    return synced;
 }
 
 /// Appends a number in its shortest form that reads back exactly.

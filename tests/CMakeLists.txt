@@ -45,6 +45,11 @@ add_executable(test_synthetic_source test_synthetic_source.cpp)
 target_link_libraries(test_synthetic_source PRIVATE synthetic_source)
 add_test(NAME synthetic_source COMMAND test_synthetic_source)
 
+# The sequence on disk: frames of the synthetic source written and read back.
+add_executable(test_sequence test_sequence.cpp)
+target_link_libraries(test_sequence PRIVATE synthetic_source)
+add_test(NAME sequence COMMAND test_sequence)
+
 add_executable(test_checkerboard_measure test_checkerboard_measure.cpp)
 target_link_libraries(test_checkerboard_measure PRIVATE checkerboard_measure Eigen3::Eigen)
 add_test(NAME checkerboard_measure COMMAND test_checkerboard_measure)

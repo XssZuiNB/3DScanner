@@ -4,10 +4,10 @@
 /// after another and is closed again, and it describes itself. When it has no frame it says
 /// why, as a value: it refused to open, a timeout, a failure of the device with its message,
 /// the end. No exception leaves it: its implementations catch what their device throws, and
-/// every function of the seam is noexcept. The tests' synthetic source (tests/synthetic_source.hpp)
-/// and the Orbbec camera (camera/orbbec_device.hpp) implement it; the sequence is planned to.
-/// This header and the frame build and link without OrbbecSDK (src/CMakeLists.txt, the library
-/// camera).
+/// every function of the seam is noexcept. Today the sequence (camera/sequence_reader.hpp), the
+/// Orbbec camera (camera/orbbec_device.hpp) and the tests' synthetic source
+/// (tests/synthetic_source.hpp) implement it. This header and the frame build and link without
+/// OrbbecSDK (src/CMakeLists.txt, the library camera).
 
 #pragma once
 

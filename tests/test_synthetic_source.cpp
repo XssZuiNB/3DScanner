@@ -82,16 +82,6 @@ constexpr double geometry_tolerance = 1e-12;
 /// the picture shows part; the upper rows look past its far edge [S: computed, 2026-11-14].
 constexpr gca_test::synthetic_plane test_plane = {0.30, 0.25};
 
-/// The box: 0.20 m x 0.14 m x 0.10 m, a tabletop object of 10 cm to 50 cm (GLOSSARY.md), with
-/// three edge lengths, off the plane's centre and turned by 25 degrees against the world's axes,
-/// so that a swap of two edges or of two axes shows [?: a choice].
-constexpr gca_test::synthetic_box test_box = {0.03, -0.02, 25.0, 0.20, 0.14, 0.10};
-
-/// The support plane under the box: 0.9 m x 0.8 m [?: a choice], around the box in every view of
-/// the walk, whose views also look past its edges [M 2026-11-14: 3732 to 5919 pixels of each of
-/// the walk's frames see nothing].
-constexpr gca_test::synthetic_plane box_plane = {0.45, 0.40};
-
 /// The margin by which a named pixel lies inside a face's outline, or outside the box's
 /// silhouette, in the picture, in px [?: a choice]: far above the two paths' rounding, about
 /// 1e-13 px [S: double's relative step 2.2e-16 on coordinates below 200 px], and small enough to
@@ -149,32 +139,15 @@ Eigen::Isometry3d looking_away_pose()
 /// @return the pose, camera frame to world frame.
 Eigen::Isometry3d beside_box_pose()
 {
-    const double yaw_rad = test_box.yaw_deg * M_PI / 180.0;
+    const double yaw_rad = gca_test::tabletop_box.yaw_deg * M_PI / 180.0;
     const Eigen::Vector3d box_x(std::cos(yaw_rad), std::sin(yaw_rad), 0.0);
-    const Eigen::Vector3d position =
-        Eigen::Vector3d(test_box.centre_x_m, test_box.centre_y_m, 0.03) +
-        (0.5 * test_box.size_x_m + 0.03) * box_x;
+    const Eigen::Vector3d position = Eigen::Vector3d(gca_test::tabletop_box.centre_x_m,
+                                                     gca_test::tabletop_box.centre_y_m, 0.03) +
+                                     (0.5 * gca_test::tabletop_box.size_x_m + 0.03) * box_x;
     const double down_rad = 30.0 * M_PI / 180.0;
     const Eigen::Vector3d view =
         std::cos(down_rad) * box_x - std::sin(down_rad) * Eigen::Vector3d::UnitZ();
     return pose_looking("the pose beside the box", position, position + 0.1 * view, 6.0);
-}
-
-/// Returns the walk once around the box: 12 poses [?: a choice], 0.40 m to 0.50 m from the box's
-/// centre along the plane, 0.30 m to 0.40 m above the plane, rolled by up to 10 degrees, looking at
-/// points within 2 cm of the box's centre along x and y [?: a choice, a hand-held walk around a
-/// tabletop box].
-/// @return the walk.
-gca_test::synthetic_walk test_walk()
-{
-    return {Eigen::Vector3d(test_box.centre_x_m, test_box.centre_y_m, 0.5 * test_box.height_m),
-            12,
-            0.45,
-            0.05,
-            0.35,
-            0.05,
-            10.0,
-            0.02};
 }
 
 /// Checks that cameras' poses are upright as look_at() makes them: each rotation proper
@@ -233,7 +206,7 @@ void check_look_at()
         pose_looking("a view 2e-4 rad from straight down", eye,
                      eye + 0.3 * Eigen::Vector3d(std::sin(2e-4), 0.0, -std::cos(2e-4)), 0.0);
     check_upright("look_at(), a view 2e-4 rad from straight down", {near_down});
-    gca_test::synthetic_walk above = test_walk();
+    gca_test::synthetic_walk above = gca_test::tabletop_walk();
     above.radius_m = 0.0;
     above.radius_swing_m = 0.0;
     above.target_jitter_m = 0.0;
@@ -546,7 +519,7 @@ bool within_face(const test_face &face, const Eigen::Vector3d &point)
 void check_beside_box()
 {
     const Eigen::Isometry3d pose = beside_box_pose();
-    const std::array<test_face, 5> faces = box_faces(test_box);
+    const std::array<test_face, 5> faces = box_faces(gca_test::tabletop_box);
     const Eigen::Matrix3d camera_from_world = pose.linear().transpose();
     double nearest_corner_z_m = -std::numeric_limits<double>::infinity();
     for (const test_face &face : faces)
@@ -570,8 +543,8 @@ void check_beside_box()
         }
     }
     gca_test::synthetic_source_options options = picture_options(fine_depth_unit_m, pose);
-    options.scene.plane = box_plane;
-    options.scene.box = test_box;
+    options.scene.plane = gca_test::tabletop_plane;
+    options.scene.box = gca_test::tabletop_box;
     const pixel_counts counts = check_picture("beside the box", options);
     const int pixels = static_cast<int>(test_size.width * test_size.height);
     std::printf("beside the box: the box's corners at camera-frame z %.4f m and less, %d of %d "
@@ -802,8 +775,8 @@ void check_known_surfaces(const gca_test::synthetic_source &source,
           "known surfaces: the plane, the box's top and its four sides");
     if (surfaces.size() != 1 + faces.size())
         return;
-    const double hx = box_plane.half_size_x_m;
-    const double hy = box_plane.half_size_y_m;
+    const double hx = gca_test::tabletop_plane.half_size_x_m;
+    const double hy = gca_test::tabletop_plane.half_size_y_m;
     const test_face plane = {{Eigen::Vector3d(-hx, -hy, 0.0), Eigen::Vector3d(hx, -hy, 0.0),
                               Eigen::Vector3d(hx, hy, 0.0), Eigen::Vector3d(-hx, hy, 0.0)},
                              Eigen::Vector3d::UnitZ()};
@@ -1023,9 +996,9 @@ walk_counts check_walk_picture(const gca::frame &frame, const Eigen::Isometry3d 
             {
                 const ray_hit hit = hit_plane(Eigen::Vector3d::UnitZ(), Eigen::Vector3d::Zero(),
                                               camera_to_world, ray);
-                const double inside_m =
-                    std::min(box_plane.half_size_x_m - std::abs(hit.point_world.x()),
-                             box_plane.half_size_y_m - std::abs(hit.point_world.y()));
+                const double inside_m = std::min(
+                    gca_test::tabletop_plane.half_size_x_m - std::abs(hit.point_world.x()),
+                    gca_test::tabletop_plane.half_size_y_m - std::abs(hit.point_world.y()));
                 if (hit.z_m > 0.0 && inside_m >= plane_margin_m)
                 {
                     const bool beside = place.margin_px < beside_silhouette_px;
@@ -1088,7 +1061,8 @@ gca_test::synthetic_source_options walk_options(const std::vector<Eigen::Isometr
 {
     gca_test::synthetic_source_options options;
     options.description = {test_size, test_intrinsics, fine_depth_unit_m};
-    options.scene = {.plane = box_plane, .box = test_box, .trajectory = trajectory};
+    options.scene = {
+        .plane = gca_test::tabletop_plane, .box = gca_test::tabletop_box, .trajectory = trajectory};
     options.ending = gca_test::synthetic_ending::end;
     options.ending_message = walk_ending;
     return options;
@@ -1149,14 +1123,14 @@ void report_walk(const walk_counts &totals, const walk_errors &errors)
 /// and report_walk() say.
 void check_walk()
 {
-    const gca_test::synthetic_walk walk = test_walk();
+    const gca_test::synthetic_walk walk = gca_test::tabletop_walk();
     const std::optional<std::vector<Eigen::Isometry3d>> trajectory = gca_test::walk_around(walk);
     check(trajectory.has_value(), "walk: walk_around() gives the trajectory");
     if (!trajectory)
         return;
     check_walk_poses(walk, *trajectory);
     gca_test::synthetic_source source(walk_options(*trajectory));
-    const std::array<test_face, 5> faces = box_faces(test_box);
+    const std::array<test_face, 5> faces = box_faces(gca_test::tabletop_box);
     check_known_surfaces(source, faces);
     check(std::ranges::equal(source.scene().trajectory, *trajectory,
                              [](const Eigen::Isometry3d &a, const Eigen::Isometry3d &b) {

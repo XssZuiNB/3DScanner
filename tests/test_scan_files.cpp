@@ -30,87 +30,28 @@
 #include "scan/object_class.hpp"
 #include "scan/parameters_file.hpp"
 #include "scan/trajectory_file.hpp"
+#include "test_files.hpp"
 
 #include <cmath>
-#include <csignal>
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <limits>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include <sys/resource.h>
-
 #include <Eigen/Geometry>
 
 namespace
 {
+using gca_test::bytes_of;
 using gca_test::check;
 using gca_test::check_refusal;
-
-/// A directory made for this test program, removed with everything in it at its end.
-class temporary_directory
-{
-public:
-    /// Makes a new directory in the system's temporary directory.
-    temporary_directory()
-    {
-        std::string pattern =
-            (std::filesystem::temp_directory_path() / "test_scan_files.XXXXXX").string();
-        if (::mkdtemp(pattern.data()) == nullptr)
-        {
-            std::perror("test_scan_files: mkdtemp");
-            std::exit(1);
-        }
-        m_path = pattern;
-    }
-
-    temporary_directory(const temporary_directory &) = delete;
-    temporary_directory &operator=(const temporary_directory &) = delete;
-
-    /// Removes the directory and everything in it.
-    ~temporary_directory()
-    {
-        std::error_code ignored;
-        std::filesystem::remove_all(m_path, ignored);
-    }
-
-    /// Gives a path in the directory.
-    /// @param name [in] the file's name.
-    /// @return the path.
-    std::filesystem::path operator/(const std::string &name) const
-    {
-        return m_path / name;
-    }
-
-private:
-    std::filesystem::path m_path;
-};
-
-/// Writes a file as the test gives it, for the cases written by hand.
-/// @param path [in] the file's path.
-/// @param bytes [in] the content.
-void write_bytes(const std::filesystem::path &path, const std::string &bytes)
-{
-    std::ofstream file(path, std::ios::binary | std::ios::trunc);
-    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    check(static_cast<bool>(file), ("test setup: wrote " + path.string()).c_str());
-}
-
-/// Reads a file's bytes as they are on disk.
-/// @param path [in] the file's path.
-/// @return the content; empty when the file cannot be read.
-std::string bytes_of(const std::filesystem::path &path)
-{
-    std::ifstream file(path, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-}
+using gca_test::file_size_limit;
+using gca_test::same_bits;
+using gca_test::temporary_directory;
+using gca_test::write_bytes;
 
 /// Replaces the first occurrence of a text, for a case built from a valid file.
 /// @param text [in] the valid file.
@@ -124,24 +65,6 @@ std::string replaced(std::string text, const std::string &from, const std::strin
     if (at != std::string::npos)
         text.replace(at, from.size(), to);
     return text;
-}
-
-/// Whether two floats have the same bits, so that -0 and 0 differ and NaN equals itself.
-/// @param a [in] one float.
-/// @param b [in] the other.
-/// @return whether their bits are equal.
-bool same_bits(float a, float b)
-{
-    return std::memcmp(&a, &b, sizeof(a)) == 0;
-}
-
-/// Whether two doubles have the same bits.
-/// @param a [in] one double.
-/// @param b [in] the other.
-/// @return whether their bits are equal.
-bool same_bits(double a, double b)
-{
-    return std::memcmp(&a, &b, sizeof(a)) == 0;
 }
 
 /// A file a reader has to refuse, and the part of the reason that says why.
@@ -840,16 +763,10 @@ void test_write_failures(const temporary_directory &directory)
     std::filesystem::path part = path;
     part += ".part";
 
-    rlimit limit;
-    check(::getrlimit(RLIMIT_FSIZE, &limit) == 0, "test setup: getrlimit");
-    const rlimit saved = limit;
-    limit.rlim_cur = 100;
-    // Without it the kernel ends the program with SIGXFSZ instead of failing the write.
-    const auto previous = std::signal(SIGXFSZ, SIG_IGN);
-    check(::setrlimit(RLIMIT_FSIZE, &limit) == 0, "test setup: setrlimit");
-    const gca::write_result cut = gca::write_model(path, test_model());
-    check(::setrlimit(RLIMIT_FSIZE, &saved) == 0, "test setup: setrlimit restored");
-    std::signal(SIGXFSZ, previous);
+    const gca::write_result cut = [&] {
+        const file_size_limit limit(100);
+        return gca::write_model(path, test_model());
+    }();
 
     check_refusal("model writer, a write cut off", !cut.written, cut.reason,
                   cut.reason.find("the write failed: File too large") != std::string::npos);
@@ -895,7 +812,7 @@ void test_write_failures(const temporary_directory &directory)
 /// @return 0 when every check passed, 1 otherwise.
 int main()
 {
-    const temporary_directory directory;
+    const temporary_directory directory("test_scan_files");
     test_model_round_trip(directory);
     test_model_refusals(directory);
     test_model_normals(directory);

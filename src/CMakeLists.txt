@@ -2,22 +2,28 @@
 #
 # src/CMakeLists.txt - the libraries, one per directory, each linking only the ones below it;
 # types is header only, and camera/ holds two, so that only the Orbbec camera links OrbbecSDK:
-#   types <- camera (the frame, the frame source seam, the Orbbec camera's rules)
+#   types (Eigen) <- camera (the frame, the frame source seam, the Orbbec camera's rules, the
+#                    sequence; threads)
 #   camera <- orbbec_camera (OrbbecSDK, OpenCV)
 #   types <- camera <- gpu (CUDA runtime) <- geometry (Eigen) <- registration
-#   types <- scan (Eigen, OpenCV's core)
+#   types <- camera <- scan (Eigen, OpenCV's core)
 # Every library includes from src/ ("gpu/cuda_container.hpp"); types carries that directory.
 
 # ---------------------------------------------------------------- types (header only)
-# The plain structs, the camera parameters and a frame's description, and the console colors,
-# which camera, orbbec_camera and gpu use.
+# The plain structs, the camera parameters, a frame's description and the camera's pose, and the
+# console colors, which camera, orbbec_camera and gpu use. types carries Eigen because the
+# camera's pose (types/camera_pose.hpp) holds Eigen's vector and quaternion, plain value types
+# that the sequence (camera) and the trajectory (scan) share.
 add_library(types INTERFACE)
 target_include_directories(types INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(types INTERFACE Eigen3::Eigen)
 
 # ---------------------------------------------------------------- camera
-# The frame and the frame source seam (camera/frame_source.hpp), and the Orbbec camera's
-# decisions that need no camera (camera/orbbec_rules.hpp), built and linked without OrbbecSDK,
-# so that the offline tests and the programs that need no camera load none.
+# The frame, the frame source seam (camera/frame_source.hpp), the sequence with its writer's
+# thread, the POSIX file calls that scan shares, and the Orbbec camera's decisions that need no
+# camera (camera/orbbec_rules.hpp), built and linked without OrbbecSDK, so that the offline
+# tests and the programs that need no camera load none.
+find_package(Threads REQUIRED)
 add_library(
     camera
     STATIC
@@ -26,8 +32,16 @@ add_library(
     camera/frame_source.hpp
     camera/orbbec_rules.cpp
     camera/orbbec_rules.hpp
+    camera/posix_file.cpp
+    camera/posix_file.hpp
+    camera/sequence_format.cpp
+    camera/sequence_format.hpp
+    camera/sequence_reader.cpp
+    camera/sequence_reader.hpp
+    camera/sequence_writer.cpp
+    camera/sequence_writer.hpp
 )
-target_link_libraries(camera PUBLIC types)
+target_link_libraries(camera PUBLIC types PRIVATE Threads::Threads)
 
 # The Orbbec camera as a frame source, and behind gca::device for orbbec_viewer: the one part of
 # the camera module that links OrbbecSDK.
@@ -132,8 +146,8 @@ add_library(
     scan/trajectory_file.cpp
     scan/trajectory_file.hpp
 )
-# PUBLIC: the headers hold Eigen types.
-target_link_libraries(scan PUBLIC types Eigen3::Eigen PRIVATE opencv_core)
+# PUBLIC: the headers hold Eigen types and camera's write_result (camera/posix_file.hpp).
+target_link_libraries(scan PUBLIC types camera Eigen3::Eigen PRIVATE opencv_core)
 
 # Separable compilation stays off: no device function or variable is used outside the
 # translation unit that defines it, so nothing needs a device link [M 2026-11-13: every test
