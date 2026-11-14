@@ -41,6 +41,11 @@ add_executable(test_orbbec_rules test_orbbec_rules.cpp)
 target_link_libraries(test_orbbec_rules PRIVATE camera)
 add_test(NAME orbbec_rules COMMAND test_orbbec_rules)
 
+# The viewer's loop on the synthetic source; links no OrbbecSDK.
+add_executable(test_viewer_loop test_viewer_loop.cpp)
+target_link_libraries(test_viewer_loop PRIVATE viewer_loop synthetic_source opencv_core opencv_imgcodecs)
+add_test(NAME viewer_loop COMMAND test_viewer_loop)
+
 add_executable(test_synthetic_source test_synthetic_source.cpp)
 target_link_libraries(test_synthetic_source PRIVATE synthetic_source)
 add_test(NAME synthetic_source COMMAND test_synthetic_source)

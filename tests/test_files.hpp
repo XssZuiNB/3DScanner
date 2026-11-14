@@ -61,6 +61,13 @@ public:
         return m_path / name;
     }
 
+    /// Gives the directory's own path.
+    /// @return the path, valid as long as the directory.
+    const std::filesystem::path &path() const noexcept
+    {
+        return m_path;
+    }
+
 private:
     std::filesystem::path m_path;
 };

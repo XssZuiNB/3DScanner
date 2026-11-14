@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: 0BSD
 /// @file orbbec_device.cpp
 /// The Orbbec camera as a frame source: profile selection, depth-to-color alignment, color
-/// decoding to RGB8, OrbbecSDK's report turned into plain data for camera/orbbec_rules.hpp, and
-/// gca::device's adapter for orbbec_viewer (see orbbec_device.hpp).
+/// decoding to RGB8, and OrbbecSDK's report turned into plain data for camera/orbbec_rules.hpp
+/// (see orbbec_device.hpp).
 
 #include "orbbec_device.hpp"
+
+#include "types/console_color.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -25,9 +27,6 @@ static_assert(static_cast<int>(OB_EXCEPTION_TYPE_IO) == 7 &&
                   static_cast<int>(OB_EXCEPTION_TYPE_LICENSE_VERIFY_FAILED) == 15,
               "exception_kind() was checked against OrbbecSDK v2.10.6's OBExceptionType, whose "
               "last type is 15 [S: ObTypes.h]; check it again for this OrbbecSDK");
-static_assert(orbbec_frame_time_limit_ms == 5000,
-              "receive_data_from_device()'s line \"No frames received from Orbbec camera for 5s!\" "
-              "names the time limit; AGENTS.md §3 reads it");
 
 namespace
 {
@@ -96,10 +95,6 @@ std::shared_ptr<ob::VideoStreamProfile> profile_at(
     return list->getProfile(static_cast<std::uint32_t>(position))->as<ob::VideoStreamProfile>();
 }
 
-/// How long gca::device's adapter waits for the first frame of an opening before it gives up
-/// [S: the prototype's start waited up to 100 times 200 ms for its first frameset].
-constexpr std::chrono::seconds first_frame_time_limit{20};
-
 /// Maps OrbbecSDK's exception type to the kinds the rules tell apart, by name.
 /// @param type [in] the exception's type, ob::Error::getExceptionType().
 /// @return io, resource_busy, or other for every other type.
@@ -137,8 +132,8 @@ orbbec_wait failed_wait(std::string message)
 }
 } // namespace
 
-orbbec_device::orbbec_device(std::uint32_t width, std::uint32_t height, std::uint8_t fps)
-    : device(width, height, fps, BGR8, Z16)
+orbbec_device::orbbec_device(std::uint32_t fps)
+    : m_fps(fps)
 {
 }
 
@@ -192,8 +187,7 @@ open_result orbbec_device::open(const frame_size &size) noexcept
         return {false, "the camera is open already"};
     orbbec_open_report report;
     intrinsics color_intrinsics{};
-    m_serial_number.clear();
-    m_connection_type.clear();
+    m_opening = {};
     try
     {
         ob::Context::setLoggerSeverity(OB_LOG_SEVERITY_WARN);
@@ -206,9 +200,9 @@ open_result orbbec_device::open(const frame_size &size) noexcept
             const auto info = m_device->getDeviceInfo();
             m_camera_name = info->getName();
             m_firmware_version = info->getFirmwareVersion();
-            m_serial_number = info->getSerialNumber();
-            m_connection_type = info->getConnectionType();
-            report.connection_type = m_connection_type;
+            m_opening.serial_number = info->getSerialNumber();
+            m_opening.connection_type = info->getConnectionType();
+            report.connection_type = m_opening.connection_type;
             m_pipeline = std::make_shared<ob::Pipeline>(m_device);
             select_profiles(size, report);
             if (report.color_stream_offered && report.depth_stream_offered)
@@ -264,15 +258,15 @@ void orbbec_device::select_profiles(const frame_size &size, orbbec_open_report &
     if (!m_hw_d2c)
         m_sw_align = std::make_shared<ob::Align>(OB_STREAM_COLOR);
 
-    m_streams = "Color: " + std::to_string(m_color_profile->getWidth()) + "x" +
-                std::to_string(m_color_profile->getHeight()) + "@" +
-                std::to_string(m_color_profile->getFps()) + " " +
-                format_name(m_color_profile->getFormat()) +
-                " | Depth: " + std::to_string(m_depth_profile->getWidth()) + "x" +
-                std::to_string(m_depth_profile->getHeight()) + "@" +
-                std::to_string(m_depth_profile->getFps()) + " " +
-                format_name(m_depth_profile->getFormat()) +
-                " | D2C: " + (m_hw_d2c ? "hardware" : "software");
+    m_opening.streams = "Color: " + std::to_string(m_color_profile->getWidth()) + "x" +
+                        std::to_string(m_color_profile->getHeight()) + "@" +
+                        std::to_string(m_color_profile->getFps()) + " " +
+                        format_name(m_color_profile->getFormat()) +
+                        " | Depth: " + std::to_string(m_depth_profile->getWidth()) + "x" +
+                        std::to_string(m_depth_profile->getHeight()) + "@" +
+                        std::to_string(m_depth_profile->getFps()) + " " +
+                        format_name(m_depth_profile->getFormat()) +
+                        " | D2C: " + (m_hw_d2c ? "hardware" : "software");
 }
 
 void orbbec_device::start_pipeline()
@@ -330,6 +324,11 @@ next_result orbbec_device::next(frame &out) noexcept
 const orbbec_skips &orbbec_device::skips() const noexcept
 {
     return m_gate.skips();
+}
+
+const orbbec_opening &orbbec_device::opening() const noexcept
+{
+    return m_opening;
 }
 
 orbbec_wait orbbec_device::wait_for_frameset(std::uint32_t time_limit_ms)
@@ -481,128 +480,5 @@ source_description orbbec_device::describe() const noexcept
         m_camera_name.empty() ? std::string("Orbbec camera") : m_camera_name, m_firmware_version,
         std::to_string(ob::Version::getMajor()) + "." + std::to_string(ob::Version::getMinor()) +
             "." + std::to_string(ob::Version::getPatch())};
-}
-
-bool orbbec_device::find_device()
-{
-    const open_result opened = open({m_width, m_height});
-    if (!m_connection_type.empty() && m_connection_type.find("USB3") == std::string::npos)
-    {
-        std::cout << YELLOW << "Warning: camera is not connected via USB3 (" << m_connection_type
-                  << "). Bandwidth and available profiles are limited." << RESET << std::endl;
-    }
-    if (!opened.opened)
-    {
-        std::cout << RED << opened.refusal << RESET << std::endl;
-        return false;
-    }
-    m_skips_shown = 0;
-    const source_description described = describe();
-    m_device_name = described.camera + " (SN " + m_serial_number + ", " + m_connection_type +
-                    ", firmware " + described.firmware_version + ", OrbbecSDK " +
-                    described.sdk_version + ")";
-    return true;
-}
-
-bool orbbec_device::start_stream()
-{
-    std::cout << D_GREEN << m_streams << RESET << std::endl;
-    const auto deadline = std::chrono::steady_clock::now() + first_frame_time_limit;
-    for (;;)
-    {
-        const next_result first = next(m_frame);
-        if (first.status == next_status::frame)
-        {
-            use_current_frame();
-            return true;
-        }
-        if (first.status != next_status::timeout)
-        {
-            std::cout << RED << first.message << RESET << std::endl;
-            return false;
-        }
-        if (std::chrono::steady_clock::now() >= deadline)
-        {
-            std::cout << RED << "Timeout while waiting for first frames." << RESET << std::endl;
-            return false;
-        }
-    }
-}
-
-float orbbec_device::read_depth_scale()
-{
-    return m_frame.description().depth_unit_m;
-}
-
-gca::intrinsics orbbec_device::read_color_intrinsics()
-{
-    return m_frame.description().intrinsics;
-}
-
-gca::intrinsics orbbec_device::read_depth_intrinsics()
-{
-    // Depth is aligned to color -> same intrinsics.
-    return read_color_intrinsics();
-}
-
-gca::extrinsics orbbec_device::read_color_to_depth_extrinsics()
-{
-    gca::extrinsics e{};
-    e.rotation[0] = e.rotation[4] = e.rotation[8] = 1.0f;
-    return e;
-}
-
-gca::extrinsics orbbec_device::read_depth_to_color_extrinsics()
-{
-    return read_color_to_depth_extrinsics();
-}
-
-void orbbec_device::receive_data_from_device()
-{
-    const next_result result = next(m_frame);
-    const orbbec_skips &skipped = skips();
-    if (skipped.count != m_skips_shown)
-    {
-        std::cout << YELLOW << "Skipped " << skipped.count - m_skips_shown
-                  << " frame(s), the last because " << skipped.last_reason << RESET << std::endl;
-        m_skips_shown = skipped.count;
-    }
-    if (result.status == next_status::frame)
-    {
-        use_current_frame();
-        return;
-    }
-    // The 5 s are orbbec_frame_time_limit_ms (the static_assert above); AGENTS.md §3 reads this
-    // line as a stop condition.
-    if (result.status == next_status::timeout)
-        std::cout << RED << "No frames received from Orbbec camera for 5s!" << RESET << std::endl;
-    else
-        std::cout << RED << result.message << RESET << std::endl;
-}
-
-void orbbec_device::use_current_frame()
-{
-    const frame_size size = m_frame.description().size;
-    cv::cvtColor(cv::Mat(static_cast<int>(size.height), static_cast<int>(size.width), CV_8UC3,
-                         m_frame.color().data()),
-                 m_color_bgr, cv::COLOR_RGB2BGR);
-    m_color_raw_data = m_color_bgr.data;
-    m_depth_raw_data = m_frame.depth().data();
-}
-
-cv::Mat orbbec_device::set_color_to_cv_mat()
-{
-    return m_color_bgr;
-}
-
-cv::Mat orbbec_device::set_depth_to_cv_mat()
-{
-    return cv::Mat(cv::Size(m_width, m_height), CV_16UC1, m_frame.depth().data(),
-                   cv::Mat::AUTO_STEP);
-}
-
-void orbbec_device::stop_stream()
-{
-    close();
 }
 } // namespace gca

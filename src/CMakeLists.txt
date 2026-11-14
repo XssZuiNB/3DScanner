@@ -43,13 +43,11 @@ add_library(
 )
 target_link_libraries(camera PUBLIC types PRIVATE Threads::Threads)
 
-# The Orbbec camera as a frame source, and behind gca::device for orbbec_viewer: the one part of
-# the camera module that links OrbbecSDK.
+# The Orbbec camera as a frame source: the one part of the camera module that links OrbbecSDK.
 if(GCA_WITH_ORBBEC)
     add_library(
         orbbec_camera
         STATIC
-        camera/camera_device.hpp
         camera/orbbec_device.cpp
         camera/orbbec_device.hpp
     )

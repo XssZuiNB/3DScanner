@@ -7,16 +7,11 @@
 /// jump of 2^32 µs taken out. A frameset with a bad timestamp or index is skipped and counted; a
 /// timeout, an exception of OrbbecSDK or OpenCV and a frameset of a wrong size, depth format or
 /// depth unit come back as values, and the caller's frame stays as it was. Color is delivered as
-/// RGB8.
-///
-/// orbbec_viewer still reaches the camera through gca::device (camera/camera_device.hpp): its
-/// private functions here are an adapter over open(), next() and close() that converts each frame
-/// back to BGR8, the order the prototype's GPU code and OpenCV's windows and files take. The
-/// adapter lasts until the viewer moves onto the frame source seam, which deletes gca::device.
+/// RGB8. Besides the seam it tells its caller what an opening read and chose (opening()) and the
+/// frames it skipped (skips()), which orbbec_viewer prints.
 
 #pragma once
 
-#include "camera/camera_device.hpp"
 #include "camera/frame.hpp"
 #include "camera/frame_source.hpp"
 #include "camera/orbbec_rules.hpp"
@@ -34,18 +29,27 @@
 
 namespace gca
 {
-/// The Orbbec camera behind the frame source seam, and behind gca::device for orbbec_viewer
-/// until the viewer moves onto the seam.
-class orbbec_device final : public frame_source, public device
+/// What an opening of the camera read from it and chose, for orbbec_viewer's lines.
+struct orbbec_opening
+{
+    std::string serial_number; ///< the camera's serial number; empty when no camera was reached
+    /// OrbbecSDK's name of its link, "USB3.0" at 5000M [M 2026-11-13, docs/HARDWARE.md]; empty
+    /// when no camera was reached.
+    std::string connection_type;
+    /// The streams chosen, as "Color: <w>x<h>@<fps> <format> | Depth: <w>x<h>@<fps> <format> |
+    /// D2C: <hardware or software>" [S: orbbec_device.cpp, select_profiles()], "Color:
+    /// 640x400@30 RGB | Depth: 640x400@30 Y14 | D2C: hardware" at 640x400 [M 2026-11-13,
+    /// docs/HARDWARE.md]; empty when the camera offered no pair of streams for the size.
+    std::string streams;
+};
+
+/// The Orbbec camera behind the frame source seam.
+class orbbec_device final : public frame_source
 {
 public:
-    /// Prepares a camera; nothing is opened until open(), or gca::device::device_start().
-    /// @param width [in] the color (and aligned depth) width gca::device::device_start() opens
-    ///        for, in px; open() takes its own size.
-    /// @param height [in] the color (and aligned depth) height gca::device::device_start() opens
-    ///        for, in px; open() takes its own size.
+    /// Prepares a camera; nothing is opened until open().
     /// @param fps [in] the frame rate of both streams, in frames per second, for every opening.
-    orbbec_device(std::uint32_t width, std::uint32_t height, std::uint8_t fps);
+    explicit orbbec_device(std::uint32_t fps);
 
     /// Closes the camera when it is open.
     ~orbbec_device() override;
@@ -100,6 +104,11 @@ public:
     /// @return their count and the last one's reason, valid until the next next() or open().
     const orbbec_skips &skips() const noexcept;
 
+    /// Tells what the last opening read from the camera and chose, whether it opened or not.
+    /// @return the camera's serial number, its link and the streams chosen, each empty where the
+    ///         opening did not get that far; valid until the next open().
+    const orbbec_opening &opening() const noexcept;
+
     /// Describes the camera.
     /// @return OrbbecSDK's name of the camera and its firmware's version as the last opening read
     ///         them (the camera "Orbbec camera" and no firmware before an opening reached the
@@ -146,64 +155,6 @@ private:
     /// Stops the pipeline when it runs and releases OrbbecSDK's pipeline, device and context.
     void release() noexcept;
 
-    /// gca::device's adapter: opens the camera for the constructor's size, warns "Warning: camera
-    /// is not connected via USB3 (<link>). ..." on a slower link, and names the camera for
-    /// gca::device's "Found camera!" line: its name, serial number and link, then describe()'s
-    /// two versions.
-    /// @return true when it opened; otherwise prints the reason and returns false.
-    bool find_device() final;
-
-    /// gca::device's adapter: prints the selected streams and takes the first frame, whose depth
-    /// unit and intrinsics gca::device reads next. Timeouts within the first 20 s of waiting are
-    /// waited through, as the prototype did.
-    /// @return true when the first frame came; otherwise prints why not ("Timeout while waiting
-    ///         for first frames." after 20 s, or the failure's message) and returns false.
-    bool start_stream() final;
-
-    /// gca::device's adapter: the depth unit of the current frame.
-    /// @return meters per depth value.
-    float read_depth_scale() final;
-
-    /// gca::device's adapter: the intrinsics of the current frame, the color camera's.
-    /// @return the color camera's intrinsics at the opened size.
-    gca::intrinsics read_color_intrinsics() final;
-
-    /// gca::device's adapter: the depth intrinsics, the color camera's, as depth is aligned to
-    /// color.
-    /// @return the color camera's intrinsics.
-    gca::intrinsics read_depth_intrinsics() final;
-
-    /// gca::device's adapter: the color-to-depth extrinsics, the identity, as depth is aligned to
-    /// color.
-    /// @return the identity rotation and a zero translation.
-    gca::extrinsics read_color_to_depth_extrinsics() final;
-
-    /// gca::device's adapter: the depth-to-color extrinsics, the identity, as depth is aligned to
-    /// color.
-    /// @return the identity rotation and a zero translation.
-    gca::extrinsics read_depth_to_color_extrinsics() final;
-
-    /// gca::device's adapter: takes the next frame and converts its color to BGR8. It prints the
-    /// frames skipped since the last call with the last reason; on a timeout "No frames received
-    /// from Orbbec camera for 5s!" (AGENTS.md §3 reads it), on a failure its message, and keeps
-    /// the current frame, as the viewer did before the seam.
-    void receive_data_from_device() final;
-
-    /// gca::device's adapter: hands the current color picture to gca::device.
-    /// @return the current color picture (BGR8), sharing the adapter's buffer.
-    cv::Mat set_color_to_cv_mat() final;
-
-    /// gca::device's adapter: wraps the current depth picture as an image for gca::device.
-    /// @return the current aligned depth picture (CV_16UC1), sharing the frame's buffer.
-    cv::Mat set_depth_to_cv_mat() final;
-
-    /// gca::device's adapter: closes the camera.
-    void stop_stream() final;
-
-    /// gca::device's adapter: converts the current frame's color to BGR8 and points gca::device's
-    /// raw data at the current pictures.
-    void use_current_frame();
-
     std::shared_ptr<ob::Context> m_context;
     std::shared_ptr<ob::Device> m_device;
     std::shared_ptr<ob::Pipeline> m_pipeline;
@@ -213,11 +164,10 @@ private:
     bool m_hw_d2c = false;           ///< whether the camera aligns depth in hardware
     bool m_pipeline_started = false; ///< whether the pipeline runs
     bool m_open = false;             ///< whether an opening succeeded and was not closed
+    const std::uint32_t m_fps;       ///< the frame rate of both streams, in frames per second
     std::string m_camera_name;       ///< OrbbecSDK's name of the camera, from the last opening
     std::string m_firmware_version;  ///< the camera's firmware, from the last opening
-    std::string m_serial_number;     ///< the adapter's: the camera's serial number, this opening
-    std::string m_connection_type;   ///< the adapter's: the camera's link, this opening
-    std::string m_streams;           ///< the selected streams, for the adapter's line
+    orbbec_opening m_opening;        ///< what the last opening read and chose
     orbbec_frame_gate m_gate;        ///< the checks of the current opening
 
     // The last frameset's frames stay referenced until the next wait, so that the pixels handed
@@ -227,9 +177,5 @@ private:
     std::string m_depth_format;            ///< the name of a depth format the gate refuses
     std::vector<std::uint8_t> m_color_rgb; ///< decoded color of a format other than RGB
     cv::Mat m_decoded_bgr;                 ///< OpenCV's decoded picture of an MJPG frame
-
-    frame m_frame;                   ///< gca::device's adapter: the current frame
-    std::uint64_t m_skips_shown = 0; ///< gca::device's adapter: the skipped frames it printed
-    cv::Mat m_color_bgr;             ///< gca::device's adapter: the current color picture as BGR8
 };
 } // namespace gca

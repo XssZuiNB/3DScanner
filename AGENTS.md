@@ -29,16 +29,16 @@ carry over, and its code is the test oracle until new code replaces it (CODING_S
 
 The tree today: `src/` is six static libraries and the header-only `types`, each linking only
 the ones below it: `types`, `camera`, `orbbec_camera`, `gpu`, `geometry`, `registration`,
-`scan` (`src/CMakeLists.txt`; `gpu` links `camera` for the frame it uploads, `scan` for the POSIX
-file calls). There is one library per directory, except `src/camera/`, which holds two so that
-only the Orbbec camera links OrbbecSDK: `camera`, the frame, the frame source seam, the sequence
-on disk and the Orbbec camera's rules that need no camera, which the offline tests link without
-OrbbecSDK; and `orbbec_camera`, where
-`orbbec_device` is the camera as a frame source and delivers depth aligned to color, so the GPU
-code sees one resolution and one set of intrinsics. `orbbec_viewer` in `apps/` still reaches
-the camera through `gca::device`, an adapter in `orbbec_device` that turns its frames back to
-BGR8 for the prototype's GPU code, and `distortion_check` reads the viewer's snapshots without
-it; there is no daemon.
+`scan` (`src/CMakeLists.txt`; `gpu` links `camera` for the frame it uploads, `scan` for the
+POSIX file calls). There is one library per directory, except `src/camera/`, which holds two so
+that only the Orbbec camera links OrbbecSDK: `camera`, the frame, the frame source seam, the
+sequence on disk and the Orbbec camera's rules that need no camera, which the offline tests
+link without OrbbecSDK; and `orbbec_camera`, where `orbbec_device` is the camera as a frame
+source and delivers depth aligned to color, so the GPU code sees one resolution and one set of
+intrinsics. `orbbec_viewer` in `apps/` runs its loop (`apps/viewer_loop.*`) on the camera as a
+frame source, and the offline tests run the same loop on their synthetic source; the loop turns
+each frame's color to BGR8 for the prototype's GPU code. `distortion_check` reads the viewer's
+snapshots without the camera; there is no daemon.
 
 ## 2. Before you run anything
 
@@ -76,7 +76,7 @@ The left column looks diagnostic and often is not.
 | `build/apps/distortion_check` | no hardware access: reads a snapshot's two PNG files and prints its numbers; a command line it refuses exits 2 with the reason and the usage [S: distortion_check.cpp; the refusals: ctest `distortion_options`]; links neither OrbbecSDK nor CUDA [M 2026-11-14: `ldd`] |
 | `build/apps/orbbec_viewer --list` | opens the camera, reads its info and stream profiles, starts no stream [S: orbbec_device.cpp]; what OrbbecSDK sends on open is unverified [?] |
 | `build/apps/orbbec_viewer` with an argument it does not know (`--help` too) or an option without its value | prints the reason and the usage line and exits 2; `main` reads the options before it opens the camera or the GPU or installs a signal handler [S: orbbec_viewer.cpp, `main`; the refusals: ctest `viewer_options`]. The load-time code of OrbbecSDK, OpenCV and CUDA runs before `main`; what it does is unverified [?] |
-| `build/apps/orbbec_viewer [--frames N]` | streams color and depth with depth-to-color alignment; sets no option of the camera [S]; `s`, or the last of N frames headless, writes `cloud_NNN.ply`, `.color.png`, `.depth.png` into the current directory: run it in a scratch directory |
+| `build/apps/orbbec_viewer [--frames N]` | streams color and depth with depth-to-color alignment; sets no option of the camera [S]; `s`, or the last of N frames headless, writes `cloud_NNN.ply`, `.color.png`, `.depth.png` into the current directory: run it in a scratch directory. N counts delivered frames: a timeout or a failure prints its line, counts no frame and the loop goes on [S: viewer_loop.cpp; ctest `viewer_loop`] |
 | any program using OrbbecSDK | writes `Log/OrbbecSDK.log.txt` into the current directory [M 2026-11-13]; closing it hands the camera back to uvcvideo, which logs the enumeration lines again (docs/HARDWARE.md) |
 | OrbbecSDK's examples, OrbbecViewer | not built here; `ob_device_firmware_update`, `ob_device_optional_depth_presets_update`, `ob_multi_devices_firmware_update` and OrbbecViewer's firmware and preset pages WRITE the camera's flash |
 
@@ -147,7 +147,7 @@ From the hardware or a source, changed only with new evidence written above them
 * `GCA_CUDA_ARCHITECTURES` 87: the Orin's compute capability 8.7 [S: CUDA documentation].
 
 Free choices: the stream size 640x400 at 30 fps [?: a choice; it exists on USB 2], the depth range 0.15 m to
-3.0 m in `apps/orbbec_viewer.cpp` [?: a choice].
+3.0 m in `apps/viewer_loop.cpp` [?: a choice].
 
 ## 6. Traps
 
@@ -211,7 +211,6 @@ checkers; these are the rules no checker holds.
    | camera parameters, a frame's description and the camera's pose (plain structs), console colors | `src/types/` |
    | the frame; the frame source seam | `src/camera/frame.*`; `src/camera/frame_source.hpp` |
    | the sequence on disk (docs/SEQUENCE_FILE.md): its layout, writer and reader; the POSIX file calls the writers and readers share | `src/camera/sequence_*`; `src/camera/posix_file.*` |
-   | the prototype's camera interface, which `orbbec_viewer` still uses | `src/camera/camera_device.hpp` (`gca::device`) |
    | Orbbec: alignment, color decoding, OrbbecSDK's report as plain data | `src/camera/orbbec_device.*` |
    | Orbbec: the choice of streams, the checks of a frame, the rule for timestamps, the refusals of an opening | `src/camera/orbbec_rules.*` |
    | the GPU image, the pinned host buffer, the pool that closes, a frame's upload, a GPU step's result, their messages | `src/gpu/gpu_image.hpp`, `src/gpu/pinned_buffer.hpp`, `src/gpu/gpu_pool.*`, `src/gpu/gpu_frame.*`, `src/gpu/step_result.hpp`, `src/gpu/gpu_messages.*` |
@@ -220,6 +219,7 @@ checkers; these are the rules no checker holds.
    | point clouds: creation, filters, normals, search; the 3x3 eigensolver, `float3` arithmetic and its Eigen conversion | `src/geometry/` |
    | registration (colored ICP); the 3x3 LDLT solve | `src/registration/` |
    | the files a scan keeps (docs/SCAN_FILES.md); the parameters of each object class | `src/scan/` |
+   | `orbbec_viewer`'s loop on a frame source: the first frame, the report line, the window, the snapshots | `apps/viewer_loop.*` |
    | the tests' synthetic source of frames, their one renderer, the trajectories it renders along | `tests/synthetic_source.*` |
    | the tests' copy of a frame, to check a source left it as it was | `tests/frame_copy.hpp` |
 
