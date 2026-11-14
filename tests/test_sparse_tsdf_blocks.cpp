@@ -3,10 +3,11 @@
 /// The fusion module's hash of blocks and its pool (fusion/sparse_tsdf.hpp), fed with block
 /// coordinates the test builds; the method is docs/methods/sparse-tsdf.md. Each case requests
 /// its sparse TSDF and its arrays, then closes the pool, so that every operation runs with the
-/// pool closed; the largest sparse TSDF here holds 1024 blocks, 4231184 bytes of device memory
-/// [S: computed], far below the memory budget's 1.0 GB, which is divided but not allocated. The
+/// pool closed; the largest sparse TSDF here holds 16385 blocks, 69275668 bytes of device memory
+/// [S: computed], below the memory budget's 1.0 GB, which is divided but not allocated. The
 /// coordinates go to the GPU and the numbers come back by copies on the stream the kernels run
-/// on.
+/// on. The request's check of one frame against the hash's room is
+/// test_sparse_tsdf_allocation.cpp's; the cases here take parameters it grants at their budgets.
 /// - The division of a budget: at the budget of exactly 1024 blocks and one byte below it, at
 ///   the smallest that holds one block and one byte below it, at 1.0 GB and at 2^53 bytes.
 /// - Collisions on purpose and duplicates: coordinates that share a home slot, among them one
@@ -18,7 +19,7 @@
 ///   with a block and the same counts; with a pool too small, the same counts.
 /// - A pool too small: of 1536 distinct coordinates, exactly 1024 find a block, the numbers 0 to
 ///   1023 once each; 512 are counted as refused; the pool is used up, its share in use 1.
-/// - A hash too small: of 42 distinct coordinates, 32 take the 32 slots, 10 are refused.
+/// - A hash too small: of 522 distinct coordinates, 512 take the 512 slots, 10 are refused.
 /// - The coordinates' range: its limits are inserted and found; coordinates past them are
 ///   refused, and the coordinates their keys would alias are not found; once those aliases hold
 ///   blocks, a lookup of the coordinates past the range still finds none.
@@ -26,8 +27,8 @@
 ///   coordinates, room for another number of blocks, CUDA's last error left by an earlier call,
 ///   a budget that holds no block, a request to the closed pool; and the GPU arrays' own requests
 ///   and moves.
-/// - The request's ranges of the voxel size and the truncation's rule: granted at their ends,
-///   refused one float step past them, at NaN, infinity and 0.
+/// - The request's ranges of the voxel size, the truncation's rule and the far depth: granted at
+///   their ends, refused one float step past them, at NaN, infinity and 0.
 
 #include "check.hpp"
 #include "fusion/sparse_tsdf.hpp"
@@ -67,34 +68,40 @@ using gca_test::lookup;
 using gca_test::make_lookup;
 using gca_test::read_usage;
 
-/// The budget of the cases' sparse TSDF: 1024 blocks and 2048 slots exactly, 1024 x 4100 +
-/// 2048 x 16 + 16 bytes [S: computed, docs/methods/sparse-tsdf.md, "The pool and the memory
+/// The budget of the cases' sparse TSDF: 1024 blocks and 4096 slots exactly, 1024 x 4100 +
+/// 4096 x 16 + 16 bytes [S: computed, docs/methods/sparse-tsdf.md, "The pool and the memory
 /// budget"].
-constexpr std::uint64_t test_budget = 4'231'184;
+constexpr std::uint64_t test_budget = 4'263'952;
 
 /// The blocks and slots of test_budget [S: computed].
 constexpr std::uint32_t test_blocks = 1024;
-constexpr std::uint32_t test_slots = 2048;
+constexpr std::uint32_t test_slots = 4096;
 
-/// A budget of 16 blocks and 32 slots, 16 x 4100 + 32 x 16 + 16 bytes [S: computed], whose hash
-/// fills with 32 distinct coordinates.
-constexpr std::uint64_t small_budget = 66'128;
+/// A budget of 128 blocks and 512 slots, 128 x 4100 + 512 x 16 + 16 bytes [S: computed], whose
+/// hash fills with 512 distinct coordinates; the smallest hash the cases' parameters are granted,
+/// its room for one frame 512 - 128 = 384 blocks (with_budget()).
+constexpr std::uint64_t small_budget = 533'008;
 
-/// A budget of 256 blocks and 512 slots, 256 x 4100 + 512 x 16 + 16 bytes [S: computed], too
+/// A budget of 256 blocks and 1024 slots, 256 x 4100 + 1024 x 16 + 16 bytes [S: computed], too
 /// small for the 296 coordinates of the collisions' set.
-constexpr std::uint64_t too_small_budget = 1'057'808;
+constexpr std::uint64_t too_small_budget = 1'066'000;
 
-/// The voxel size of the cases: 2 mm [?: a choice, any size in the request's range; the hash and
-/// the pool do not use it].
-constexpr float test_voxel_m = 0.002f;
+/// A budget of 16385 blocks and 131072 slots, 16385 x 4100 + 131072 x 16 + 16 bytes
+/// [S: computed], whose room for one frame, 114687 blocks, holds the bound of every request of
+/// the ranges' ends that is granted: at most 98581 blocks [S: computed,
+/// docs/methods/sparse-tsdf.md, "One frame's blocks"].
+constexpr std::uint64_t ranges_budget = 69'275'668;
 
-/// Gives a sparse TSDF's parameters with a budget, the voxel size of the cases and the method's
-/// starting values of the truncation's rule (sparse_tsdf_helpers.hpp).
+/// Gives a sparse TSDF's parameters with a budget, the method's starting values of the
+/// truncation's rule (sparse_tsdf_helpers.hpp), and the coarsest voxel size and nearest far depth
+/// the request takes, whose bound of one frame, 256 blocks [S: computed,
+/// docs/methods/sparse-tsdf.md, "One frame's blocks"], fits the hash of each case's budget; the
+/// hash and the pool do not use them otherwise.
 /// @param budget [in] the memory budget, in bytes.
 /// @return the parameters.
 gca::sparse_tsdf_parameters with_budget(std::uint64_t budget)
 {
-    return {budget, test_voxel_m, gca_test::method_truncation};
+    return {budget, gca::max_voxel_size_m, gca_test::method_truncation, gca::nearest_max_depth_m};
 }
 
 /// How many threads insert each coordinate of the collisions' set in one launch [?: a choice:
@@ -233,7 +240,7 @@ coordinate_list repeated(const coordinate_list &distinct, int times, std::uint32
     return all;
 }
 
-/// The collisions' set: 24 coordinates with home slot 700; 24 with home slot 2047, the last,
+/// The collisions' set: 24 coordinates with home slot 700; 24 with home slot 4095, the last,
 /// whose run wraps to slot 0; 24 with home slot 0, which that run reaches; 24 with home slot 1;
 /// and 200 scattered, 296 in all.
 /// @param left_out [out] one more coordinate with home slot 700, not in the set.
@@ -301,13 +308,13 @@ void check_layout(cudaStream_t stream)
     };
     const layout_case cases[] = {
         {"layout, 1024 blocks exactly", test_budget, {test_blocks, test_slots, test_budget}},
-        {"layout, one byte below 1024 blocks", test_budget - 1, {1023, 2048, 4'227'084}},
-        {"layout, one block exactly", 4148, {1, 2, 4148}},
-        {"layout, one byte below one block", 4147, {0, 0, 0}},
-        {"layout, 1.0 GB", 1'000'000'000, {241'856, 524'288, 999'998'224}},
-        {"layout, 2^53 bytes, 2^30 blocks at most",
+        {"layout, one byte below 1024 blocks", test_budget - 1, {1023, 4096, 4'259'852}},
+        {"layout, one block exactly", 4180, {1, 4, 4180}},
+        {"layout, one byte below one block", 4179, {0, 0, 0}},
+        {"layout, 1.0 GB", 1'000'000'000, {239'810, 1'048'576, 999'998'232}},
+        {"layout, 2^53 bytes, 2^29 blocks at most",
          std::uint64_t{1} << 53,
-         {std::uint32_t{1} << 30, std::uint32_t{1} << 31, 4'436'701'216'784}},
+         {std::uint32_t{1} << 29, std::uint32_t{1} << 31, 2'235'530'477'584}},
     };
     for (const layout_case &c : cases)
     {
@@ -470,19 +477,19 @@ void check_hash_full(cudaStream_t stream)
 {
     const std::string what = "hash full";
     std::set<coordinate_tuple> taken;
-    const coordinate_list set = scattered(42, scatter_seed + 3, taken);
+    const coordinate_list set = scattered(522, scatter_seed + 3, taken);
     gca::gpu_pool pool;
     gca::sparse_tsdf tsdf = requested(pool, small_budget, stream, what);
     lookup distinct = make_lookup(pool, set, stream, what);
     pool.close();
-    check(same_layout(tsdf.layout(), {16, 32, small_budget}), "hash full: 16 blocks, 32 slots");
+    check(same_layout(tsdf.layout(), {128, 512, small_budget}), "hash full: 128 blocks, 512 slots");
 
     insert(tsdf, distinct, stream, what);
-    check_usage(what, read_usage(tsdf, stream, what), {16, 16, 16, 10, 0, 0, 0});
-    check_found(what, find(tsdf, distinct, stream, what), 16, 16);
+    check_usage(what, read_usage(tsdf, stream, what), {128, 128, 384, 10, 0, 0, 0});
+    check_found(what, find(tsdf, distinct, stream, what), 128, 128);
     insert(tsdf, distinct, stream, what + ", again");
     check_usage(what + ", again", read_usage(tsdf, stream, what + ", again"),
-                {16, 16, 16, 20, 0, 0, 0});
+                {128, 128, 384, 20, 0, 0, 0});
     check_closed_pool(what, pool);
 }
 
@@ -539,9 +546,13 @@ void check_key_range(cudaStream_t stream)
     check_closed_pool(what, pool);
 }
 
-/// The request's ranges of the voxel size and the truncation's rule (sparse_tsdf.hpp): a request
-/// with every value at the low ends and one with every value at the high ends are granted; a value
-/// one float step past an end, NaN, infinity or 0 is refused before any request to the pool.
+/// The request's ranges of the voxel size, the truncation's rule and the far depth, as the method
+/// states them (docs/methods/sparse-tsdf.md): requests with the values at their ends are granted,
+/// three of them, as one request with every value at its high end has a bound of one frame no
+/// budget of this board holds [S: computed, docs/methods/sparse-tsdf.md, "One frame's blocks"]:
+/// every value at its low end; c at its high end and the others at their low ends; every value
+/// but c at its high end, c at its least. A value one float step past an end, NaN, infinity or 0
+/// is refused before any request to the pool.
 /// @param pool [in,out] the pool, open.
 /// @param stream [in] the stream.
 void check_parameter_ranges(gca::gpu_pool &pool, cudaStream_t stream)
@@ -550,63 +561,87 @@ void check_parameter_ranges(gca::gpu_pool &pool, cudaStream_t stream)
     constexpr float infinity = std::numeric_limits<float>::infinity();
     const auto below = [](float end) { return std::nextafter(end, 0.0f); };
     const auto above = [](float end) { return std::nextafter(end, infinity); };
+    // The ends as docs/methods/sparse-tsdf.md, "The truncation distance", states them, apart from
+    // the module's constants, so that a range moved outward there is caught here.
+    constexpr float least_voxel_m = 0.0005f;
+    constexpr float greatest_voxel_m = 0.016f;
+    constexpr float greatest_c = 0.02f;
+    constexpr float least_k = 1.0f;
+    constexpr float greatest_k = 5.0f;
+    constexpr float least_mu_min = 1.0f;
+    constexpr float greatest_mu_min = 8.0f;
+    constexpr float nearest_far_m = 0.25f;
+    constexpr float farthest_far_m = 10.0f;
     // c has no low end but 0, excluded: the least positive float stands for it [S: float32].
     const float least_c = std::numeric_limits<float>::denorm_min();
     const gca::sparse_tsdf_parameters low = {
-        small_budget,
-        gca::min_voxel_size_m,
-        {least_c, gca::min_noise_multiple, gca::min_truncation_voxels}};
+        ranges_budget, least_voxel_m, {least_c, least_k, least_mu_min}, nearest_far_m};
+    gca::sparse_tsdf_parameters high_c = low;
+    high_c.truncation.noise_per_m = greatest_c;
     const gca::sparse_tsdf_parameters high = {
-        small_budget,
-        gca::max_voxel_size_m,
-        {gca::max_noise_per_m, gca::max_noise_multiple, gca::max_truncation_voxels}};
-    for (const auto &[what, parameters] : {std::pair{"ranges, every value at its low end", low},
-                                           std::pair{"ranges, every value at its high end", high}})
+        ranges_budget, greatest_voxel_m, {least_c, greatest_k, greatest_mu_min}, farthest_far_m};
+    for (const auto &[what, parameters] :
+         {std::pair{"ranges, every value at its low end", low},
+          std::pair{"ranges, c at its high end, the others at their low ends", high_c},
+          std::pair{"ranges, every value but c at its high end", high}})
     {
         const gca::request_result<gca::sparse_tsdf> made =
             gca::sparse_tsdf::request(pool, parameters, stream);
-        check(made.status == gca::request_status::granted && made.granted.layout().slot_count == 32,
+        check(made.status == gca::request_status::granted &&
+                  made.granted.layout().slot_count == 131072,
               (std::string(what) + ": granted, " + made.message).c_str());
     }
-    const gca::truncation_parameters t = gca_test::method_truncation;
+    // Each unusable value replaces one of the cases' parameters (with_budget()).
+    const gca::sparse_tsdf_parameters base = with_budget(small_budget);
+    const auto voxel = [&base](float value) {
+        gca::sparse_tsdf_parameters p = base;
+        p.voxel_size_m = value;
+        return p;
+    };
+    const auto noise = [&base](float value) {
+        gca::sparse_tsdf_parameters p = base;
+        p.truncation.noise_per_m = value;
+        return p;
+    };
+    const auto multiple = [&base](float value) {
+        gca::sparse_tsdf_parameters p = base;
+        p.truncation.noise_multiple = value;
+        return p;
+    };
+    const auto least_truncation = [&base](float value) {
+        gca::sparse_tsdf_parameters p = base;
+        p.truncation.min_voxels = value;
+        return p;
+    };
+    const auto far_depth = [&base](float value) {
+        gca::sparse_tsdf_parameters p = base;
+        p.max_depth_m = value;
+        return p;
+    };
     const struct
     {
         const char *what;
         gca::sparse_tsdf_parameters parameters;
     } unusable[] = {
-        {"ranges, a voxel size of 0", {small_budget, 0.0f, t}},
-        {"ranges, a voxel size of NaN", {small_budget, nan, t}},
-        {"ranges, a voxel size below the least", {small_budget, below(gca::min_voxel_size_m), t}},
-        {"ranges, a voxel size above the greatest",
-         {small_budget, above(gca::max_voxel_size_m), t}},
-        {"ranges, c of 0", {small_budget, test_voxel_m, {0.0f, t.noise_multiple, t.min_voxels}}},
-        {"ranges, c of -0.01 /m",
-         {small_budget, test_voxel_m, {-0.01f, t.noise_multiple, t.min_voxels}}},
-        {"ranges, c above the greatest",
-         {small_budget,
-          test_voxel_m,
-          {above(gca::max_noise_per_m), t.noise_multiple, t.min_voxels}}},
-        {"ranges, c of NaN", {small_budget, test_voxel_m, {nan, t.noise_multiple, t.min_voxels}}},
-        {"ranges, k below the least",
-         {small_budget,
-          test_voxel_m,
-          {t.noise_per_m, below(gca::min_noise_multiple), t.min_voxels}}},
-        {"ranges, k above the greatest",
-         {small_budget,
-          test_voxel_m,
-          {t.noise_per_m, above(gca::max_noise_multiple), t.min_voxels}}},
-        {"ranges, k of infinity",
-         {small_budget, test_voxel_m, {t.noise_per_m, infinity, t.min_voxels}}},
-        {"ranges, mu_min below the least",
-         {small_budget,
-          test_voxel_m,
-          {t.noise_per_m, t.noise_multiple, below(gca::min_truncation_voxels)}}},
-        {"ranges, mu_min above the greatest",
-         {small_budget,
-          test_voxel_m,
-          {t.noise_per_m, t.noise_multiple, above(gca::max_truncation_voxels)}}},
-        {"ranges, mu_min of 0",
-         {small_budget, test_voxel_m, {t.noise_per_m, t.noise_multiple, 0.0f}}},
+        {"ranges, a voxel size of 0", voxel(0.0f)},
+        {"ranges, a voxel size of NaN", voxel(nan)},
+        {"ranges, a voxel size below the least", voxel(below(least_voxel_m))},
+        {"ranges, a voxel size above the greatest", voxel(above(greatest_voxel_m))},
+        {"ranges, c of 0", noise(0.0f)},
+        {"ranges, c of -0.01 /m", noise(-0.01f)},
+        {"ranges, c above the greatest", noise(above(greatest_c))},
+        {"ranges, c of NaN", noise(nan)},
+        {"ranges, k below the least", multiple(below(least_k))},
+        {"ranges, k above the greatest", multiple(above(greatest_k))},
+        {"ranges, k of infinity", multiple(infinity)},
+        {"ranges, mu_min below the least", least_truncation(below(least_mu_min))},
+        {"ranges, mu_min above the greatest", least_truncation(above(greatest_mu_min))},
+        {"ranges, mu_min of 0", least_truncation(0.0f)},
+        {"ranges, a far depth below the nearest", far_depth(below(nearest_far_m))},
+        {"ranges, a far depth above the farthest", far_depth(above(farthest_far_m))},
+        {"ranges, a far depth of NaN", far_depth(nan)},
+        {"ranges, a far depth of 0", far_depth(0.0f)},
+        {"ranges, a far depth of infinity", far_depth(infinity)},
     };
     for (const auto &u : unusable)
     {
@@ -632,11 +667,11 @@ void check_refusals(cudaStream_t stream)
         granted(what + ": an array of 7", pool.request_array<std::uint32_t>(7));
     gca::sparse_tsdf moved_from = requested(pool, small_budget, stream, what);
     const gca::sparse_tsdf moved_to(std::move(moved_from));
-    check(moved_from.layout().capacity_blocks == 0 && moved_to.layout().capacity_blocks == 16,
-          "refusals: a sparse TSDF moved from holds no blocks, the one moved to its 16");
+    check(moved_from.layout().capacity_blocks == 0 && moved_to.layout().capacity_blocks == 128,
+          "refusals: a sparse TSDF moved from holds no blocks, the one moved to its 128");
     const gca::request_result<gca::sparse_tsdf> no_block_budget =
-        gca::sparse_tsdf::request(pool, with_budget(4147), stream);
-    check_refusal("refusals, a budget of 4147 bytes",
+        gca::sparse_tsdf::request(pool, with_budget(4179), stream);
+    check_refusal("refusals, a budget of 4179 bytes",
                   no_block_budget.status == gca::request_status::failure, no_block_budget.message,
                   no_block_budget.message.find("holds no block") != std::string::npos);
     check_parameter_ranges(pool, stream);

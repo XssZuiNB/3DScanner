@@ -96,16 +96,36 @@ section 5]. Here it follows the camera's depth noise at the measured depth z_m:
   each side of a zero crossing, along any axis and diagonal, with room to spare; its half is the
   ray cast's step ("The ray cast").
 
-The sparse TSDF takes the voxel size v and the rule's c, k and μ_min as its parameters when it
-is requested (`gca::sparse_tsdf_parameters`) and keeps them for every operation, so that the
-allocation, the integration and the ray cast use the same μ. The scan fills them, v from the
-object class; the tests name the values above. The request refuses a value outside its range [?:
-a choice], so that a mistaken value is a refusal and not a kernel that runs for minutes: v from
-0.5 mm to 16 mm, half the object classes' finest voxel size and twice their coarsest; c above 0
-up to 0.1 /m, ten times the datasheet's bound, room for the measured c; k from 1 to 10; μ_min
-from 1 voxel, the least the zero crossing needs, to 16. Within the ranges a band can still cross
-far more blocks than the starting values give; the allocation caps that ("The allocation near a
-frame's surface").
+The sparse TSDF takes the voxel size v, the rule's c, k and μ_min, and the far depth z_max, the
+farthest depth a frame contributes, as its parameters when it is requested
+(`gca::sparse_tsdf_parameters`) and keeps them for every operation, so that the allocation, the
+integration and the ray cast use the same μ. The scan fills them, v and z_max from the object
+class; the tests name the values above. The request refuses a value outside its range, so that a
+mistaken value, a unit's factor of 1000 among them, is a refusal by name [?: a choice, each for
+the reason given]:
+
+* **v from 0.5 mm to 16 mm**, half the object classes' finest voxel size and twice their
+  coarsest. It is not narrowed to the object classes' sizes: the live models' sizes are still to
+  be set by measurement, and the check of one frame below limits every size at its budget.
+* **c above 0 up to 0.02 /m**, twice the datasheet's bound: the measured c is likely below the
+  bound, which holds the plane's flatness besides the noise, and twice it leaves room for a camera
+  noisier than its datasheet. Above 0.0175 /m no final model passes the check of one frame at
+  1.0 GB, the large object's only up to 0.0132 /m [S: computed, "One frame's blocks"], so a
+  measured c above those needs a larger budget or a nearer far depth.
+* **k from 1 to 5**: five standard deviations hold all but 6e-7 of a Gaussian
+  noise's measurements [S: the normal distribution], and a wider band only lets nearer surfaces
+  interfere.
+* **μ_min from 1 voxel**, the least the zero crossing needs, **to 8**, twice its starting value:
+  the ray cast's step, μ_min / 2, stays at most 4 voxels, half a block, and so does the thickness
+  of an object the step can step over ("The ray cast").
+* **z_max from 0.25 m to 10 m**, the camera's depth range [S: datasheet, docs/HARDWARE.md, "What
+  the camera is and reports"].
+
+The starting values lie inside every range: v of 1, 2, 4 and 8 mm, c = 0.01 /m, k = 3, μ_min = 4
+voxels and z_max of 1.0 and 3.0 m. The request also refuses a combination of the parameters with
+the memory budget under which one frame could fill the hash ("One frame's blocks"). Within the
+ranges a band can still cross far more blocks than the starting values give; the allocation caps
+that ("The allocation near a frame's surface").
 
 What the rule gives, in mm [S: computed]:
 
@@ -171,8 +191,8 @@ atomic compare-and-swap on the key.
 * **The key** of block b is one 64-bit word: (x + 2^20) · 2^42 + (y + 2^20) · 2^21 + (z + 2^20),
   each term below 2^21, so that two coordinates in range never share a key and the top bit is
   0. The empty slot holds the key with every bit 1, which no coordinate gives.
-* **The slots**: S slots, S a power of two and at least twice the pool's blocks ("The pool and
-  the memory budget"). Two arrays: the keys (8 bytes each) and the blocks' numbers (4 bytes
+* **The slots**: S slots, S a power of two and at least four times the pool's blocks ("The pool
+  and the memory budget"). Two arrays: the keys (8 bytes each) and the blocks' numbers (4 bytes
   each; the number with every bit 1 is "no block"). A probe reads only the keys, 16 to a
   128-byte cache line [S: computed].
 * **The home slot** of a key is the 64-bit finalizer of MurmurHash3 applied to it, its low bits
@@ -222,7 +242,7 @@ processed" [S: 2013, section 4.2]: a block is then missing for a frame. Here non
 
 **Probes.** At a load α of keys per slot, linear probing needs about (1 + 1 / (1 - α)) / 2
 probes to find a key and (1 + 1 / (1 - α)²) / 2 to find it absent [S: Knuth, section 6.4]: at
-the 1.0 GB budget's full pool, α = 0.46, that is 1.43 and 2.22 [S: computed].
+the 1.0 GB budget's full pool, α = 0.23, that is 1.15 and 1.34 [S: computed].
 
 **What is the same in every run.** The set of coordinates that get a block, when the pool holds
 them all, and every count. What is not: which slot a key takes when keys collide, and which
@@ -244,12 +264,14 @@ frame's list of slots (4 bytes a block, "The allocation near a frame's surface")
 sets it (`src/scan/object_class.cpp`), 1.0 GB to start with [?: initial]. The pool holds the
 largest number of blocks B for which
 
-    4100 B + 16 S + 16 <= budget,   S = the least power of two >= 2 B
+    4100 B + 16 S + 16 <= budget,   S = the least power of two >= 4 B
 
-so at 1.0 GB, B = 241856 blocks and S = 524288 slots, 999998224 bytes, of which the keys and
-numbers take 6.3 MB and the stamps and the list 3.1 MB [S: computed]. B is at most 2^30, so that
+so at 1.0 GB, B = 239810 blocks and S = 1048576 slots, 999998232 bytes, of which the keys and
+numbers take 12.6 MB and the stamps and the list 5.2 MB [S: computed]. B is at most 2^29, so that
 S fits 32 bits. The stamps and the list are the allocation's ("The allocation near a frame's
-surface").
+surface"). S is four times B, not twice, so that one frame of a final model fits the hash ("One
+frame's blocks") [?: a choice, the user's, 2026-11-14]: at 1.0 GB that costs 2046 blocks, 0.85 %
+of the pool, against S at twice B [S: computed].
 
 **One sparse TSDF exists at a time.** Refinement's, at the full voxel size, is requested from a
 pool of its own after the live model's is released, within the same budget.
@@ -260,7 +282,7 @@ pool of its own after the live model's is released, within the same budget.
 
 | voxel size | at 0.3 m | at 0.5 m | at 1.0 m |
 |---|---|---|---|
-| 1 mm (tabletop, final) | 7.7 m² | 5.4 m² | 1.8 m² |
+| 1 mm (tabletop, final) | 7.7 m² | 5.3 m² | 1.8 m² |
 | 2 mm (tabletop, live) | 31 m² | 31 m² | 13 m² |
 
 A surface seen at a slant, or from several sides, takes more.
@@ -280,12 +302,59 @@ queued on it before; in the per-frame path it comes after the registration's own
 has waited for that work already, so that it costs only its copy of 16 bytes. A coordinate
 refused for a full pool keeps its slot without a block, so the count of claims is the count of
 distinct coordinates the hash took, and the same set of insertions gives the same counts in
-every run; the hash fills only when more distinct coordinates than S arrive. One frame can send
-that many: then each later insertion and each lookup of an absent block probes all S slots. With
-the starting values a frame touches far fewer, 5215 and 10950 blocks at 1280x800
-(docs/HARDWARE.md, "The per-frame path's stages"); within the parameters' ranges one can touch
-more than S, a plane facing the camera 0.7 m away at 1280x800, 1 mm voxels and c = 0.1 /m about
-790000 [S: computed, (2 μ / (8 v) + 1) / (8 v)^2 blocks a square metre over 1.34 m^2].
+every run; the hash fills only when more distinct coordinates than S arrive, which the request
+rules out for one frame ("One frame's blocks").
+
+**One frame's blocks.** Once the pool is used up, a coordinate refused for it keeps its slot, so
+the hash's room for one frame's new blocks is S - B; a frame that filled it would make each later
+insertion, and each lookup of an absent block, probe all S slots, and a kernel could run for
+minutes. A scan is to end on the frame that uses its pool up [?: the scan's rule, not built yet],
+so no later frame adds to them.
+The request therefore refuses a combination of the parameters and the budget under which one
+frame could touch as many distinct blocks as S - B or more. Its model of a frame: a surface facing
+the camera that fills the picture at the largest stream size, 1280x800, with the camera's focal
+lengths there, fx = 612.37 and fy = 612.29 px [M 2026-11-13: docs/HARDWARE.md, "What the camera
+is and reports"] (640x400 sees the same field), every pixel at the far depth z_max, at any pose.
+Its bands lie in the slice of the camera's frustum between the depths z_max - μ and z_max + μ,
+μ = μ(z_max), inside a box of the camera frame of w = 1280 (z_max + μ) / fx by
+h = 800 (z_max + μ) / fy by 2 μ. A block of edge e = 8 v that meets the slice lies inside that
+box widened by the cube of ±e of the models' frame, which reaches at most √3 e along each axis of
+the camera frame, whatever the pose; the blocks are disjoint, so the frame touches at most
+
+    N = (w + 2√3 e) (h + 2√3 e) (2 μ + 2√3 e) / e³
+
+blocks [S: geometry]. The request refuses N >= S - B and grants N < S - B, so that one frame
+touches fewer blocks than the room and an empty slot is left. N grows with the depth, so z_max is
+the model's worst depth, and a frame of the model at any nearer depth touches fewer. Float's
+rounding moves a segment's end by micrometres, which can add a block only where a band grazes a
+border, far fewer than N's margin over the count below. As S - B shrinks while B grows within one
+S, a budget one block larger can be refused where a smaller one is granted, until B passes S / 4
+and S doubles.
+
+| object class, model | v | z_max | N | blocks the rays' bands cross |
+|---|---|---|---|---|
+| tabletop, live | 2 mm | 1.0 m | 87200 | 54916 to 57269 |
+| tabletop, final | 1 mm | 1.0 m | 513102 | 346482 to 379612 |
+| large, live | 8 mm | 3.0 m | 92152 | 61437 to 64889 |
+| large, final | 4 mm | 3.0 m | 604739 | 444257 to 452085 |
+
+(The starting values of the truncation's rule; N [S: computed], rounded up; the last column a
+count of the distinct blocks met by the bands of the 1024000 pixels' rays, each sampled every
+eighth of a block, at three poses: the identity, a turn of 30° about x and one of 54.7° about
+(1, -1, 0) [S: computed, a CPU count].) At 1.0 GB the room is 808766 blocks, so every model is
+granted, the final ones with 1.58 and 1.34 times their N [S: computed]. Each final model's frame
+of this kind still uses up its pool alone, as its count exceeds B. The allocation's test measures
+N's margin at its edge: a wall at 3.119 m filling 1280x800 at 8 mm voxels, N = 105778.4 against
+a room of 105779, touches 68321 blocks at the identity and 74437 turned by 54.7° about
+(1, -1, 0), 1.55 and 1.42 times fewer [M 2026-11-14, `tests/test_sparse_tsdf_allocation.cpp`].
+A point past z_max is not walked ("The allocation near a frame's surface", step 1), so the model's
+depth holds whatever range the points were made with.
+
+What the model does not cover: a surface seen at a slant, whose band's blocks along its surface
+grow about as 1 / cos θ of the facing surface's while the band's volume does not; surfaces at
+several depths, each edge between them adding the sides of their bands; and a camera of a wider
+field of view. Such a frame can touch more than N; how far into the room's margin over N it
+reaches is not measured [?].
 
 **Nothing is written outside the pool.** The block numbers handed out are 0 to B - 1, each to
 one coordinate; a stage writes a voxel only of a block whose number it found by a lookup, and
@@ -303,7 +372,10 @@ determine all the voxel blocks that intersect with the ray"]:
    into the models' frame by the pose. The pixel's organized point p = z_m r lies on the ray, so
    the segment runs from p (z_m - μ) / z_m to p (z_m + μ) / z_m; no intrinsics are needed. The
    pose is rounded to float, its quaternion normalized; a pose that is not finite in float, or a
-   quaternion of zero, is refused.
+   quaternion of zero, is refused. A pixel deeper than z_max is not walked and is counted
+   (`rays_not_walked` of the usage): the sparse TSDF guards its own bound of one frame ("One
+   frame's blocks"), while the organized points' far depth is the caller's filter, which the
+   sparse TSDF neither sees nor checks.
 2. The blocks the segment passes through, in order, by the grid traversal of Amanatides and
    Woo [S: J. Amanatides, A. Woo, "A Fast Voxel Traversal Algorithm for Ray Tracing",
    Eurographics 1987] on the grid of blocks, each inserted into the hash. Each axis counts its
@@ -317,7 +389,9 @@ determine all the voxel blocks that intersect with the ray"]:
    models) [S: computed, the most over the segment's directions]. **The cap**: a thread walks at
    most 64 blocks [?: a choice, above the 50]; a ray whose band crosses more, or whose segment
    has an end that is not finite in float, is not walked and is counted (`rays_not_walked` of
-   the usage), so that no thread runs long whatever the parameters within their ranges. Before
+   the usage), so that no thread runs long whatever the parameters within their ranges and
+   whatever the frame, one the bound of one frame does not cover included, such as the picture
+   of a far wider field of view in the allocation's test. Before
    the count, each end is clamped to one block past the hash's range on each side, so that it
    converts to an integer; an end beyond the range, which only a broken pose gives, then lies in
    a block the hash refuses, and the in-range part of such a segment may differ from the true

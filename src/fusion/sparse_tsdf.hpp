@@ -111,18 +111,22 @@ __host__ __device__ constexpr std::uint32_t home_slot(const block_coordinate &b,
     return static_cast<std::uint32_t>(k & (slot_count - 1));
 }
 
-/// The ranges the request takes the voxel size and the truncation's rule from, inclusive
-/// (docs/methods/sparse-tsdf.md, "The truncation distance", which states why) [?: a choice]: the
-/// voxel size from half the object classes' finest, 1 mm, to twice their coarsest, 8 mm; c up to
-/// ten times the datasheet's bound, 0.01 /m; k from 1 to 10 standard deviations; mu_min from 1 to
-/// 16 voxels.
+/// The ranges the request takes the voxel size, the truncation's rule and the far depth from,
+/// inclusive (docs/methods/sparse-tsdf.md, "The truncation distance", which states why)
+/// [?: a choice]: the voxel size from half the object classes' finest, 1 mm, to twice their
+/// coarsest, 8 mm; c up to twice the datasheet's bound, 0.01 /m; k from 1 to 5 standard
+/// deviations; mu_min from 1 to 8 voxels; the far depth over the camera's depth range, 0.25 m to
+/// 10 m [S: datasheet, docs/HARDWARE.md]. Besides, the request refuses a combination with the
+/// memory budget whose one frame could fill the hash (sparse_tsdf::request()).
 constexpr float min_voxel_size_m = 0.0005f;
 constexpr float max_voxel_size_m = 0.016f;
-constexpr float max_noise_per_m = 0.1f;
+constexpr float max_noise_per_m = 0.02f;
 constexpr float min_noise_multiple = 1.0f;
-constexpr float max_noise_multiple = 10.0f;
+constexpr float max_noise_multiple = 5.0f;
 constexpr float min_truncation_voxels = 1.0f;
-constexpr float max_truncation_voxels = 16.0f;
+constexpr float max_truncation_voxels = 8.0f;
+constexpr float nearest_max_depth_m = 0.25f;
+constexpr float farthest_max_depth_m = 10.0f;
 
 /// The most blocks the allocation walks along one ray's band: a ray whose band crosses more is
 /// not walked and is counted (docs/methods/sparse-tsdf.md, "The allocation near a frame's
@@ -142,10 +146,10 @@ struct truncation_parameters
                           ///< min_truncation_voxels to max_truncation_voxels
 };
 
-/// The sparse TSDF's parameters: its memory, its one length and its truncation distance. Its
-/// operations all take them from the sparse TSDF, which keeps them from its request. The scan
-/// fills them: the budget and the voxel size from the object class (scan/object_class.hpp), the
-/// live model's voxel size or the final models'.
+/// The sparse TSDF's parameters: its memory, its one length, its truncation distance and the far
+/// depth of the frames it takes. Its operations all take them from the sparse TSDF, which keeps
+/// them from its request. The scan fills them: the budget, the voxel size and the far depth from
+/// the object class (scan/object_class.hpp), the live model's voxel size or the final models'.
 struct sparse_tsdf_parameters
 {
     std::uint64_t memory_budget_bytes; ///< all of the sparse TSDF's device memory, in bytes;
@@ -153,21 +157,24 @@ struct sparse_tsdf_parameters
     float voxel_size_m;                ///< v, a voxel's edge, in m, from min_voxel_size_m to
                                        ///< max_voxel_size_m
     truncation_parameters truncation;  ///< the truncation distance's rule
+    float max_depth_m; ///< z_max, the farthest depth a frame contributes, along the camera's z,
+                       ///< in m, from nearest_max_depth_m to farthest_max_depth_m: the object
+                       ///< class's; the allocation does not walk a deeper point
 };
 
 /// How a memory budget is divided: the blocks of the pool and the slots of the hash.
 struct sparse_tsdf_layout
 {
     std::uint32_t capacity_blocks; ///< the blocks the pool holds; 0 when the budget holds none
-    std::uint32_t slot_count;      ///< the hash's slots, the least power of two >= 2 blocks
+    std::uint32_t slot_count;      ///< the hash's slots, the least power of two >= 4 blocks
     std::uint64_t device_bytes;    ///< the device memory of all of it, in bytes, <= the budget
 };
 
-/// Divides a memory budget: the largest number of blocks B, at most 2^30, for which
-/// 4100 B + 16 S + 16 <= budget, S the least power of two >= 2 B (docs/methods/sparse-tsdf.md,
+/// Divides a memory budget: the largest number of blocks B, at most 2^29, for which
+/// 4100 B + 16 S + 16 <= budget, S the least power of two >= 4 B (docs/methods/sparse-tsdf.md,
 /// "The pool and the memory budget").
 /// @param memory_budget_bytes [in] the budget, in bytes.
-/// @return B, S and the bytes they take; all 0 when the budget holds no block (below 4148 bytes).
+/// @return B, S and the bytes they take; all 0 when the budget holds no block (below 4180 bytes).
 sparse_tsdf_layout layout_for_budget(std::uint64_t memory_budget_bytes) noexcept;
 
 /// The counts on the GPU, from the sparse TSDF's request on.
@@ -180,9 +187,9 @@ struct block_counts
     std::uint32_t listed_slots;        ///< the slots the last allocation near a frame's surface
                                        ///< touched, each once; the frame's list holds the first
                                        ///< capacity_blocks of them
-    std::uint32_t rays_not_walked;     ///< the rays the allocations did not walk: a band across
-                                       ///< more than max_blocks_per_ray blocks, or an end that is
-                                       ///< not finite
+    std::uint32_t rays_not_walked;     ///< the rays the allocations did not walk: a point deeper
+                                       ///< than the far depth, a band across more than
+                                       ///< max_blocks_per_ray blocks, or an end that is not finite
 };
 
 /// The use of the pool and the hash, read back from the GPU; it exists only for a reading that
@@ -246,13 +253,19 @@ public:
     /// read. No code reads the voxels yet: their first reader is the integration
     /// (docs/methods/sparse-tsdf.md). Keeps the parameters for its operations.
     /// @param pool [in,out] the pool; open, else the request is refused as closed.
-    /// @param parameters [in] the memory budget, the voxel size and the truncation's rule.
+    /// @param parameters [in] the memory budget, the voxel size, the truncation's rule and the far
+    ///        depth.
     /// @param stream [in] the CUDA stream of the current device the clearing is queued on; owned
     ///        by the caller. Work queued on it later sees the cleared memory.
-    /// @return granted, with a sparse TSDF that holds no block; failure with the reason when the
-    ///         voxel size or a value of the truncation's rule is not finite or lies outside its
-    ///         range (min_voxel_size_m and the others above), or when the budget holds no block
-    ///         (below 4148 bytes), both before any request; or the first of
+    /// @return granted, with a sparse TSDF that holds no block; failure with the reason, before
+    ///         any request, when the voxel size, a value of the truncation's rule or the far depth
+    ///         is not finite or lies outside its range (min_voxel_size_m and the others above),
+    ///         when the budget holds no block (below 4180 bytes), or when one frame could touch as
+    ///         many blocks as the hash has room for once the pool is used up, slot_count -
+    ///         capacity_blocks, or more: the bound of a surface facing the camera that fills its
+    ///         picture of 1280x800 at the far depth (docs/methods/sparse-tsdf.md, "One frame's
+    ///         blocks"); as that room shrinks while the blocks grow within one slot_count, a budget
+    ///         one block larger can be refused where a smaller one is granted. Else the first of
     ///         its requests that was refused, with its status and message
     ///         (gpu_pool::request_array()); or failure with CUDA's error, then cleared, when the
     ///         clearing could not be queued.
@@ -346,11 +359,13 @@ public:
     /// with depth z, the segment of its ray between the depths z - mu(z) and z + mu(z) (the
     /// truncation's rule, kept from the request), carried into the models' frame by the pose;
     /// every block the segment passes through is inserted as insert_blocks() inserts a
-    /// coordinate, refusals and a used-up pool counted alike. A segment with an end that is not
-    /// finite is not walked; the others' ends are clamped to one block past the hash's range on
-    /// each side, and one that then crosses more than max_blocks_per_ray blocks is not walked
-    /// either: both are counted in rays_not_walked, so that no thread takes more than
-    /// max_blocks_per_ray steps. Lists the frame's blocks: every
+    /// coordinate, refusals and a used-up pool counted alike. A point deeper than the far depth
+    /// (sparse_tsdf_parameters::max_depth_m) is not walked, so that the frame stays within the
+    /// bound the request checked, whatever range the points were made with. A segment with an
+    /// end that is not finite is not walked; the others' ends are clamped to one block past the
+    /// hash's range on each side, and one that then crosses more than max_blocks_per_ray blocks
+    /// is not walked either: all three are counted in rays_not_walked, so that no thread takes
+    /// more than max_blocks_per_ray steps. Lists the frame's blocks: every
     /// slot the frame touched, once, the first capacity_blocks of them on the frame's list and
     /// the rest counted, not listed. Each call is a frame of its own: allocating the same points
     /// at the same pose again changes no block and lists the same slots again. A block that the
@@ -412,7 +427,7 @@ public:
 
 private:
     sparse_tsdf_layout m_layout{0, 0, 0};
-    sparse_tsdf_parameters m_parameters{0, 0.0f, {0.0f, 0.0f, 0.0f}}; ///< from the request
+    sparse_tsdf_parameters m_parameters{0, 0.0f, {0.0f, 0.0f, 0.0f}, 0.0f}; ///< from the request
     std::uint32_t m_frames_allocated = 0;   ///< the allocations near a frame's surface so far, the
                                             ///< next one's stamp
     gpu_array<unsigned long long> m_keys;   ///< each slot's key, or every bit 1 when empty

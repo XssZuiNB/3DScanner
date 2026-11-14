@@ -221,34 +221,50 @@ combining the finer level's normals instead is a candidate, built only on a meas
 
 **The allocation near a frame's surface** (docs/methods/sparse-tsdf.md): the reset of the list's
 count and the kernel, timed together by CUDA events, and the host's call, over 20 s per case
-after 5 s, the same frame allocated again and again into a sparse TSDF of 1.0 GB that holds its
-blocks already, as a scan's frame finds most of its blocks held [M 2026-11-14, 15:43 to 15:47].
-The scenes of `tests/test_sparse_tsdf_allocation.cpp`: the tabletop box on its plane from the
-first pose of its walk, at 2 mm voxels and the range 0.30 m to 1.0 m; a box of 1.2 m x 0.8 m x
-1.0 m on a floor from 2.7 m, at 8 mm voxels and 0.4 m to 3.0 m. Paced at 30 fps the governor
-keeps the GPU at 306 MHz throughout; back to back it runs at 1020 MHz throughout.
+after 5 s, the same frame allocated again and again into a sparse TSDF of the object class's
+1.0 GB, 239810 blocks and 1048576 slots, that holds its blocks already, as a scan's frame finds
+most of its blocks held [M 2026-11-14, 18:23 to 18:27, MAXN_SUPER by `nvpmodel -q`, no compiler
+running]. The scenes of `tests/test_sparse_tsdf_allocation.cpp`: the tabletop box on its plane
+from the first pose of its walk, at 2 mm voxels and the range 0.30 m to 1.0 m; a box of 1.2 m x
+0.8 m x 1.0 m on a floor from 2.7 m, at 8 mm voxels and 0.4 m to 3.0 m; the far depth the
+range's. Paced at 30 fps the governor keeps the GPU at 306 MHz throughout; back to back it runs
+at 1020 MHz throughout (`/sys/class/devfreq/17000000.gpu/cur_freq`, sampled every 16 runs).
 
 | size | voxel | valid pixels, blocks | pace | kernel median / p95 / max | host call median |
 |---|---|---|---|---|---|
-| 640x400 | 2 mm | 131065, 5180 | 30 fps | 0.546 / 0.551 / 0.560 ms | 0.043 ms |
-| 640x400 | 2 mm | | back to back | 0.186 / 0.190 / 0.266 ms | 0.007 ms |
-| 1280x800 | 2 mm | 524849, 5215 | 30 fps | 1.513 / 1.519 / 1.523 ms | 0.024 ms |
-| 1280x800 | 2 mm | | back to back | 0.522 / 0.524 / 0.532 ms | 0.007 ms |
-| 640x400 | 8 mm | 118421, 10877 | 30 fps | 1.478 / 1.485 / 1.494 ms | 0.025 ms |
-| 640x400 | 8 mm | | back to back | 0.447 / 0.451 / 0.530 ms | 0.007 ms |
-| 1280x800 | 8 mm | 473794, 10950 | 30 fps | 3.131 / 3.141 / 3.150 ms | 0.027 ms |
-| 1280x800 | 8 mm | | back to back | 0.985 / 0.988 / 0.994 ms | 0.007 ms |
+| 640x400 | 2 mm | 131065, 5180 | 30 fps | 0.563 / 0.569 / 0.576 ms | 0.041 ms |
+| 640x400 | 2 mm | | back to back | 0.191 / 0.195 / 0.350 ms | 0.007 ms |
+| 1280x800 | 2 mm | 524849, 5215 | 30 fps | 1.521 / 1.527 / 1.533 ms | 0.044 ms |
+| 1280x800 | 2 mm | | back to back | 0.523 / 0.527 / 0.604 ms | 0.007 ms |
+| 640x400 | 8 mm | 118421, 10877 | 30 fps | 1.561 / 1.569 / 1.576 ms | 0.041 ms |
+| 640x400 | 8 mm | | back to back | 0.472 / 0.476 / 0.601 ms | 0.007 ms |
+| 1280x800 | 8 mm | 473794, 10950 | 30 fps | 3.237 / 3.247 / 3.255 ms | 0.043 ms |
+| 1280x800 | 8 mm | | back to back | 1.012 / 1.016 / 1.070 ms | 0.007 ms |
 
 The first frame into a new, empty sparse TSDF, each right after the request's clearing, the
-clock not controlled: medians of 10 of 0.691, 1.695, 1.688 and 3.397 ms, in the table's order of
-size and voxel [M 2026-11-14, same runs]. Before its atomic swap the insertion reads the slot's
-key, and before its exchange the slot's stamp, each by a relaxed atomic load, so that a block a
-frame finds held costs no atomic (`src/fusion/block_hash.cuh`, `src/fusion/sparse_tsdf.cu`). On
-the code before the cap of blocks per ray, whose medians with both loads were 0.3 % to 3.5 %
-below the table's [M 2026-11-14, 14:45 to 14:48], the medians without both loads were 0.942,
+clock not controlled: medians of 10 of 0.670, 1.664, 1.724 and 3.469 ms, in the table's order of
+size and voxel [M 2026-11-14, same runs]. The medians are 0.2 % to 5.6 % above those of the same
+measurement with the hash at twice the pool's blocks, 524288 slots, and no far depth, which were
+0.546, 1.513, 1.478 and 3.131 ms at 30 fps and 0.186, 0.522, 0.447 and 0.985 ms back to back
+[M 2026-11-14, 15:43 to 15:47]; the slots' layout and the far depth's comparison were not timed
+apart. Before its atomic swap the insertion reads the slot's key, and before its exchange the
+slot's stamp, each by a relaxed atomic load, so that a block a frame finds held costs no atomic
+(`src/fusion/block_hash.cuh`, `src/fusion/sparse_tsdf.cu`). On the code before the cap of blocks
+per ray, with the hash at 524288 slots, the medians with both loads were 0.3 % to 3.5 % below
+those of 15:43 [M 2026-11-14, 14:45 to 14:48], and the medians without both loads were 0.942,
 3.758, 2.173 and 8.754 ms at 30 fps and 0.329, 1.428, 0.704 and 3.154 ms back to back [M
 2026-11-14, 14:40 to 14:44]; at 1280x800 back to back the keys' load alone gave 0.900 and 1.888
 ms, the stamps' alone 0.972 and 1.949 ms [M 2026-11-14, 14:50 to 14:54], so both are kept.
+
+A frame whose every valid point lies past the far depth, which the allocation skips and counts:
+the tabletop frame at 1280x800 with a far depth of 0.25 m, 524849 points skipped, takes 0.396 /
+0.400 / 0.404 ms paced at 30 fps and 0.161 / 0.163 / 0.208 ms back to back; the same size with
+every pixel invalid, the kernel's floor, 0.161 / 0.161 / 0.162 ms and 0.055 / 0.058 / 0.108 ms
+(median / p95 / max) [M 2026-11-14, 18:49 to 18:51, as the table, MAXN_SUPER, 306 / 1020 MHz].
+The compiler already gathers the skip's count per warp, one reduction of the warp's population
+count [B 2026-11-14: `cuobjdump -sass` of `allocate_kernel`, VOTEU.ANY, POPC, RED.E.ADD], so it
+is not gathered by hand; the difference between the two frames holds the read of the 6.3 MB of
+points besides that count, not timed apart [?].
 
 ## Connections
 

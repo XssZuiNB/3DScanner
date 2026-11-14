@@ -2,7 +2,8 @@
 /// @file test_sparse_tsdf_allocation.cpp
 /// The fusion module's allocation of the blocks near a frame's surface
 /// (fusion/sparse_tsdf.hpp, sparse_tsdf::allocate_near_surface()), on frames of the tests'
-/// synthetic source at their known poses, 640x400 with the camera's intrinsics; the method is
+/// synthetic source at their known poses, 640x400 with the camera's intrinsics, and on built
+/// frames of walls; and the request's check of one frame against the hash's room. The method is
 /// docs/methods/sparse-tsdf.md, "The allocation near a frame's surface". The models' frame is the
 /// scene's world frame. The expected blocks come from the analytic surface, the first hit of each
 /// ray (synthetic_source.hpp, first_hit()), and the truncation's rule computed here in double,
@@ -25,16 +26,25 @@
 ///   the frame hold the same set of blocks and counts; a quaternion of length 2 gives what its
 ///   unit quaternion gives. A second frame at another pose lists as many slots as a new sparse
 ///   TSDF gives it blocks, and the blocks of both are the union.
-/// - A pool too small: the list holds its blocks, the rest is counted as unlisted.
+/// - A far depth nearer than some of the frame's points: those points are not walked, each
+///   counted.
 /// - A pose far outside the hash's range: every block refused, none listed. A pose whose segments'
 ///   ends are not finite in float: no ray walked, each counted.
-/// - Bands across more than max_blocks_per_ray blocks: no ray walked, each counted, nothing
-///   inserted.
+/// - Bands across more than max_blocks_per_ray blocks, in a picture of a field of view far wider
+///   than the camera's: no ray walked, each counted, nothing inserted.
 /// - Refusals as values, each leaving the counts as they were: an empty sparse TSDF, one moved
 ///   from, empty organized points, poses that are not finite in float or have an orientation of
 ///   zero, CUDA's last error left by an earlier call; CUDA's refusal of the launch for points
 ///   whose rows need more blocks than a grid holds, which resets only the list's count. The
-///   request's refusals of a voxel size or a truncation's rule are test_sparse_tsdf_blocks.cpp's.
+///   request's refusals of a single value are test_sparse_tsdf_blocks.cpp's.
+/// - One frame's bound (docs/methods/sparse-tsdf.md, "One frame's blocks"), computed here in
+///   double from the method's formula with the camera's 1280x800 intrinsics: every object class's
+///   live and final models are granted at its budget and far depth; at the edge the request is
+///   granted with a budget of B blocks and refused with B + 1, granted at a far depth whose bound
+///   lies 50 blocks inside the room and refused 50 blocks outside it. The edge frame, a wall
+///   facing the camera that fills 1280x800 at the far depth, at two poses: it touches no more
+///   blocks than the bound and fewer than the room, and, as the pool holds fewer, the list holds
+///   the pool's blocks and the rest is counted as unlisted.
 /// - Every buffer is requested before the pool closes, and the allocations ask the closed pool
 ///   for nothing.
 
@@ -73,6 +83,7 @@ namespace
 {
 using gca_test::check;
 using gca_test::check_no_cuda_error;
+using gca_test::check_refusal;
 using gca_test::check_refused;
 using gca_test::create_stream;
 using gca_test::find;
@@ -85,12 +96,13 @@ using gca_test::read_usage;
 using gca_test::same_usage;
 using gca_test::small_description;
 
-/// The blocks of the cases' sparse TSDF, and its budget: 16384 x 4100 + 32768 x 16 + 16 bytes
-/// [S: computed, docs/methods/sparse-tsdf.md, "The pool and the memory budget"], 68 MB, more
+/// The blocks of the cases' sparse TSDF, and its budget: 32768 x 4100 + 131072 x 16 + 16 bytes
+/// [S: computed, docs/methods/sparse-tsdf.md, "The pool and the memory budget"], 136 MB, more
 /// blocks than the frames touch [M 2026-11-14: this test's counts, 5775 for both tabletop frames,
-/// 10877 for the large one].
-constexpr std::uint32_t test_blocks = 16384;
-constexpr std::uint64_t test_budget = 67'698'704;
+/// 10877 for the large one], and a room for one frame, 131072 - 32768 = 98304 blocks, above the
+/// bound of both cases, 87200 and 92152 blocks [S: computed, "One frame's blocks"].
+constexpr std::uint32_t test_blocks = 32768;
+constexpr std::uint64_t test_budget = 136'445'968;
 
 /// Float's rounding of a point within a few metres of the origin, as the kernel computes it,
 /// about 1e-6 m [S: float32's relative step 6e-8, a few roundings]; taken ten times
@@ -140,7 +152,11 @@ scene_case tabletop_case()
                           : std::vector<Eigen::Isometry3d>{}};
     gca::organized_points_parameters range{};
     const float voxel_m = live_model_of(gca::object_class::tabletop_object, range);
-    return {"tabletop", scene, small_description, range, {test_budget, voxel_m, method_truncation}};
+    return {"tabletop",
+            scene,
+            small_description,
+            range,
+            {test_budget, voxel_m, method_truncation, range.far_m}};
 }
 
 /// The large case's scene: a box of 1.2 m x 0.8 m x 1.0 m, a large object of 0.5 m to 2 m
@@ -169,7 +185,7 @@ scene_case large_case()
             large_scene(),
             small_description,
             range,
-            {test_budget, voxel_m, method_truncation}};
+            {test_budget, voxel_m, method_truncation, range.far_m}};
 }
 
 /// Gives the truncation distance of a case at a depth, computed here in double from the method's
@@ -665,16 +681,194 @@ block_set check_band(const std::string &what, const known_frame &frame, const lo
     return allocated;
 }
 
-/// Gives the budget of a sparse TSDF of a number of blocks: 4100 B + 16 S + 16 bytes, S the least
-/// power of two >= 2 B [S: docs/methods/sparse-tsdf.md, "The pool and the memory budget"].
-/// @param blocks [in] B, from 1 to 2^30.
+/// Gives the slots of the hash of a number of blocks: the least power of two >= 4 B
+/// [S: docs/methods/sparse-tsdf.md, "The pool and the memory budget"].
+/// @param blocks [in] B, from 1 to 2^29.
+/// @return S.
+std::uint64_t slots_of(std::uint32_t blocks)
+{
+    std::uint64_t slots = 1;
+    while (slots < 4 * std::uint64_t{blocks})
+        slots *= 2;
+    return slots;
+}
+
+/// Gives the budget of a sparse TSDF of a number of blocks: 4100 B + 16 S + 16 bytes
+/// [S: docs/methods/sparse-tsdf.md, "The pool and the memory budget"].
+/// @param blocks [in] B, from 1 to 2^29.
 /// @return the budget, in bytes.
 std::uint64_t budget_of(std::uint32_t blocks)
 {
-    std::uint64_t slots = 1;
-    while (slots < 2 * std::uint64_t{blocks})
-        slots *= 2;
-    return 4100 * std::uint64_t{blocks} + 16 * slots + 16;
+    return 4100 * std::uint64_t{blocks} + 16 * slots_of(blocks) + 16;
+}
+
+/// Gives the bound of one frame in the method's model, computed here in double apart from the
+/// module's code (docs/methods/sparse-tsdf.md, "One frame's blocks"): a surface facing the camera
+/// that fills the picture of 1280x800 at the camera's intrinsics there (large_description) at the
+/// far depth z_max, N = (w + 2 sqrt(3) e)(h + 2 sqrt(3) e)(2 mu + 2 sqrt(3) e) / e^3 with e = 8 v,
+/// mu = mu(z_max), w = 1280 (z_max + mu) / fx and h = 800 (z_max + mu) / fy.
+/// @param parameters [in] the sparse TSDF's parameters.
+/// @return N, in blocks.
+double frame_bound_blocks(const gca::sparse_tsdf_parameters &parameters)
+{
+    const gca::frame_description &picture = gca_test::large_description;
+    const double z = parameters.max_depth_m;
+    const double mu = truncation_m(parameters, z);
+    const double edge = block_edge_m(parameters);
+    const double pad = 2.0 * std::sqrt(3.0) * edge;
+    const double w = picture.size.width * (z + mu) / double{picture.intrinsics.fx} + pad;
+    const double h = picture.size.height * (z + mu) / double{picture.intrinsics.fy} + pad;
+    return w * h * (2.0 * mu + pad) / (edge * edge * edge);
+}
+
+/// Gives the room of a sparse TSDF's hash for one frame once its pool is used up.
+/// @param layout [in] its layout.
+/// @return S - B, in blocks.
+double room_of(const gca::sparse_tsdf_layout &layout)
+{
+    return static_cast<double>(layout.slot_count) - static_cast<double>(layout.capacity_blocks);
+}
+
+/// Requests a sparse TSDF from a pool of its own.
+/// @param parameters [in] the sparse TSDF's parameters.
+/// @param stream [in] the stream its clearing is queued on.
+/// @return the request's result; a granted sparse TSDF's memory is freed when it goes.
+gca::request_result<gca::sparse_tsdf> request_alone(const gca::sparse_tsdf_parameters &parameters,
+                                                    cudaStream_t stream)
+{
+    gca::gpu_pool pool;
+    return gca::sparse_tsdf::request(pool, parameters, stream);
+}
+
+/// Checks that a request was refused for the bound of one frame, by its message, holding nothing.
+/// @param what [in] the case, printed with the message and named in the check line.
+/// @param made [in] the request's result.
+void check_refused_by_bound(const std::string &what,
+                            const gca::request_result<gca::sparse_tsdf> &made)
+{
+    check_refusal(what,
+                  made.status == gca::request_status::failure &&
+                      made.granted.layout().capacity_blocks == 0,
+                  made.message, made.message.find("cannot hold one frame") != std::string::npos);
+}
+
+/// Every object class's live and final models are granted at its budget and far depth, with the
+/// method's starting values of the truncation's rule (parameters_of()); their bounds are printed
+/// against the room.
+/// @param stream [in] the stream.
+void check_object_classes(cudaStream_t stream)
+{
+    for (const gca::object_class kind :
+         {gca::object_class::tabletop_object, gca::object_class::large_object})
+    {
+        const gca::object_class_parameters p = gca::parameters_of(kind);
+        for (const auto &[model, voxel_m] :
+             {std::pair{"live", p.live_voxel_size_m}, std::pair{"final", p.full_voxel_size_m}})
+        {
+            const std::string what = std::string(gca::name_of(kind)) + ", " + model + " model";
+            const gca::sparse_tsdf_parameters parameters = {
+                p.memory_budget_bytes, static_cast<float>(voxel_m), method_truncation,
+                static_cast<float>(p.max_depth_m)};
+            const gca::sparse_tsdf tsdf =
+                granted(what + " at its budget and far depth: the sparse TSDF",
+                        request_alone(parameters, stream));
+            const gca::sparse_tsdf_layout layout = tsdf.layout();
+            std::printf("%s: %.0f mm voxels to %.1f m, one frame's bound %.1f blocks, room %.0f "
+                        "(%u blocks, %u slots)\n",
+                        what.c_str(), 1e3 * voxel_m, p.max_depth_m, frame_bound_blocks(parameters),
+                        room_of(layout), layout.capacity_blocks, layout.slot_count);
+            check(frame_bound_blocks(parameters) < room_of(layout),
+                  (what + ": one frame's bound below the room").c_str());
+        }
+    }
+}
+
+/// The parameters at the edge: the large object's live voxel size, 8 mm, and a far depth of
+/// 3.12 m [?: a choice], whose bound, about 105800 blocks [S: computed], lies between the least
+/// and the greatest room of a hash of 131072 slots, 98304 and 114687 blocks, so that a budget of
+/// B blocks has room for it and one of B + 1 not.
+/// @return the parameters, the budget left 0.
+gca::sparse_tsdf_parameters edge_parameters()
+{
+    const gca::object_class_parameters large = gca::parameters_of(gca::object_class::large_object);
+    return {0, static_cast<float>(large.live_voxel_size_m), method_truncation, 3.12f};
+}
+
+/// The bound's least distance from a whole block at the edge along the budget: 0.01 blocks
+/// [?: a choice], ten times the difference between this test's bound and the module's, about
+/// 1e-3 blocks [S: computed: the focal lengths, floats here and doubles there, differ by 8e-9 of
+/// N], so that both put the edge at the same block.
+constexpr double bound_clearance_blocks = 0.01;
+
+/// The bound's distance from the room at the two far depths of the edge along the depth: 50
+/// blocks [?: a choice], far above the two bounds' difference and within a millimetre of the
+/// edge's depth [M 2026-11-14: 3.1196 m and 3.1204 m].
+constexpr double depth_edge_margin_blocks = 50.0;
+
+/// The bisection's steps for a far depth: 60, which take the far depths' range of 9.75 m below
+/// 1e-17 m, far below float's step at a few metres, about 2.4e-7 m [S: computed], so that it ends
+/// between adjacent floats.
+constexpr int bisection_steps = 60;
+
+/// The edge of the request's check of one frame, which refuses a bound equal to the room S - B or
+/// above it: along the budget, B blocks granted and B + 1 refused, B = S - floor(N) - 1, the most
+/// blocks whose room exceeds N, both in the hash of 131072 slots; along the far depth, at the
+/// budget of B blocks, a depth whose bound lies depth_edge_margin_blocks below the room granted
+/// and one that far above it refused.
+/// @param stream [in] the stream.
+/// @return B, the blocks of the budget at the edge; 0 when the edge lies elsewhere.
+std::uint32_t check_edges(cudaStream_t stream)
+{
+    gca::sparse_tsdf_parameters parameters = edge_parameters();
+    const double bound = frame_bound_blocks(parameters);
+    const std::uint64_t slots = 131072;
+    const std::uint32_t edge_blocks = static_cast<std::uint32_t>(slots - std::floor(bound) - 1);
+    const double fraction = bound - std::floor(bound);
+    std::printf("edge: one frame's bound %.4f blocks at %.2f m, %u blocks granted, %u refused\n",
+                bound, double{parameters.max_depth_m}, edge_blocks, edge_blocks + 1);
+    // The module computes the bound with the focal lengths in double, here they are floats: the
+    // two differ by about 1e-3 blocks [S: computed, 612.37 rounded to float differs by 8e-9].
+    check(slots_of(edge_blocks) == slots && slots_of(edge_blocks + 1) == slots &&
+              fraction > bound_clearance_blocks && fraction < 1.0 - bound_clearance_blocks,
+          "edge: B and B + 1 in the hash of 131072 slots, the bound clear of a whole block");
+    if (slots_of(edge_blocks) != slots || slots_of(edge_blocks + 1) != slots)
+        return 0;
+
+    parameters.memory_budget_bytes = budget_of(edge_blocks);
+    const gca::sparse_tsdf inside =
+        granted("edge, the budget of B blocks: the sparse TSDF", request_alone(parameters, stream));
+    check(inside.layout().capacity_blocks == edge_blocks,
+          "edge, the budget of B blocks: B blocks held");
+    gca::sparse_tsdf_parameters one_more = parameters;
+    one_more.memory_budget_bytes = budget_of(edge_blocks + 1);
+    check_refused_by_bound("edge, the budget of B + 1 blocks", request_alone(one_more, stream));
+
+    // Along the far depth: the depths whose bounds lie depth_edge_margin_blocks either side of the
+    // room, found by bisection on the bound, which grows with the depth.
+    const double room = room_of(inside.layout());
+    const auto depth_of_bound = [&parameters](double target) {
+        gca::sparse_tsdf_parameters p = parameters;
+        double within = gca::nearest_max_depth_m;
+        double beyond = gca::farthest_max_depth_m;
+        for (int i = 0; i < bisection_steps; i++)
+        {
+            p.max_depth_m = static_cast<float>(0.5 * (within + beyond));
+            (frame_bound_blocks(p) <= target ? within : beyond) = p.max_depth_m;
+        }
+        p.max_depth_m = static_cast<float>(within);
+        return p;
+    };
+    const gca::sparse_tsdf_parameters nearer = depth_of_bound(room - depth_edge_margin_blocks);
+    const gca::sparse_tsdf_parameters farther = depth_of_bound(room + depth_edge_margin_blocks);
+    std::printf("edge: at the budget of B blocks, room %.0f; far depth %.6f m, bound %.1f; %.6f m, "
+                "bound %.1f\n",
+                room, double{nearer.max_depth_m}, frame_bound_blocks(nearer),
+                double{farther.max_depth_m}, frame_bound_blocks(farther));
+    check(frame_bound_blocks(nearer) < room && frame_bound_blocks(farther) > room,
+          "edge: the two far depths either side of the room");
+    granted("edge, the far depth inside: the sparse TSDF", request_alone(nearer, stream));
+    check_refused_by_bound("edge, the far depth outside", request_alone(farther, stream));
+    return edge_blocks;
 }
 
 /// Requests a sparse TSDF from a pool of its own, closes the pool, allocates a frame's blocks and
@@ -741,33 +935,98 @@ void check_ten_runs(const scene_case &c, const known_frame &frame,
           (what + ": the blocks and counts of its unit quaternion").c_str());
 }
 
-/// A pool smaller than the frame's blocks: it hands out all of its blocks, the frame's list holds
-/// as many slots, and the rest is counted as refused and unlisted. Its hash, of at least twice the
-/// blocks, holds every slot the frame touches.
-/// @param c [in] the case.
-/// @param frame [in] the frame.
-/// @param points [in] its organized points.
-/// @param touched [in] the blocks the frame touches, from a pool that holds them all.
+/// The edge frame: a wall facing the camera that fills the picture of 1280x800 (large_description)
+/// at the far depth of the edge, at its deepest whole depth unit within it, allocated into a new
+/// sparse TSDF at the budget of the edge, B blocks, at two poses: the identity, and the camera
+/// turned by 54.7 degrees about (1, -1, 0), its optical axis along a diagonal of the blocks' grid.
+/// It touches no more blocks than the bound and fewer than the room S - B, every ray walked; as
+/// it touches more blocks than the pool holds, the pool is used up, the frame's list holds B slots
+/// and the rest is counted as unlisted.
+/// @param edge_blocks [in] B (check_edges()).
 /// @param stream [in] the stream.
-void check_pool_too_small(const scene_case &c, const known_frame &frame,
-                          const gca::organized_points &points, std::uint32_t touched,
-                          cudaStream_t stream)
+void check_edge_frame(std::uint32_t edge_blocks, cudaStream_t stream)
 {
-    const std::string what = c.name + ", pool too small";
-    const std::uint32_t blocks = touched * 3 / 4;
+    gca::sparse_tsdf_parameters parameters = edge_parameters();
+    parameters.memory_budget_bytes = budget_of(edge_blocks);
+    const double bound = frame_bound_blocks(parameters);
+    const gca::frame_description &picture = gca_test::large_description;
+    // The deepest whole depth unit whose depth, as the organized points round it to float, lies
+    // within the far depth, so that no point lies past it.
+    auto depth_value = static_cast<std::uint16_t>(parameters.max_depth_m / picture.depth_unit_m);
+    while (static_cast<float>(depth_value) * picture.depth_unit_m > parameters.max_depth_m)
+        depth_value--;
+    const gca::frame wall = gca_test::built_frame(
+        picture, [depth_value](std::uint32_t, std::uint32_t) { return depth_value; },
+        gca_test::grey);
+    gca::gpu_pool pool;
+    frame_buffers buffers = request_buffers(pool, picture.size, "edge frame");
+    pool.close();
+    const gca::step_result up = buffers.frame.upload(wall, stream);
+    const gca::step_result made = buffers.points.deproject(
+        buffers.frame, {gca::nearest_max_depth_m, parameters.max_depth_m}, stream);
+    check(up.done && made.done,
+          ("edge frame: upload and deprojection, " + up.message + made.message).c_str());
+    const Eigen::Isometry3d turned(Eigen::AngleAxisd(
+        std::acos(1.0 / std::sqrt(3.0)), Eigen::Vector3d(1.0, -1.0, 0.0) / std::sqrt(2.0)));
+    for (const auto &[name, pose] :
+         {std::pair{"identity", Eigen::Isometry3d::Identity()}, std::pair{"turned", turned}})
+    {
+        const std::string what = std::string("edge frame, ") + name;
+        gca::sparse_tsdf tsdf;
+        const gca::sparse_tsdf_usage usage =
+            allocate_in_new(parameters, buffers.points, as_camera_pose(pose), stream, what, tsdf);
+        print_usage(what, usage);
+        const double room = room_of(tsdf.layout());
+        const std::uint32_t touched = usage.blocks_in_use + usage.blocks_refused;
+        std::printf("%s: a wall at %.3f m touches %u blocks; the bound %.1f, %.3f times as many; "
+                    "the room %.0f\n",
+                    what.c_str(), static_cast<double>(depth_value) * picture.depth_unit_m, touched,
+                    bound, bound / touched, room);
+        check(usage.rays_not_walked == 0 && usage.coordinates_refused == 0,
+              (what + ": every ray walked, no coordinate refused").c_str());
+        check(touched <= bound && touched < room,
+              (what + ": no more blocks than the bound, fewer than the room").c_str());
+        check(usage.used_up() && usage.blocks_in_use == edge_blocks &&
+                  usage.listed_slots == edge_blocks &&
+                  usage.unlisted_slots == touched - edge_blocks,
+              (what + ": the pool used up, the list full, the rest counted as unlisted").c_str());
+    }
+    check(pool.refused_while_closed() == 0, "edge frame: the closed pool asked for nothing");
+}
+
+/// A far depth nearer than some of a frame's points: a new sparse TSDF whose far depth is
+/// 0.7005 m, between two whole depth units within the tabletop's depth range [?: a choice], does
+/// not walk the frame's valid points deeper than it and counts each, and walks the nearer ones.
+/// @param c [in] the case.
+/// @param host [in] the frame as rendered.
+/// @param frame [in] what the test knows of it.
+/// @param points [in] its organized points.
+/// @param touched [in] the blocks the frame touches with the case's far depth.
+/// @param stream [in] the stream.
+void check_depth_skip(const scene_case &c, const gca::frame &host, const known_frame &frame,
+                      const gca::organized_points &points, std::uint32_t touched,
+                      cudaStream_t stream)
+{
+    const std::string what = c.name + ", a far depth of 0.7005 m";
     gca::sparse_tsdf_parameters parameters = c.tsdf;
-    parameters.memory_budget_bytes = budget_of(blocks);
+    parameters.max_depth_m = 0.7005f;
+    // The depth as the organized points round it to float (organized_points.hpp).
+    std::size_t deeper = 0;
+    for (std::size_t pixel = 0; pixel < frame.valid.size(); pixel++)
+        if (frame.valid[pixel] != 0 &&
+            static_cast<float>(host.depth()[pixel]) * c.description.depth_unit_m >
+                parameters.max_depth_m)
+            deeper++;
     gca::sparse_tsdf tsdf;
     const gca::sparse_tsdf_usage usage =
         allocate_in_new(parameters, points, as_camera_pose(frame.pose), stream, what, tsdf);
     print_usage(what, usage);
-    check(tsdf.layout().capacity_blocks == blocks && tsdf.layout().slot_count >= touched,
-          (what + ": the pool holds 3/4 of the frame's blocks, the hash all of them").c_str());
-    check(usage.blocks_in_use == blocks && usage.blocks_refused == touched - blocks &&
-              usage.coordinates_refused == 0 && usage.used_up(),
-          (what + ": the pool's blocks handed out, the rest refused").c_str());
-    check(usage.listed_slots == blocks && usage.unlisted_slots == touched - blocks,
-          (what + ": the list full, the rest of the frame's slots counted as unlisted").c_str());
+    std::printf("%s: %zu valid points deeper\n", what.c_str(), deeper);
+    check(deeper > 0 && usage.rays_not_walked == deeper,
+          (what + ": the deeper points not walked, each counted").c_str());
+    check(usage.blocks_in_use > 0 && usage.blocks_in_use < touched &&
+              usage.coordinates_refused == 0,
+          (what + ": the nearer points walked, fewer blocks than with every point").c_str());
 }
 
 /// Poses far away: one 100 km along x, past the hash's range of 2^20 blocks of 16 mm, 16.8 km
@@ -878,8 +1137,8 @@ void check_refusals(gca::sparse_tsdf &tsdf, const gca::organized_points &points,
 }
 
 /// The tabletop frames: the first frame's band and list; the same frame again; ten new sparse
-/// TSDFs and a quaternion of length 2; the second frame, alone and after the first; a pool too
-/// small; poses far away; the refusals; and the closed pool.
+/// TSDFs and a quaternion of length 2; the second frame, alone and after the first; a nearer far
+/// depth; poses far away; the refusals; and the closed pool.
 /// @param stream [in] the stream.
 void check_tabletop(cudaStream_t stream)
 {
@@ -957,7 +1216,7 @@ void check_tabletop(cudaStream_t stream)
                   expected_near_second,
           "tabletop, second frame after the first: the blocks of both frames");
 
-    check_pool_too_small(c, frame0, first.points, usage.blocks_in_use, stream);
+    check_depth_skip(c, frames.frames[0], frame0, first.points, usage.blocks_in_use, stream);
     check_far_poses(c, frame0, first.points, stream);
     check_refusals(tsdf, first.points, tall, frame1.pose, stream);
     check(pool.refused_while_closed() == 0, "tabletop: the closed pool asked for nothing");
@@ -995,45 +1254,43 @@ void check_large(cudaStream_t stream)
     check(pool.refused_while_closed() == 0, "large: the closed pool asked for nothing");
 }
 
-/// Bands across more blocks than a ray may walk: the large scene in a picture of 8 x 8 pixels
-/// [?: a choice: few rays, so that a kernel that walks them anyway ends soon], its depths from
-/// 1.5 m to 3.0 m, at 8 mm voxels with c and k at the high ends of their ranges, mu(z) = z^2 m.
-/// Every band then spans at least 2 mu(1.5 m) / 64 mm = 70 blocks along its ray [S: computed],
-/// more than max_blocks_per_ray: no ray is walked, each is counted, nothing is inserted.
+/// Bands across more blocks than a ray may walk, in a scene the bound of one frame does not cover
+/// (docs/methods/sparse-tsdf.md, "One frame's blocks"): a picture of 8 x 8 pixels [?: a choice: few
+/// rays, so that a kernel that walks them anyway ends soon] whose focal lengths of 0.01 px give a
+/// field of view far wider than the camera's, a wall facing it 1.0 m away, at the large object's
+/// live model and the cases' budget. mu(1.0 m) = 32 mm, so each segment spans 2 mu r = 64 mm r,
+/// r = ((u - cx) / fx, (v - cy) / fy, 1): r's first two components are at least 0.5 / 0.01 = 50
+/// each, so the segment crosses at least 49 borders of blocks of 64 mm along each, 99 blocks or
+/// more [S: computed], more than max_blocks_per_ray: no ray is walked, each is counted, nothing
+/// is inserted.
 /// @param stream [in] the stream.
 void check_long_bands(cudaStream_t stream)
 {
     const std::string what = "long bands";
-    static_assert(gca::max_blocks_per_ray < 70, "the bands below cross more blocks than the cap");
-    const gca::frame_description tiny = {
-        {8, 8}, {4.0f, 4.0f, 3.5f, 3.5f}, gca_test::camera_depth_unit_m};
-    const gca_test::synthetic_scene scene = large_scene();
-    const gca_test::rendered frames = gca_test::render(scene, tiny);
-    if (frames.frames.empty())
-        return;
-    const scene_case c = {
-        what,
-        scene,
-        tiny,
-        {1.5f, 3.0f},
-        {test_budget,
-         0.008f,
-         {gca::max_noise_per_m, gca::max_noise_multiple, method_truncation.min_voxels}}};
+    static_assert(gca::max_blocks_per_ray < 99, "the bands below cross more blocks than the cap");
+    const gca::frame_description wide = {
+        {8, 8}, {0.01f, 0.01f, 3.5f, 3.5f}, gca_test::camera_depth_unit_m};
+    const gca::frame wall = gca_test::built_frame(
+        wide, [](std::uint32_t, std::uint32_t) { return std::uint16_t{1000}; }, gca_test::grey);
+    gca::organized_points_parameters range{};
+    const float voxel_m = live_model_of(gca::object_class::large_object, range);
+    const gca::sparse_tsdf_parameters parameters = {test_budget, voxel_m, method_truncation,
+                                                    range.far_m};
     gca::gpu_pool pool;
-    frame_buffers buffers = request_buffers(pool, tiny.size, what);
+    frame_buffers buffers = request_buffers(pool, wide.size, what);
     pool.close();
-    const known_frame frame =
-        prepare(c, frames.frames[0], frames.surfaces, scene.trajectory[0], buffers, stream);
-    const std::size_t valid =
-        static_cast<std::size_t>(std::count(frame.valid.begin(), frame.valid.end(), 1));
+    const gca::step_result up = buffers.frame.upload(wall, stream);
+    const gca::step_result made = buffers.points.deproject(buffers.frame, range, stream);
+    check(up.done && made.done,
+          (what + ": upload and deprojection, " + up.message + made.message).c_str());
     gca::sparse_tsdf tsdf;
     const gca::sparse_tsdf_usage usage =
-        allocate_in_new(c.tsdf, buffers.points, as_camera_pose(frame.pose), stream, what, tsdf);
+        allocate_in_new(parameters, buffers.points, as_camera_pose(Eigen::Isometry3d::Identity()),
+                        stream, what, tsdf);
     print_usage(what, usage);
-    std::printf("%s: %zu valid pixels of 64\n", what.c_str(), valid);
-    check(valid > 0 && usage.rays_not_walked == valid && usage.blocks_in_use == 0 &&
+    check(usage.rays_not_walked == 64 && usage.blocks_in_use == 0 &&
               usage.coordinates_refused == 0 && usage.listed_slots == 0,
-          "long bands: no ray walked, each valid pixel's counted, nothing inserted");
+          "long bands: no ray walked, each of the 64 counted, nothing inserted");
     check(pool.refused_while_closed() == 0, "long bands: the closed pool asked for nothing");
 }
 } // namespace
@@ -1048,6 +1305,10 @@ int main()
     check_tabletop(stream);
     check_large(stream);
     check_long_bands(stream);
+    check_object_classes(stream);
+    const std::uint32_t edge_blocks = check_edges(stream);
+    if (edge_blocks != 0)
+        check_edge_frame(edge_blocks, stream);
     check_no_cuda_error("the end");
     check(cudaStreamDestroy(stream) == cudaSuccess, "the CUDA stream destroyed");
     return gca_test::check_summary("test_sparse_tsdf_allocation");
