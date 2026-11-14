@@ -4,9 +4,10 @@
 /// after another and is closed again, and it describes itself. When it has no frame it says
 /// why, as a value: it refused to open, a timeout, a failure of the device with its message,
 /// the end. No exception leaves it: its implementations catch what their device throws, and
-/// every function of the seam is noexcept. Today the tests' synthetic source implements it
-/// (tests/synthetic_source.hpp); the Orbbec camera and the sequence are planned to. This header
-/// and the frame build and link without OrbbecSDK (src/CMakeLists.txt, the library camera).
+/// every function of the seam is noexcept. The tests' synthetic source (tests/synthetic_source.hpp)
+/// and the Orbbec camera (camera/orbbec_device.hpp) implement it; the sequence is planned to.
+/// This header and the frame build and link without OrbbecSDK (src/CMakeLists.txt, the library
+/// camera).
 
 #pragma once
 
@@ -69,8 +70,10 @@ public:
     ///         device is missing or held, or the source is open already.
     /// @pre The source is closed; when it is open, the call is refused and the source stays
     ///      open as it was.
-    /// @note Allocates for a refusal's reason, not when it opens. A failed allocation ends the
-    ///       program (std::terminate): the function is noexcept.
+    /// @note Allocates for a refusal's reason, and an implementation may allocate what it opens
+    ///       (the Orbbec camera allocates OrbbecSDK's context, device and pipeline,
+    ///       camera/orbbec_device.hpp). A failed allocation ends the program (std::terminate):
+    ///       the function is noexcept.
     virtual open_result open(const frame_size &size) noexcept = 0;
 
     /// Gives the next frame.
@@ -83,9 +86,11 @@ public:
     ///         deliver.
     /// @pre The source is open; when it is not, the result is a failure saying so.
     /// @note Allocates for the message of a status other than frame, and for out's buffers when
-    ///       they grow (frame::prepare()); a delivered frame of the size out already has
-    ///       allocates nothing. A failed allocation ends the program (std::terminate): the
-    ///       function is noexcept.
+    ///       they grow (frame::prepare()); beyond that, a delivered frame of the size out already
+    ///       has allocates nothing in the source's own code. An implementation may allocate inside
+    ///       a vendor's SDK: the Orbbec camera's next() does, in OrbbecSDK, for every frameset
+    ///       (camera/orbbec_device.hpp). A failed allocation ends the program (std::terminate):
+    ///       the function is noexcept.
     virtual next_result next(frame &out) noexcept = 0;
 
     /// Closes the source. A closed source stays closed.

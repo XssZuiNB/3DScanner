@@ -14,10 +14,10 @@
 #include "camera/frame.hpp"
 #include "camera/frame_source.hpp"
 #include "check.hpp"
+#include "frame_copy.hpp"
 #include "synthetic_source.hpp"
 #include "types/frame_description.hpp"
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -31,6 +31,9 @@ namespace
 {
 using gca_test::check;
 using gca_test::check_refusal;
+using gca_test::copy_of;
+using gca_test::frame_copy;
+using gca_test::holds;
 
 /// The frames' size: small, as the seam's contract does not depend on it [?: a choice].
 constexpr gca::frame_size test_size = {64, 48};
@@ -64,37 +67,6 @@ gca_test::synthetic_source_options make_options(std::uint64_t frame_count,
     options.ending = ending;
     options.ending_message = ending_message;
     return options;
-}
-
-/// A frame's index, timestamp and pixels, copied to compare the frame with later; the frame
-/// itself cannot be copied.
-struct frame_copy
-{
-    std::uint64_t index;              ///< the frame's index
-    std::uint64_t timestamp_us;       ///< its timestamp, in µs
-    std::vector<std::uint8_t> color;  ///< its color picture
-    std::vector<std::uint16_t> depth; ///< its depth picture
-};
-
-/// Copies a frame's index, timestamp and pixels.
-/// @param frame [in] the frame.
-/// @return the copy.
-frame_copy copy_of(const gca::frame &frame)
-{
-    return {frame.index(), frame.timestamp_us(),
-            std::vector<std::uint8_t>(frame.color().begin(), frame.color().end()),
-            std::vector<std::uint16_t>(frame.depth().begin(), frame.depth().end())};
-}
-
-/// Returns whether a frame holds what a copy holds.
-/// @param frame [in] the frame.
-/// @param copy [in] the copy.
-/// @return whether the index, the timestamp and every pixel of color and depth are equal.
-bool holds(const gca::frame &frame, const frame_copy &copy)
-{
-    return frame.index() == copy.index && frame.timestamp_us() == copy.timestamp_us &&
-           std::ranges::equal(frame.color(), copy.color) &&
-           std::ranges::equal(frame.depth(), copy.depth);
 }
 
 /// Checks that each frame has the size, intrinsics and depth unit the source was built with,

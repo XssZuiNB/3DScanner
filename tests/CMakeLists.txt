@@ -36,6 +36,11 @@ add_executable(test_frame_source test_frame_source.cpp)
 target_link_libraries(test_frame_source PRIVATE synthetic_source)
 add_test(NAME frame_source COMMAND test_frame_source)
 
+# The Orbbec camera's decisions that need no camera, fed with plain data; links no OrbbecSDK.
+add_executable(test_orbbec_rules test_orbbec_rules.cpp)
+target_link_libraries(test_orbbec_rules PRIVATE camera)
+add_test(NAME orbbec_rules COMMAND test_orbbec_rules)
+
 add_executable(test_synthetic_source test_synthetic_source.cpp)
 target_link_libraries(test_synthetic_source PRIVATE synthetic_source)
 add_test(NAME synthetic_source COMMAND test_synthetic_source)

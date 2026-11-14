@@ -89,7 +89,10 @@ them.
   comes back to the host. So the path holds no allocation, no implicit synchronization and no
   spare readback. Thrust's containers, reductions, scans and compactions do all three
   [S: the audit of CUDA_3D, 2026-11-13] and count as such; Thrust is allowed where a
-  measurement shows it costs nothing.
+  measurement shows it costs nothing. OrbbecSDK is the one exception: its C++ wrapper
+  allocates small objects for every frameset (`make_shared` in Pipeline.hpp,
+  `waitForFrameset`, and in Frame.hpp, `getColorFrame` and `getDepthFrame`)
+  [S: OrbbecSDK v2.10.6 headers], which the camera's source cannot avoid without its C API.
 - **Measured stage by stage.** Each stage's time on the board stands in docs/HARDWARE.md.
   A kernel-level choice follows NVIDIA's documentation and the measurement; an optimization
   stays on its measured benefit (AGENTS.md §7 rule 6).

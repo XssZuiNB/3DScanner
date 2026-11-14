@@ -65,11 +65,15 @@ OrbbecSDK's warnings in these runs, the stream going on after each:
 
 * `Not added to property map ... id=108` and `... id=5003`, on every open [M 2026-11-13].
 * `Timestamp anomaly detected ... currentDiff: 4294967296`: the frame timestamp jumps by
-  exactly 2^32 [M]; why is open [?]. The first session saw it a few times at the start of
-  every run [M]. The after-cleanup session saw it in 8 of 10 runs, in both trees: before the
-  first report line in 3 runs, at stop in 6 (one run had both), none in 2; at stop it is an
-  `[error]` line for each sensor, and the stream goes on until the program closes
-  [M 2026-11-13].
+  exactly 2^32 µs [M]. OrbbecSDK joins the high 32 bits of a camera time it reads now and then
+  to each frame's low 32 bits, so a misjudged high part jumps by 2^32 µs either way, and its
+  detector drops the frame it flags [S: OrbbecSDK v2.10.6, FrameTimestampCalculator.cpp,
+  SensorBase.cpp]; what makes it misjudge the high part on this camera, at start and at stop,
+  is open [?]. The first session saw it a few times at the start of every run [M]. The
+  after-cleanup session saw it in 8 of 10 runs, in both trees: before the first report line in
+  3 runs, at stop in 6 (one run had both), none in 2; at stop it is an `[error]` line for each
+  sensor, and the stream goes on until the program closes [M 2026-11-13]. `orbbec_device` takes
+  the jump out of the timestamps it delivers (src/camera/orbbec_rules.hpp).
 * A depth frame dropped at the start. At 1280x800: `Update data size(1824744) > data buffer
   size! (1792000)`; 1792000 bytes is 1280 x 800 x 14 bit, one packed Y14 frame [S]. At 640x400
   too, under a second wording: `This frame will be dropped because the data size does not

@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: 0BSD
 /// @file orbbec_device.cpp
-/// The Orbbec camera behind gca::device: profile selection, depth-to-color alignment and
-/// color decoding to BGR8 (see orbbec_device.hpp).
+/// The Orbbec camera as a frame source: profile selection, depth-to-color alignment, color
+/// decoding to RGB8, OrbbecSDK's report turned into plain data for camera/orbbec_rules.hpp, and
+/// gca::device's adapter for orbbec_viewer (see orbbec_device.hpp).
 
 #include "orbbec_device.hpp"
 
+#include <chrono>
+#include <cstddef>
+#include <exception>
 #include <iostream>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <libobsensor/hpp/TypeHelper.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -14,48 +20,131 @@
 
 namespace gca
 {
+static_assert(static_cast<int>(OB_EXCEPTION_TYPE_IO) == 7 &&
+                  static_cast<int>(OB_EXCEPTION_TYPE_RESOURCE_BUSY) == 14 &&
+                  static_cast<int>(OB_EXCEPTION_TYPE_LICENSE_VERIFY_FAILED) == 15,
+              "exception_kind() was checked against OrbbecSDK v2.10.6's OBExceptionType, whose "
+              "last type is 15 [S: ObTypes.h]; check it again for this OrbbecSDK");
+static_assert(orbbec_frame_time_limit_ms == 5000,
+              "receive_data_from_device()'s line \"No frames received from Orbbec camera for 5s!\" "
+              "names the time limit; AGENTS.md §3 reads it");
+
 namespace
 {
-/// The depth formats asked for, in order. On USB 2 the Gemini 2 L offers only Y14 and RLE
-/// [M 2026-11-13]; start_stream() checks that what arrives is 16 bit.
-constexpr OBFormat depth_formats[] = {OB_FORMAT_Y16, OB_FORMAT_Z16, OB_FORMAT_Y14, OB_FORMAT_RLE};
-
-/// Names a stream format for log lines.
-/// @param f the format.
-/// @return the SDK's name for it.
+/// Names a stream format for messages.
+/// @param f [in] the format.
+/// @return OrbbecSDK's name for it.
+/// @note Allocates the name.
 std::string format_name(OBFormat f)
 {
     return ob::TypeHelper::convertOBFormatTypeToString(f);
 }
 
-/// Finds the first profile in a list that matches; 0 or OB_FORMAT_ANY matches anything.
-/// @param list the profiles to search.
-/// @param w width in pixels.
-/// @param h height in pixels.
-/// @param fmt stream format.
-/// @param fps frame rate.
-/// @return the profile, or nullptr when none matches.
-std::shared_ptr<ob::VideoStreamProfile> find_profile(
-    const std::shared_ptr<ob::StreamProfileList> &list, uint32_t w, uint32_t h, OBFormat fmt,
-    uint32_t fps)
+/// Maps OrbbecSDK's stream format to the formats the choice of streams tells apart, by name.
+/// @param format [in] the format.
+/// @return its orbbec_format, other for a format the choice does not name.
+orbbec_format format_kind(OBFormat format) noexcept
 {
-    for (uint32_t i = 0; i < list->getCount(); i++)
+    switch (format)
     {
-        auto vsp = list->getProfile(i)->as<ob::VideoStreamProfile>();
-        if ((w == 0 || vsp->getWidth() == w) && (h == 0 || vsp->getHeight() == h) &&
-            (fmt == OB_FORMAT_ANY || vsp->getFormat() == fmt) && (fps == 0 || vsp->getFps() == fps))
-        {
-            return vsp;
-        }
+    case OB_FORMAT_BGR:
+        return orbbec_format::bgr;
+    case OB_FORMAT_RGB:
+        return orbbec_format::rgb;
+    case OB_FORMAT_MJPG:
+        return orbbec_format::mjpg;
+    case OB_FORMAT_YUYV:
+        return orbbec_format::yuyv;
+    case OB_FORMAT_Y16:
+        return orbbec_format::y16;
+    case OB_FORMAT_Z16:
+        return orbbec_format::z16;
+    case OB_FORMAT_Y14:
+        return orbbec_format::y14;
+    case OB_FORMAT_RLE:
+        return orbbec_format::rle;
+    default:
+        return orbbec_format::other;
     }
-    return nullptr;
+}
+
+/// Reads a list of OrbbecSDK's video stream profiles as plain data.
+/// @param list [in] the list; nullptr for none.
+/// @return its profiles in its order; empty for nullptr. OrbbecSDK's exceptions pass through.
+/// @note Allocates the vector.
+std::vector<orbbec_profile> plain_profiles(const std::shared_ptr<ob::StreamProfileList> &list)
+{
+    std::vector<orbbec_profile> profiles;
+    if (!list)
+        return profiles;
+    for (std::uint32_t i = 0; i < list->getCount(); i++)
+    {
+        const auto vsp = list->getProfile(i)->as<ob::VideoStreamProfile>();
+        profiles.push_back(
+            {vsp->getWidth(), vsp->getHeight(), vsp->getFps(), format_kind(vsp->getFormat())});
+    }
+    return profiles;
+}
+
+/// Takes a profile out of a list.
+/// @param list [in] the list.
+/// @param position [in] its position, < the list's count.
+/// @return the profile. OrbbecSDK's exceptions pass through.
+std::shared_ptr<ob::VideoStreamProfile> profile_at(
+    const std::shared_ptr<ob::StreamProfileList> &list, std::size_t position)
+{
+    return list->getProfile(static_cast<std::uint32_t>(position))->as<ob::VideoStreamProfile>();
+}
+
+/// How long gca::device's adapter waits for the first frame of an opening before it gives up
+/// [S: the prototype's start waited up to 100 times 200 ms for its first frameset].
+constexpr std::chrono::seconds first_frame_time_limit{20};
+
+/// Maps OrbbecSDK's exception type to the kinds the rules tell apart, by name.
+/// @param type [in] the exception's type, ob::Error::getExceptionType().
+/// @return io, resource_busy, or other for every other type.
+orbbec_exception exception_kind(OBExceptionType type) noexcept
+{
+    switch (type)
+    {
+    case OB_EXCEPTION_TYPE_IO:
+        return orbbec_exception::io;
+    case OB_EXCEPTION_TYPE_RESOURCE_BUSY:
+        return orbbec_exception::resource_busy;
+    default:
+        return orbbec_exception::other;
+    }
+}
+
+/// Reads the host's steady clock.
+/// @return the time since the clock's epoch, in µs.
+std::uint64_t host_time_us() noexcept
+{
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count());
+}
+
+/// Builds a wait that failed.
+/// @param message [in] what failed.
+/// @return the wait, status failure.
+orbbec_wait failed_wait(std::string message)
+{
+    orbbec_wait wait;
+    wait.status = orbbec_wait_status::failure;
+    wait.message = std::move(message);
+    return wait;
 }
 } // namespace
 
-orbbec_device::orbbec_device(uint32_t width, uint32_t height, uint8_t fps)
+orbbec_device::orbbec_device(std::uint32_t width, std::uint32_t height, std::uint8_t fps)
     : device(width, height, fps, BGR8, Z16)
 {
-    ob::Context::setLoggerSeverity(OB_LOG_SEVERITY_WARN);
+}
+
+orbbec_device::~orbbec_device()
+{
+    close();
 }
 
 void orbbec_device::print_stream_profiles()
@@ -90,236 +179,364 @@ void orbbec_device::print_stream_profiles()
             }
         }
     }
-    catch (ob::Error &e)
+    catch (const std::exception &e)
     {
+        // ob::Error, and the std::runtime_error of OrbbecSDK's as() (Frame.hpp).
         std::cout << RED << "Orbbec error: " << e.what() << RESET << std::endl;
     }
+}
+
+open_result orbbec_device::open(const frame_size &size) noexcept
+{
+    if (m_open)
+        return {false, "the camera is open already"};
+    orbbec_open_report report;
+    intrinsics color_intrinsics{};
+    m_serial_number.clear();
+    m_connection_type.clear();
+    try
+    {
+        ob::Context::setLoggerSeverity(OB_LOG_SEVERITY_WARN);
+        m_context = std::make_shared<ob::Context>();
+        const auto devices = m_context->queryDeviceList();
+        report.camera_count = devices->getCount();
+        if (report.camera_count > 0)
+        {
+            m_device = devices->getDevice(0);
+            const auto info = m_device->getDeviceInfo();
+            m_camera_name = info->getName();
+            m_firmware_version = info->getFirmwareVersion();
+            m_serial_number = info->getSerialNumber();
+            m_connection_type = info->getConnectionType();
+            report.connection_type = m_connection_type;
+            m_pipeline = std::make_shared<ob::Pipeline>(m_device);
+            select_profiles(size, report);
+            if (report.color_stream_offered && report.depth_stream_offered)
+            {
+                const OBCameraIntrinsic in = m_color_profile->getIntrinsic();
+                color_intrinsics = {in.fx, in.fy, in.cx, in.cy};
+                start_pipeline();
+            }
+        }
+    }
+    catch (const ob::Error &e)
+    {
+        report.error = orbbec_error{exception_kind(e.getExceptionType()), e.what()};
+    }
+    catch (const std::exception &e)
+    {
+        // OrbbecSDK's C++ wrapper throws std::runtime_error when a frame or profile is not of
+        // the type asked for (Frame.hpp, as()); no exception type of OrbbecSDK's own.
+        report.error = orbbec_error{orbbec_exception::other, e.what()};
+    }
+    if (const std::optional<std::string> refusal = opening_refusal(report, size, m_fps))
+    {
+        release();
+        return {false, *refusal};
+    }
+    m_gate.start(size, color_intrinsics);
+    m_open = true;
+    return {true, {}};
+}
+
+void orbbec_device::select_profiles(const frame_size &size, orbbec_open_report &report)
+{
+    m_color_profile = nullptr;
+    m_depth_profile = nullptr;
+    m_sw_align = nullptr;
+    const auto color_list = m_pipeline->getStreamProfileList(OB_SENSOR_COLOR);
+    const std::optional<std::size_t> color =
+        choose_color_profile(plain_profiles(color_list), size, m_fps);
+    report.color_stream_offered = color.has_value();
+    if (!color)
+        return;
+    m_color_profile = profile_at(color_list, *color);
+
+    const auto hw_list = m_pipeline->getD2CDepthProfileList(m_color_profile, ALIGN_D2C_HW_MODE);
+    const auto depth_list = m_pipeline->getStreamProfileList(OB_SENSOR_DEPTH);
+    const std::optional<orbbec_depth_choice> depth =
+        choose_depth_profile(plain_profiles(hw_list), plain_profiles(depth_list), size, m_fps);
+    report.depth_stream_offered = depth.has_value();
+    if (!depth)
+        return;
+    m_hw_d2c = depth->hardware;
+    m_depth_profile = profile_at(m_hw_d2c ? hw_list : depth_list, depth->position);
+    if (!m_hw_d2c)
+        m_sw_align = std::make_shared<ob::Align>(OB_STREAM_COLOR);
+
+    m_streams = "Color: " + std::to_string(m_color_profile->getWidth()) + "x" +
+                std::to_string(m_color_profile->getHeight()) + "@" +
+                std::to_string(m_color_profile->getFps()) + " " +
+                format_name(m_color_profile->getFormat()) +
+                " | Depth: " + std::to_string(m_depth_profile->getWidth()) + "x" +
+                std::to_string(m_depth_profile->getHeight()) + "@" +
+                std::to_string(m_depth_profile->getFps()) + " " +
+                format_name(m_depth_profile->getFormat()) +
+                " | D2C: " + (m_hw_d2c ? "hardware" : "software");
+}
+
+void orbbec_device::start_pipeline()
+{
+    auto config = std::make_shared<ob::Config>();
+    config->enableStream(m_color_profile);
+    config->enableStream(m_depth_profile);
+    config->setAlignMode(m_hw_d2c ? ALIGN_D2C_HW_MODE : ALIGN_DISABLE);
+    config->setFrameAggregateOutputMode(OB_FRAME_AGGREGATE_OUTPUT_ALL_TYPE_FRAME_REQUIRE);
+    m_pipeline->enableFrameSync();
+    m_pipeline->start(config);
+    m_pipeline_started = true;
+}
+
+next_result orbbec_device::next(frame &out) noexcept
+{
+    if (!m_open)
+        return {next_status::failure, "the camera is not open"};
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(orbbec_frame_time_limit_ms);
+    for (;;)
+    {
+        const auto left_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 deadline - std::chrono::steady_clock::now())
+                                 .count();
+        orbbec_wait wait;
+        if (left_ms <= 0)
+        {
+            wait.status = orbbec_wait_status::timeout;
+        }
+        else
+        {
+            try
+            {
+                wait = wait_for_frameset(static_cast<std::uint32_t>(left_ms));
+            }
+            catch (const ob::Error &e)
+            {
+                wait = failed_wait(std::string("OrbbecSDK: ") + e.what());
+            }
+            catch (const std::exception &e)
+            {
+                // OpenCV's cv::Exception, and the std::runtime_error of OrbbecSDK's as()
+                // (Frame.hpp).
+                wait = failed_wait(std::string("decoding the frameset: ") + e.what());
+            }
+        }
+        const std::optional<next_result> result = m_gate.take(wait, out);
+        release_frames();
+        if (result)
+            return *result;
+    }
+}
+
+const orbbec_skips &orbbec_device::skips() const noexcept
+{
+    return m_gate.skips();
+}
+
+orbbec_wait orbbec_device::wait_for_frameset(std::uint32_t time_limit_ms)
+{
+    std::shared_ptr<ob::FrameSet> frameset = m_pipeline->waitForFrameset(time_limit_ms);
+    orbbec_wait wait;
+    if (!frameset)
+    {
+        // OrbbecSDK's queue gave no frameset within the time limit [S: Pipeline.cpp,
+        // waitForFrame]. An error of OrbbecSDK during the wait comes back the same way: the
+        // installed Pipeline.hpp returns nullptr before it hands the error to Error::handle()
+        // [S: Pipeline.hpp, waitForFrameset, OrbbecSDK v2.10.6].
+        wait.status = orbbec_wait_status::timeout;
+        return wait;
+    }
+    const std::uint64_t received_us = host_time_us();
+    if (m_sw_align)
+    {
+        auto aligned = m_sw_align->process(frameset);
+        if (!aligned)
+            return failed_wait("OrbbecSDK's software alignment gave no frameset");
+        frameset = aligned->as<ob::FrameSet>();
+    }
+    m_color_frame = frameset->getColorFrame();
+    m_depth_frame = frameset->getDepthFrame();
+    if (!m_color_frame || !m_depth_frame)
+        return failed_wait("a frameset without its color or its depth frame");
+
+    orbbec_frameset &facts = wait.frameset;
+    if (const std::optional<std::string> reason = decode_color(m_color_frame, facts))
+        return failed_wait(*reason);
+    facts.depth_size = {m_depth_frame->getWidth(), m_depth_frame->getHeight()};
+    const OBFormat depth_format = m_depth_frame->getFormat();
+    // The GPU pipeline reads 16-bit depth only; the Gemini 2 L's default depth format is RLE
+    // [S: OrbbecSDKConfig.xml], and Y14 arrives as 16 bit [M 2026-11-13, AGENTS.md §6].
+    facts.depth_16_bit = depth_format == OB_FORMAT_Y16 || depth_format == OB_FORMAT_Z16;
+    if (facts.depth_16_bit)
+    {
+        // 16-bit depth values in OrbbecSDK's frame buffer.
+        facts.depth = {reinterpret_cast<const std::uint16_t *>(m_depth_frame->getData()),
+                       m_depth_frame->getDataSize() / sizeof(std::uint16_t)};
+    }
+    else
+    {
+        m_depth_format = format_name(depth_format);
+        facts.depth_format = m_depth_format;
+    }
+    facts.depth_scale_mm = m_depth_frame->getValueScale();
+    facts.index = m_color_frame->getIndex();
+    facts.camera_time_us = m_color_frame->getTimeStampUs();
+    facts.host_time_us = received_us;
+    wait.status = orbbec_wait_status::frameset;
+    return wait;
+}
+
+std::optional<std::string> orbbec_device::decode_color(const std::shared_ptr<ob::ColorFrame> &color,
+                                                       orbbec_frameset &frameset)
+{
+    const std::uint32_t w = color->getWidth();
+    const std::uint32_t h = color->getHeight();
+    const OBFormat format = color->getFormat();
+    std::uint8_t *data = color->getData();
+    const std::size_t bytes = color->getDataSize();
+    frameset.color_size = {w, h};
+
+    // Sizes m_color_rgb for a picture and hands the gate the picture there; the header it returns
+    // has the right size and type, so cv::cvtColor() writes into it and allocates nothing
+    // [S: OpenCV, Mat::create()].
+    const auto rgb_buffer = [&](const frame_size &size) {
+        m_color_rgb.resize(3 * std::size_t{size.width} * size.height);
+        frameset.color_size = size;
+        frameset.color_rgb = m_color_rgb;
+        return cv::Mat(static_cast<int>(size.height), static_cast<int>(size.width), CV_8UC3,
+                       m_color_rgb.data());
+    };
+
+    switch (format)
+    {
+    case OB_FORMAT_RGB:
+        frameset.color_rgb = {data, bytes};
+        return std::nullopt;
+    case OB_FORMAT_BGR:
+    case OB_FORMAT_YUYV: {
+        const bool bgr = format == OB_FORMAT_BGR;
+        const std::size_t needed = (bgr ? 3 : 2) * std::size_t{w} * h;
+        if (bytes != needed)
+            return "the " + format_name(format) + " color frame holds " + std::to_string(bytes) +
+                   " bytes, " + std::to_string(w) + "x" + std::to_string(h) + " needs " +
+                   std::to_string(needed);
+        const cv::Mat raw(static_cast<int>(h), static_cast<int>(w), bgr ? CV_8UC3 : CV_8UC2, data);
+        cv::Mat rgb = rgb_buffer({w, h});
+        cv::cvtColor(raw, rgb, bgr ? cv::COLOR_BGR2RGB : cv::COLOR_YUV2RGB_YUYV);
+        return std::nullopt;
+    }
+    case OB_FORMAT_MJPG: {
+        cv::imdecode(cv::Mat(1, static_cast<int>(bytes), CV_8UC1, data), cv::IMREAD_COLOR,
+                     &m_decoded_bgr);
+        if (m_decoded_bgr.empty() || m_decoded_bgr.type() != CV_8UC3)
+            return "an MJPG color frame of " + std::to_string(bytes) + " bytes does not decode";
+        cv::Mat rgb = rgb_buffer({static_cast<std::uint32_t>(m_decoded_bgr.cols),
+                                  static_cast<std::uint32_t>(m_decoded_bgr.rows)});
+        cv::cvtColor(m_decoded_bgr, rgb, cv::COLOR_BGR2RGB);
+        return std::nullopt;
+    }
+    default:
+        return "color arrives as " + format_name(format) +
+               ", which the camera source does not decode";
+    }
+}
+
+void orbbec_device::release_frames() noexcept
+{
+    m_color_frame = nullptr;
+    m_depth_frame = nullptr;
+}
+
+void orbbec_device::close() noexcept
+{
+    release();
+    m_open = false;
+}
+
+void orbbec_device::release() noexcept
+{
+    release_frames();
+    if (m_pipeline_started)
+    {
+        try
+        {
+            m_pipeline->stop();
+        }
+        catch (const ob::Error &)
+        {
+            // close() has no result: the camera is released below either way.
+        }
+        m_pipeline_started = false;
+    }
+    m_sw_align = nullptr;
+    m_color_profile = nullptr;
+    m_depth_profile = nullptr;
+    m_pipeline = nullptr;
+    m_device = nullptr;
+    m_context = nullptr;
+}
+
+source_description orbbec_device::describe() const noexcept
+{
+    return {
+        m_camera_name.empty() ? std::string("Orbbec camera") : m_camera_name, m_firmware_version,
+        std::to_string(ob::Version::getMajor()) + "." + std::to_string(ob::Version::getMinor()) +
+            "." + std::to_string(ob::Version::getPatch())};
 }
 
 bool orbbec_device::find_device()
 {
-    try
+    const open_result opened = open({m_width, m_height});
+    if (!m_connection_type.empty() && m_connection_type.find("USB3") == std::string::npos)
     {
-        m_context = std::make_shared<ob::Context>();
-        auto devices = m_context->queryDeviceList();
-        if (devices->getCount() == 0)
-        {
-            return false;
-        }
-        m_device = devices->getDevice(0);
-        auto info = m_device->getDeviceInfo();
-        m_device_name = std::string(info->getName()) + " (SN " + info->getSerialNumber() + ", " +
-                        info->getConnectionType() + ")";
-
-        if (std::string(info->getConnectionType()).find("USB3") == std::string::npos)
-        {
-            std::cout << YELLOW << "Warning: camera is not connected via USB3 ("
-                      << info->getConnectionType()
-                      << "). Bandwidth and available profiles are limited." << RESET << std::endl;
-        }
-        return true;
+        std::cout << YELLOW << "Warning: camera is not connected via USB3 (" << m_connection_type
+                  << "). Bandwidth and available profiles are limited." << RESET << std::endl;
     }
-    catch (ob::Error &e)
+    if (!opened.opened)
     {
-        std::cout << RED << "Orbbec error: " << e.what() << RESET << std::endl;
+        std::cout << RED << opened.refusal << RESET << std::endl;
         return false;
     }
-}
-
-bool orbbec_device::select_profiles()
-{
-    auto color_list = m_pipeline->getStreamProfileList(OB_SENSOR_COLOR);
-    auto depth_list = m_pipeline->getStreamProfileList(OB_SENSOR_DEPTH);
-
-    // Color: prefer formats that need the least conversion.
-    for (auto fmt : {OB_FORMAT_BGR, OB_FORMAT_RGB, OB_FORMAT_MJPG, OB_FORMAT_YUYV})
-    {
-        m_color_profile = find_profile(color_list, m_width, m_height, fmt, m_fps);
-        if (m_color_profile)
-            break;
-    }
-    if (!m_color_profile)
-    {
-        std::cout << RED << "No color profile " << m_width << "x" << m_height << "@" << (int)m_fps
-                  << " available." << RESET << std::endl;
-        return false;
-    }
-
-    // Depth: hardware D2C first.
-    auto hw_list = m_pipeline->getD2CDepthProfileList(m_color_profile, ALIGN_D2C_HW_MODE);
-    if (hw_list && hw_list->getCount() > 0)
-    {
-        for (auto fmt : depth_formats)
-        {
-            m_depth_profile = find_profile(hw_list, 0, 0, fmt, m_fps);
-            if (m_depth_profile)
-                break;
-        }
-    }
-    m_hw_d2c = (m_depth_profile != nullptr);
-
-    if (!m_hw_d2c)
-    {
-        // Software D2C: a depth profile with matching fps, 640x400 preferred.
-        for (auto fmt : depth_formats)
-        {
-            m_depth_profile = find_profile(depth_list, 640, 400, fmt, m_fps);
-            if (!m_depth_profile)
-                m_depth_profile = find_profile(depth_list, 0, 0, fmt, m_fps);
-            if (m_depth_profile)
-                break;
-        }
-        if (!m_depth_profile)
-        {
-            std::cout << RED << "No depth profile @" << (int)m_fps << "fps available." << RESET
-                      << std::endl;
-            return false;
-        }
-        m_sw_align = std::make_shared<ob::Align>(OB_STREAM_COLOR);
-    }
-
-    std::cout << D_GREEN << "Color: " << m_color_profile->getWidth() << "x"
-              << m_color_profile->getHeight() << "@" << m_color_profile->getFps() << " "
-              << format_name(m_color_profile->getFormat())
-              << " | Depth: " << m_depth_profile->getWidth() << "x" << m_depth_profile->getHeight()
-              << "@" << m_depth_profile->getFps() << " "
-              << format_name(m_depth_profile->getFormat())
-              << " | D2C: " << (m_hw_d2c ? "hardware" : "software") << RESET << std::endl;
+    m_skips_shown = 0;
+    const source_description described = describe();
+    m_device_name = described.camera + " (SN " + m_serial_number + ", " + m_connection_type +
+                    ", firmware " + described.firmware_version + ", OrbbecSDK " +
+                    described.sdk_version + ")";
     return true;
 }
 
 bool orbbec_device::start_stream()
 {
-    if (m_pipeline_active)
-        return true;
-
-    try
+    std::cout << D_GREEN << m_streams << RESET << std::endl;
+    const auto deadline = std::chrono::steady_clock::now() + first_frame_time_limit;
+    for (;;)
     {
-        m_pipeline = std::make_shared<ob::Pipeline>(m_device);
-        if (!select_profiles())
-            return false;
-
-        auto config = std::make_shared<ob::Config>();
-        config->enableStream(m_color_profile);
-        config->enableStream(m_depth_profile);
-        config->setAlignMode(m_hw_d2c ? ALIGN_D2C_HW_MODE : ALIGN_DISABLE);
-        config->setFrameAggregateOutputMode(OB_FRAME_AGGREGATE_OUTPUT_ALL_TYPE_FRAME_REQUIRE);
-        m_pipeline->enableFrameSync();
-        m_pipeline->start(config);
-        m_pipeline_active = true;
-
-        // Warm up: wait for the first complete frameset (also gives us the depth value scale).
-        for (int i = 0; i < 100; i++)
+        const next_result first = next(m_frame);
+        if (first.status == next_status::frame)
         {
-            if (grab(200))
-            {
-                auto depth_vf = m_depth_frame->as<ob::VideoFrame>();
-                if (depth_vf->getWidth() != m_width || depth_vf->getHeight() != m_height)
-                {
-                    std::cout << RED << "Aligned depth has size " << depth_vf->getWidth() << "x"
-                              << depth_vf->getHeight() << ", expected " << m_width << "x"
-                              << m_height << RESET << std::endl;
-                    return false;
-                }
-                // The Gemini 2 L's default depth format is RLE [S: OrbbecSDKConfig.xml];
-                // the GPU pipeline reads 16-bit depth only.
-                const OBFormat depth_format = depth_vf->getFormat();
-                if (depth_format != OB_FORMAT_Y16 && depth_format != OB_FORMAT_Z16)
-                {
-                    std::cout << RED << "Depth arrives as " << format_name(depth_format)
-                              << ", the GPU pipeline needs Y16/Z16." << RESET << std::endl;
-                    return false;
-                }
-                m_depth_value_scale = m_depth_frame->as<ob::DepthFrame>()->getValueScale();
-                return true;
-            }
+            use_current_frame();
+            return true;
         }
-        std::cout << RED << "Timeout while waiting for first frames." << RESET << std::endl;
-        return false;
-    }
-    catch (ob::Error &e)
-    {
-        std::cout << RED << "Orbbec error: " << e.what() << RESET << std::endl;
-        return false;
-    }
-}
-
-void orbbec_device::decode_color(const std::shared_ptr<ob::VideoFrame> &color)
-{
-    const int w = color->getWidth();
-    const int h = color->getHeight();
-    void *data = color->getData();
-
-    switch (color->getFormat())
-    {
-    case OB_FORMAT_BGR:
-        cv::Mat(h, w, CV_8UC3, data).copyTo(m_color_buffer);
-        break;
-    case OB_FORMAT_RGB:
-        cv::cvtColor(cv::Mat(h, w, CV_8UC3, data), m_color_buffer, cv::COLOR_RGB2BGR);
-        break;
-    case OB_FORMAT_MJPG:
-        cv::imdecode(cv::Mat(1, color->getDataSize(), CV_8UC1, data), cv::IMREAD_COLOR,
-                     &m_color_buffer);
-        break;
-    case OB_FORMAT_YUYV:
-        cv::cvtColor(cv::Mat(h, w, CV_8UC2, data), m_color_buffer, cv::COLOR_YUV2BGR_YUYV);
-        break;
-    default:
-        std::cout << RED << "Unsupported color format " << format_name(color->getFormat()) << RESET
-                  << std::endl;
-        m_color_buffer = cv::Mat::zeros(h, w, CV_8UC3);
-        break;
-    }
-}
-
-bool orbbec_device::grab(uint32_t timeout_ms)
-{
-    auto fs = m_pipeline->waitForFrameset(timeout_ms);
-    if (!fs)
-        return false;
-
-    if (m_sw_align)
-    {
-        auto aligned = m_sw_align->process(fs);
-        if (!aligned)
+        if (first.status != next_status::timeout)
+        {
+            std::cout << RED << first.message << RESET << std::endl;
             return false;
-        fs = aligned->as<ob::FrameSet>();
+        }
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            std::cout << RED << "Timeout while waiting for first frames." << RESET << std::endl;
+            return false;
+        }
     }
-
-    auto color = fs->getColorFrame();
-    auto depth = fs->getDepthFrame();
-    if (!color || !depth)
-        return false;
-
-    decode_color(color);
-    m_color_frame = color;
-    m_depth_frame = depth;
-    m_color_raw_data = m_color_buffer.data;
-    m_depth_raw_data = depth->getData();
-    return true;
-}
-
-void orbbec_device::receive_data_from_device()
-{
-    for (int i = 0; i < 50; i++)
-    {
-        if (grab(100))
-            return;
-    }
-    std::cout << RED << "No frames received from Orbbec camera for 5s!" << RESET << std::endl;
 }
 
 float orbbec_device::read_depth_scale()
 {
-    // Orbbec depth values are in units of `valueScale` millimeters; gca wants meters per unit.
-    return m_depth_value_scale * 0.001f;
+    return m_frame.description().depth_unit_m;
 }
 
 gca::intrinsics orbbec_device::read_color_intrinsics()
 {
-    auto in = m_color_profile->getIntrinsic();
-    return {in.fx, in.fy, in.cx, in.cy};
+    return m_frame.description().intrinsics;
 }
 
 gca::intrinsics orbbec_device::read_depth_intrinsics()
@@ -340,35 +557,52 @@ gca::extrinsics orbbec_device::read_depth_to_color_extrinsics()
     return read_color_to_depth_extrinsics();
 }
 
+void orbbec_device::receive_data_from_device()
+{
+    const next_result result = next(m_frame);
+    const orbbec_skips &skipped = skips();
+    if (skipped.count != m_skips_shown)
+    {
+        std::cout << YELLOW << "Skipped " << skipped.count - m_skips_shown
+                  << " frame(s), the last because " << skipped.last_reason << RESET << std::endl;
+        m_skips_shown = skipped.count;
+    }
+    if (result.status == next_status::frame)
+    {
+        use_current_frame();
+        return;
+    }
+    // The 5 s are orbbec_frame_time_limit_ms (the static_assert above); AGENTS.md §3 reads this
+    // line as a stop condition.
+    if (result.status == next_status::timeout)
+        std::cout << RED << "No frames received from Orbbec camera for 5s!" << RESET << std::endl;
+    else
+        std::cout << RED << result.message << RESET << std::endl;
+}
+
+void orbbec_device::use_current_frame()
+{
+    const frame_size size = m_frame.description().size;
+    cv::cvtColor(cv::Mat(static_cast<int>(size.height), static_cast<int>(size.width), CV_8UC3,
+                         m_frame.color().data()),
+                 m_color_bgr, cv::COLOR_RGB2BGR);
+    m_color_raw_data = m_color_bgr.data;
+    m_depth_raw_data = m_frame.depth().data();
+}
+
 cv::Mat orbbec_device::set_color_to_cv_mat()
 {
-    return m_color_buffer;
+    return m_color_bgr;
 }
 
 cv::Mat orbbec_device::set_depth_to_cv_mat()
 {
-    return cv::Mat(cv::Size(m_width, m_height), CV_16UC1, (void *)m_depth_raw_data,
+    return cv::Mat(cv::Size(m_width, m_height), CV_16UC1, m_frame.depth().data(),
                    cv::Mat::AUTO_STEP);
 }
 
 void orbbec_device::stop_stream()
 {
-    if (m_pipeline_active)
-    {
-        try
-        {
-            m_pipeline->stop();
-        }
-        catch (ob::Error &e)
-        {
-            std::cout << RED << "Orbbec error: " << e.what() << RESET << std::endl;
-        }
-        m_pipeline_active = false;
-    }
-}
-
-orbbec_device::~orbbec_device()
-{
-    stop_stream();
+    close();
 }
 } // namespace gca

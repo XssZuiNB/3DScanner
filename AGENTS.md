@@ -30,12 +30,13 @@ The tree today: `src/` is six static libraries and the header-only `types`, each
 the ones below it: `types`, `camera`, `orbbec_camera`, `gpu`, `geometry`, `registration`,
 `scan` (`src/CMakeLists.txt`; `gpu` links `camera` for the frame it uploads). There is one
 library per directory, except `src/camera/`, which holds two so that only the Orbbec camera
-links OrbbecSDK: `camera`, the frame and the frame source seam, which the offline tests link
-without OrbbecSDK; and `orbbec_camera`, which puts the camera behind `gca::device`, where
-`orbbec_device` delivers depth aligned to color, so the GPU code sees one resolution and one
-set of intrinsics. The camera is not on the seam yet. `orbbec_viewer` in `apps/` opens the
-camera itself, and `distortion_check` reads the viewer's snapshots without it; there is no
-daemon.
+links OrbbecSDK: `camera`, the frame, the frame source seam and the Orbbec camera's rules that
+need no camera, which the offline tests link without OrbbecSDK; and `orbbec_camera`, where
+`orbbec_device` is the camera as a frame source and delivers depth aligned to color, so the GPU
+code sees one resolution and one set of intrinsics. `orbbec_viewer` in `apps/` still reaches
+the camera through `gca::device`, an adapter in `orbbec_device` that turns its frames back to
+BGR8 for the prototype's GPU code, and `distortion_check` reads the viewer's snapshots without
+it; there is no daemon.
 
 ## 2. Before you run anything
 
@@ -156,7 +157,7 @@ Free choices: the stream size 640x400 at 30 fps [?: a choice; it exists on USB 2
   lack the USB 3 lines. After plugging in, check `lsusb -t` for 5000M.
 * **Gemini 2 L depth defaults to RLE** (compressed) [S: OrbbecSDKConfig.xml, `Gemini2L`],
   and on USB 2 Y14 and RLE are the only depth formats [M 2026-11-13]. `orbbec_device` asks for
-  Y16, Z16, Y14, RLE in that order and refuses at start a depth frame that does not arrive as
+  Y16, Z16, Y14, RLE in that order and refuses every depth frame that does not arrive as
   16 bit; Y14 arrives as 16 bit [M 2026-11-13].
 * **`/tmp` is emptied at boot** [S: `D /tmp` in `/usr/lib/tmpfiles.d/tmp.conf`]: what must outlive a reset goes elsewhere, and
   a scratch directory there is created anew.
@@ -207,8 +208,9 @@ checkers; these are the rules no checker holds.
    |---|---|
    | camera parameters and a frame's description (plain structs), console colors | `src/types/` |
    | the frame; the frame source seam | `src/camera/frame.*`; `src/camera/frame_source.hpp` |
-   | a camera behind one interface | `src/camera/camera_device.hpp` (`gca::device`) |
-   | Orbbec: profiles, alignment, color decoding | `src/camera/orbbec_device.*` |
+   | the prototype's camera interface, which `orbbec_viewer` still uses | `src/camera/camera_device.hpp` (`gca::device`) |
+   | Orbbec: alignment, color decoding, OrbbecSDK's report as plain data | `src/camera/orbbec_device.*` |
+   | Orbbec: the choice of streams, the checks of a frame, the rule for timestamps, the refusals of an opening | `src/camera/orbbec_rules.*` |
    | the GPU image, the pinned host buffer, the pool that closes, a frame's upload, a GPU step's result, their messages | `src/gpu/gpu_image.hpp`, `src/gpu/pinned_buffer.hpp`, `src/gpu/gpu_pool.*`, `src/gpu/gpu_frame.*`, `src/gpu/step_result.hpp`, `src/gpu/gpu_messages.*` |
    | the prototype's frames and camera parameters on the GPU, CUDA helpers, GPU checks | `src/gpu/` |
    | organized points from a frame's depth, their validity mask | `src/geometry/organized_points.*` |
@@ -216,6 +218,7 @@ checkers; these are the rules no checker holds.
    | registration (colored ICP); the 3x3 LDLT solve | `src/registration/` |
    | the files a scan keeps (docs/SCAN_FILES.md); the parameters of each object class | `src/scan/` |
    | the tests' synthetic source of frames, their one renderer, the trajectories it renders along | `tests/synthetic_source.*` |
+   | the tests' copy of a frame, to check a source left it as it was | `tests/frame_copy.hpp` |
 
 5. **Log lines are an interface.** A tool that reads a program's output holds the strings
    it reads: before a log line, a refusal or a dump key changes, grep the tools and tests

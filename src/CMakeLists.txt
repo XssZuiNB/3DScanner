@@ -2,8 +2,8 @@
 #
 # src/CMakeLists.txt - the libraries, one per directory, each linking only the ones below it;
 # types is header only, and camera/ holds two, so that only the Orbbec camera links OrbbecSDK:
-#   types <- camera (the frame and the frame source seam)
-#   types <- orbbec_camera (OrbbecSDK, OpenCV)
+#   types <- camera (the frame, the frame source seam, the Orbbec camera's rules)
+#   camera <- orbbec_camera (OrbbecSDK, OpenCV)
 #   types <- camera <- gpu (CUDA runtime) <- geometry (Eigen) <- registration
 #   types <- scan (Eigen, OpenCV's core)
 # Every library includes from src/ ("gpu/cuda_container.hpp"); types carries that directory.
@@ -15,18 +15,22 @@ add_library(types INTERFACE)
 target_include_directories(types INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # ---------------------------------------------------------------- camera
-# The frame and the frame source seam (camera/frame_source.hpp), built and linked without
-# OrbbecSDK, so that the offline tests and the programs that need no camera load none.
+# The frame and the frame source seam (camera/frame_source.hpp), and the Orbbec camera's
+# decisions that need no camera (camera/orbbec_rules.hpp), built and linked without OrbbecSDK,
+# so that the offline tests and the programs that need no camera load none.
 add_library(
     camera
     STATIC
     camera/frame.cpp
     camera/frame.hpp
     camera/frame_source.hpp
+    camera/orbbec_rules.cpp
+    camera/orbbec_rules.hpp
 )
 target_link_libraries(camera PUBLIC types)
 
-# The Orbbec camera, the one part of the camera module that links OrbbecSDK.
+# The Orbbec camera as a frame source, and behind gca::device for orbbec_viewer: the one part of
+# the camera module that links OrbbecSDK.
 if(GCA_WITH_ORBBEC)
     add_library(
         orbbec_camera
@@ -38,7 +42,7 @@ if(GCA_WITH_ORBBEC)
     target_link_libraries(
         orbbec_camera
         PUBLIC
-        types
+        camera
         opencv_core
         ob::OrbbecSDK
         PRIVATE
