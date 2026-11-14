@@ -3,9 +3,9 @@
 /// The layout of a sequence on disk (GLOSSARY.md, "Sequence"; docs/SEQUENCE_FILE.md), in one
 /// place for its writer (camera/sequence_writer.hpp) and its reader (camera/sequence_reader.hpp):
 /// what tracking said about each frame, the header with the frames' description and the format's
-/// version, each record's kind and lead, the bytes before its pictures, and the order in which
-/// frames follow one another. Every number is
-/// little-endian. The pictures follow a frame's lead as they lie in a frame's buffers
+/// version, the comparison of a frame's description with the header's, each record's kind and
+/// lead, the bytes before its pictures, and the order in which frames follow one another. Every
+/// number is little-endian. The pictures follow a frame's lead as they lie in a frame's buffers
 /// (camera/frame.hpp): depth, then color.
 
 #pragma once
@@ -34,7 +34,7 @@ struct tracking_loss
 {
 };
 
-/// The mark that nothing tracked the frame, as in a sequence the viewer is planned to write.
+/// The mark that nothing tracked the frame, as in a sequence the viewer writes.
 struct not_tracked
 {
 };
@@ -132,4 +132,14 @@ std::optional<frame_lead> decode_frame_lead(
 ///       function is noexcept. Two threads may call it at once.
 std::string order_refusal(std::uint64_t index, std::uint64_t timestamp_us,
                           std::uint64_t index_before, std::uint64_t timestamp_before_us) noexcept;
+
+/// Compares two frames' descriptions bit for bit, as a sequence's header keeps them: the size, each
+/// intrinsic and the depth unit, so that -0 and 0 differ and a NaN equals itself. The writer takes
+/// only frames of its header's description; the offline tests compare the frames read back with
+/// those they rendered.
+/// @param a [in] one description.
+/// @param b [in] the other.
+/// @return whether every field has the same bits.
+/// @note Allocates nothing. Two threads may call it at once.
+bool same_description(const frame_description &a, const frame_description &b) noexcept;
 } // namespace gca

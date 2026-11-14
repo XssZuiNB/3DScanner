@@ -126,6 +126,14 @@ public:
     ///       allocation ends the program (std::terminate): the function is noexcept.
     write_result close() noexcept;
 
+    /// Tells how many frames stand whole in the file: the records the writer's thread has written
+    /// since the last open(), in the order accepted. After close() they are the frames the file
+    /// holds; after a failed write, the frames before the one that failed, so that the frames
+    /// accepted and not counted here were lost with the failure.
+    /// @return the count; 0 before the first open().
+    /// @note Allocates nothing. Takes the queue's lock; waits for nothing else.
+    std::uint64_t frames_written() noexcept;
+
 private:
     /// A place in the queue: a frame and what tracking said about it.
     struct slot
@@ -156,14 +164,15 @@ private:
     std::uint64_t m_last_index = 0;        ///< the index of the frame accepted last
     std::uint64_t m_last_timestamp_us = 0; ///< its timestamp, in µs
 
-    // The lock guards the ring's state, the request to close and the failure, and with them the
-    // hand-over of a slot: the caller fills only a slot outside [head, head + count), the
-    // writer's thread writes only the slot at head while it is counted.
+    // The lock guards the ring's state, the request to close, the failure and the count written,
+    // and with them the hand-over of a slot: the caller fills only a slot outside
+    // [head, head + count), the writer's thread writes only the slot at head while it is counted.
     std::mutex m_mutex;
     std::condition_variable m_wake; ///< wakes the writer's thread: a frame queued, or close()
     std::size_t m_head = 0;         ///< the slot written next
     std::size_t m_count = 0;        ///< the slots that hold a frame not yet written
     bool m_closing = false;         ///< whether close() has been asked
     std::string m_failure;          ///< why a write failed; empty while none has
+    std::uint64_t m_written = 0;    ///< the records written whole since open()
 };
 } // namespace gca

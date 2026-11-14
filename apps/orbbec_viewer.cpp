@@ -7,10 +7,11 @@
 ///
 /// The options are viewer_options.hpp's, whose usage line lists them: --list prints the device's
 /// stream profiles and exits. --frames N stops after N frames and, headless, saves the last one.
-/// A command line with an argument the viewer does not know is refused with the usage line
-/// before anything touches the camera, the GPU or a signal handler. The camera's own lines, its
-/// name and link, the streams chosen, a refusal and the frames it skipped, come from
-/// console_camera here; the loop's lines from viewer_loop.cpp.
+/// --sequence DIR writes every frame taken into a sequence in DIR (viewer_loop.hpp). A command
+/// line with an argument the viewer does not know, or a directory for the sequence it cannot
+/// use, is refused with the usage line before anything touches the camera, the GPU or a signal
+/// handler. The camera's own lines, its name and link, the streams chosen, a refusal and the
+/// frames it skipped, come from console_camera here; the loop's lines from viewer_loop.cpp.
 
 #include "camera/frame.hpp"
 #include "camera/frame_source.hpp"
@@ -29,22 +30,32 @@
 #include <iostream>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace
 {
-/// The flag the viewer's loop reads; SIGINT sets it. The signal may reach any thread of the
-/// program, OrbbecSDK's among them, so a volatile std::sig_atomic_t, which is safe only within
-/// one thread, would race with the loop's read; a lock-free atomic is safe both in a signal
-/// handler and across threads [S: C++20, [support.signal]].
+/// The flag the viewer's loop reads; SIGINT, SIGTERM and SIGHUP set it. The signal may reach any
+/// thread of the program, OrbbecSDK's among them, so a volatile std::sig_atomic_t, which is safe
+/// only within one thread, would race with the loop's read; a lock-free atomic is safe both in a
+/// signal handler and across threads [S: C++20, [support.signal]].
 std::atomic<bool> g_exit_requested{false};
 static_assert(std::atomic<bool>::is_always_lock_free,
               "a signal handler may only touch a lock-free atomic");
 
-/// Sets the flag the viewer's loop reads; installed for SIGINT.
+/// Sets the flag the viewer's loop reads; installed for SIGINT, SIGTERM and SIGHUP.
 /// @param signal_number the signal, unused.
-void on_sigint(int /*signal_number*/)
+void on_stop_signal(int /*signal_number*/)
 {
     g_exit_requested.store(true);
+}
+
+/// Makes Ctrl-C (SIGINT), a kill or a timeout's end (SIGTERM) and a closed terminal or SSH session
+/// (SIGHUP) end the viewer's loop as 'q' does, so that the camera is closed and a sequence gets
+/// its end and its closing line. A second signal only sets the flag again.
+void install_stop_handlers()
+{
+    for (const int signal_number : {SIGINT, SIGTERM, SIGHUP})
+        std::signal(signal_number, on_stop_signal);
 }
 
 /// The Orbbec camera with the viewer's console lines about it. It only prints: every call passes
@@ -134,15 +145,27 @@ void warm_up_gpu()
     cuda_print_devices();
     cuda_warm_up_gpu(0);
 }
+
+/// Names the sequence --sequence asks for; nothing is created until the loop opens it.
+/// @param opt [in] the options.
+/// @return the sequence in the directory opt names; nothing without --sequence.
+std::optional<gca_viewer::sequence_file> name_sequence(const gca_viewer::options &opt)
+{
+    // Built in place: a sequence_file is neither copied nor moved.
+    if (!opt.sequence_directory)
+        return std::nullopt;
+    return std::optional<gca_viewer::sequence_file>(std::in_place, *opt.sequence_directory);
+}
 } // namespace
 
 /// Runs the camera test. Reading the options comes first, before anything touches the camera,
 /// the GPU or a signal handler; then the profiles are listed, or the GPU and the camera are set
-/// up and the viewer's loop runs until quit, SIGINT or the frame limit.
+/// up and the viewer's loop runs until quit, a stop signal or the frame limit, writing the sequence
+/// --sequence asks for.
 /// @param argc the argument count.
 /// @param argv the arguments (viewer_options.hpp).
 /// @return 0 after the list or the loop, 1 when the camera does not open or gives no first frame,
-///     2 when the command line is refused.
+///     or the sequence cannot be created or written, 2 when the command line is refused.
 int main(int argc, char *argv[])
 {
     const std::optional<gca_viewer::options> opt =
@@ -154,15 +177,17 @@ int main(int argc, char *argv[])
         gca::orbbec_device::print_stream_profiles();
         return 0;
     }
-    std::signal(SIGINT, on_sigint);
+    install_stop_handlers();
     warm_up_gpu();
     console_camera camera(opt->fps);
     if (!camera.open({opt->width, opt->height}).opened)
         return 1;
+    std::optional<gca_viewer::sequence_file> sequence = name_sequence(*opt);
     const bool ran = gca_viewer::run_viewer(camera, *opt,
                                             {.report_period = gca_viewer::report_period,
                                              .exit_requested = g_exit_requested,
-                                             .out = std::cout});
+                                             .out = std::cout,
+                                             .sequence = sequence ? &*sequence : nullptr});
     camera.close();
     return ran ? 0 : 1;
 }

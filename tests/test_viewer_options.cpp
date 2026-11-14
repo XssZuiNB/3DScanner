@@ -5,13 +5,20 @@
 /// behaviours kept from before (a value read with atoi, the last repeat winning, an option's name
 /// taken as a value); each kind of argument the viewer does not know, --help and an empty one
 /// among them, and an option without its value are refused with the reason and the usage line,
-/// which names the six options. Needs no GPU and no camera.
+/// which names the seven options. --sequence takes an empty directory that can be written, in a
+/// temporary directory the test removes, and refuses one that does not exist, a file, a
+/// directory that holds a sequence, another file or an empty directory, one that cannot be
+/// listed, one that cannot be written and one that cannot be entered, each with its reason and
+/// the usage line. Needs no GPU and no camera; run as root, the
+/// directories without permissions would be accepted.
 
 #include "check.hpp"
+#include "test_files.hpp"
 #include "viewer_options.hpp"
 
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -125,13 +132,28 @@ void test_accepted()
             std::printf("%s: %ux%u at %u fps, frames %d, headless %d, list %d\n", c.what,
                         r.options->width, r.options->height, r.options->fps, r.options->max_frames,
                         r.options->headless, r.options->list_only);
-        const bool expected =
-            r.options && r.options->width == c.width && r.options->height == c.height &&
-            r.options->fps == c.fps && r.options->max_frames == c.max_frames &&
-            r.options->headless == c.headless && r.options->list_only == c.list_only;
+        const bool expected = r.options && r.options->width == c.width &&
+                              r.options->height == c.height && r.options->fps == c.fps &&
+                              r.options->max_frames == c.max_frames &&
+                              r.options->headless == c.headless &&
+                              r.options->list_only == c.list_only && !r.options->sequence_directory;
         check(expected, (std::string("accepted with the expected options: ") + c.what).c_str());
         check(r.printed.empty(), (std::string("nothing printed: ") + c.what).c_str());
     }
+}
+
+/// Checks that a command line is refused with a reason line and the usage line.
+/// @param what [in] the case, for the check lines.
+/// @param args [in] the arguments after the program's name.
+/// @param reason [in] the reason line expected.
+void check_refused(const std::string &what, const std::vector<std::string> &args,
+                   const std::string &reason)
+{
+    const read_result r = read(args, false);
+    // Printed without its last line end, which check_refusal() adds.
+    const std::string message = r.printed.substr(0, r.printed.find_last_not_of('\n') + 1);
+    check_refusal(what, !r.options.has_value(), message,
+                  r.printed == reason + "\n" + gca_viewer::usage_line() + "\n");
 }
 
 /// A command line the viewer has to refuse, and the reason line it prints before the usage.
@@ -155,24 +177,95 @@ void test_refusals()
         {"--fps without its value",
          {"--width", "320", "--fps"},
          "orbbec_viewer: --fps needs a value"},
+        {"--sequence without its directory",
+         {"--headless", "--sequence"},
+         "orbbec_viewer: --sequence needs a value"},
     };
     for (const refusal_case &refusal : cases)
-    {
-        const read_result r = read(refusal.args, false);
-        // Printed without its last line end, which check_refusal() adds.
-        const std::string message = r.printed.substr(0, r.printed.find_last_not_of('\n') + 1);
-        check_refusal(refusal.what, !r.options.has_value(), message,
-                      r.printed ==
-                          std::string(refusal.reason) + "\n" + gca_viewer::usage_line() + "\n");
-    }
+        check_refused(refusal.what, refusal.args, refusal.reason);
 }
 
-/// The usage line names the six options and nothing else; --help is no option.
+/// --sequence: an empty directory that can be written is taken, the last one given counting;
+/// every other directory is refused with its reason, which names it, and the usage line.
+void test_sequence_directory()
+{
+    const gca_test::temporary_directory root("test_viewer_options");
+    const std::filesystem::path empty = root / "empty";
+    const std::filesystem::path missing = root / "missing";
+    const std::filesystem::path file = root / "a_file";
+    const std::filesystem::path holding_sequence = root / "holding_sequence";
+    const std::filesystem::path holding_file = root / "holding_file";
+    const std::filesystem::path holding_directory = root / "holding_directory";
+    const std::filesystem::path unlisted = root / "unlisted";
+    const std::filesystem::path read_only = root / "read_only";
+    const std::filesystem::path unentered = root / "unentered";
+    for (const std::filesystem::path &directory :
+         {empty, holding_sequence, holding_file, holding_directory, unlisted, read_only, unentered})
+        std::filesystem::create_directory(directory);
+    gca_test::write_bytes(file, "not a directory");
+    gca_test::write_bytes(holding_sequence / "frames.sequence", "a sequence from before");
+    gca_test::write_bytes(holding_file / "notes.txt", "a file of another name");
+    std::filesystem::create_directory(holding_directory / "older");
+    // Permissions: unlisted can be written and entered but not read, read_only read and entered
+    // but not written, unentered read and written but not entered, so that no file can be
+    // created in it.
+    using std::filesystem::perms;
+    std::filesystem::permissions(unlisted, perms::owner_write | perms::owner_exec);
+    std::filesystem::permissions(read_only, perms::owner_read | perms::owner_exec);
+    std::filesystem::permissions(unentered, perms::owner_read | perms::owner_write);
+
+    const read_result taken =
+        read({"--headless", "--sequence", empty.string(), "--frames", "5"}, false);
+    std::printf("--sequence with an empty directory: %s\n",
+                taken.options && taken.options->sequence_directory
+                    ? taken.options->sequence_directory->c_str()
+                    : "refused");
+    check(taken.options && taken.options->sequence_directory == empty && taken.options->headless &&
+              taken.options->max_frames == 5,
+          "--sequence with an empty directory: taken with the other options");
+    check(taken.printed.empty(), "--sequence with an empty directory: nothing printed");
+    const read_result last =
+        read({"--sequence", missing.string(), "--sequence", empty.string()}, false);
+    check(last.options && last.options->sequence_directory == empty && last.printed.empty(),
+          "--sequence given twice: the last one counts, and only it is checked");
+
+    const std::string prefix = "orbbec_viewer: --sequence ";
+    check_refused("--sequence with a missing directory", {"--sequence", missing.string()},
+                  prefix + missing.string() + ": no such directory");
+    check_refused("--sequence with an empty argument", {"--sequence", ""},
+                  prefix + ": no such directory");
+    check_refused("--sequence with a file", {"--sequence", file.string()},
+                  prefix + file.string() + ": is no directory");
+    check_refused("--sequence with a directory that holds a sequence",
+                  {"--sequence", holding_sequence.string(), "--headless"},
+                  prefix + holding_sequence.string() + ": holds something already");
+    check_refused("--sequence with a directory that holds a file of another name",
+                  {"--sequence", holding_file.string()},
+                  prefix + holding_file.string() + ": holds something already");
+    check_refused("--sequence with a directory that holds an empty directory",
+                  {"--sequence", holding_directory.string()},
+                  prefix + holding_directory.string() + ": holds something already");
+    check_refused("--sequence with a directory that cannot be listed",
+                  {"--sequence", unlisted.string()},
+                  prefix + unlisted.string() + ": cannot be read: Permission denied");
+    check_refused("--sequence with a directory that cannot be written",
+                  {"--sequence", read_only.string()},
+                  prefix + read_only.string() + ": cannot be written: Permission denied");
+    check_refused("--sequence with a directory that cannot be entered",
+                  {"--sequence", unentered.string()},
+                  prefix + unentered.string() + ": cannot be written: Permission denied");
+
+    // Given back, so that the temporary directory can be removed.
+    for (const std::filesystem::path &directory : {unlisted, read_only, unentered})
+        std::filesystem::permissions(directory, perms::owner_all);
+}
+
+/// The usage line names the seven options and nothing else; --help is no option.
 void test_usage_line()
 {
     check(gca_viewer::usage_line() == "usage: orbbec_viewer [--list] [--headless] [--frames N] "
-                                      "[--width W] [--height H] [--fps F]",
-          "usage line: the six options");
+                                      "[--width W] [--height H] [--fps F] [--sequence DIR]",
+          "usage line: the seven options");
 }
 } // namespace
 
@@ -182,6 +275,7 @@ int main()
 {
     test_accepted();
     test_refusals();
+    test_sequence_directory();
     test_usage_line();
     return check_summary("test_viewer_options");
 }

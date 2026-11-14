@@ -20,11 +20,33 @@
 /// - the source's end after two frames: its message, and the loop ends;
 /// - a failure before the first frame: its message and "Couldn't start stream!", and the viewer
 ///   gives up.
+/// Without a sequence every report line is in today's form, with nothing after the points. With
+/// one, written into a second temporary directory:
+/// - three frames and a timeout: the sequence read back holds the first frame and the three
+///   after it, bit for bit, each marked as tracked by nothing; the report lines end in
+///   " | queue full 0", the snapshot is as without a sequence, and "Wrote 4 frames to <file>, 0
+///   not written because the writer's queue was full" closes the run; each frame is pushed once;
+/// - the exit flag (Ctrl-C) after a timeout: the last frame taken is still written, and the
+///   closing line follows;
+/// - pushes answered by a full queue (a scripted sink: a real writer is not full at this pace):
+///   each counted in the report after it, the last one's in the closing line, and those frames,
+///   and only those, missing from the sequence;
+/// - a file in the way: the writer's reason, and the viewer gives up after the first frame;
+/// - a push that fails (scripted): its reason with the counts, and the loop ends there; the
+///   sequence closes with the frames before;
+/// - a disk that refuses (a limit on the file size): the writer's reason with the counts, once,
+///   last, the frames lost from the queue counted; the sequence holds the frames before and then
+///   ends early.
 /// Needs the GPU, no camera; links no OrbbecSDK.
 
 #include "camera/frame.hpp"
 #include "camera/frame_source.hpp"
+#include "camera/posix_file.hpp"
+#include "camera/sequence_format.hpp"
+#include "camera/sequence_reader.hpp"
+#include "camera/sequence_writer.hpp"
 #include "check.hpp"
+#include "frame_copy.hpp"
 #include "synthetic_source.hpp"
 #include "test_files.hpp"
 #include "types/frame_description.hpp"
@@ -47,6 +69,7 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <Eigen/Geometry>
@@ -87,6 +110,17 @@ constexpr gca_test::synthetic_box test_box = {0.02, 0.03, 25.0, 0.10, 0.08, 0.06
 /// The bytes of the viewer's PLY for each vertex: float x, y, z and uchar red, green, blue
 /// [S: viewer_loop.cpp, save_ply].
 constexpr std::size_t ply_vertex_bytes = 3 * sizeof(float) + 3;
+
+/// The bytes of one record of a frame without a pose in the sequence: its kind, index and
+/// timestamp, then two bytes of depth and three of color for each pixel
+/// [S: docs/SEQUENCE_FILE.md, "Layout"].
+constexpr std::size_t sequence_record_bytes =
+    1 + 8 + 8 + 5 * static_cast<std::size_t>(test_size.width) * test_size.height;
+
+/// The report line in today's form, the points captured: "fps <number> | grab+decode <number> ms
+/// | gpu point cloud <number> ms | points <count>".
+constexpr const char *report_pattern = R"(fps [0-9.e+]+ \| grab\+decode [0-9.e+-]+ ms \| )"
+                                       R"(gpu point cloud [0-9.e+-]+ ms \| points ([0-9]+))";
 
 static_assert(std::endian::native == std::endian::little,
               "the PLY's floats are read as the host's: the viewer writes them little-endian");
@@ -167,6 +201,106 @@ private:
     int m_no_frames = 0;
 };
 
+/// The message of the push failure a test puts in.
+constexpr const char *test_push_failure = "the test's push failure";
+
+/// The viewer's sequence in a directory of the test's, except the pushes a test names, which are
+/// answered with a full queue or a failure without asking the writer, as scripted_source answers
+/// chosen calls with a timeout. It counts the calls.
+class scripted_sink final : public gca_viewer::sequence_sink
+{
+public:
+    /// Names the sequence; nothing is created until open().
+    /// @param directory [in] the directory the sequence is written to.
+    /// @param full_pushes [in] the calls of push(), counted from 1, that find the queue full.
+    /// @param failing_push [in] the call of push(), counted from 1, that fails with
+    ///        test_push_failure; 0 for none.
+    scripted_sink(const std::filesystem::path &directory, std::vector<int> full_pushes,
+                  int failing_push)
+        : m_file(directory)
+        , m_full_pushes(std::move(full_pushes))
+        , m_failing_push(failing_push)
+    {
+    }
+
+    /// Opens the viewer's sequence.
+    /// @param description [in] the frames' description.
+    /// @return the sequence's result.
+    gca::open_result open(const gca::frame_description &description) noexcept override
+    {
+        return m_file.open(description);
+    }
+
+    /// Counts the call; answers a full queue or the failure on a call the test named, else the
+    /// sequence's result.
+    /// @param in_out [in,out] as the sequence leaves it; as it was when full or failed.
+    /// @return full, the failure, or the sequence's result.
+    gca::push_result push(gca::frame &in_out) noexcept override
+    {
+        m_pushes++;
+        if (std::ranges::find(m_full_pushes, m_pushes) != m_full_pushes.end())
+            return {gca::push_status::full, {}};
+        if (m_pushes == m_failing_push)
+            return {gca::push_status::failure, test_push_failure};
+        return m_file.push(in_out);
+    }
+
+    /// Counts the call and closes the sequence.
+    /// @return the sequence's result.
+    gca::write_result close() noexcept override
+    {
+        m_closes++;
+        return m_file.close();
+    }
+
+    /// Tells how many frames the sequence wrote whole.
+    /// @return the sequence's count.
+    std::uint64_t frames_written() noexcept override
+    {
+        return m_file.frames_written();
+    }
+
+    /// Gives the sequence's file.
+    /// @return its path.
+    const std::filesystem::path &path() const noexcept override
+    {
+        return m_file.path();
+    }
+
+    /// Gives the calls of push() so far.
+    /// @return their count.
+    int pushes() const noexcept
+    {
+        return m_pushes;
+    }
+
+    /// Gives the calls of close() so far.
+    /// @return their count.
+    int closes() const noexcept
+    {
+        return m_closes;
+    }
+
+private:
+    gca_viewer::sequence_file m_file;
+    std::vector<int> m_full_pushes;
+    int m_failing_push;
+    int m_pushes = 0;
+    int m_closes = 0;
+};
+
+/// Lists the files a directory holds.
+/// @param directory [in] the directory.
+/// @return their names, sorted.
+std::vector<std::string> files_in(const std::filesystem::path &directory)
+{
+    std::vector<std::string> names;
+    for (const auto &entry : std::filesystem::directory_iterator(directory))
+        names.push_back(entry.path().filename().string());
+    std::ranges::sort(names);
+    return names;
+}
+
 /// A temporary directory (test_files.hpp) made the current directory while it lives, so that the
 /// viewer's snapshots land there; the directory is removed after the current directory is
 /// changed back.
@@ -195,11 +329,7 @@ public:
     /// @return their names, sorted.
     std::vector<std::string> files() const
     {
-        std::vector<std::string> names;
-        for (const auto &entry : std::filesystem::directory_iterator(m_directory.path()))
-            names.push_back(entry.path().filename().string());
-        std::ranges::sort(names);
-        return names;
+        return files_in(m_directory.path());
     }
 
 private:
@@ -255,12 +385,14 @@ struct run_plan
                                     ///< is set; 0 for never
     /// The least time between two report lines: zero for a report after every frame.
     std::chrono::steady_clock::duration report_period = std::chrono::steady_clock::duration::zero();
+    /// Where the frames taken are written; nullptr for no sequence.
+    gca_viewer::sequence_sink *sequence = nullptr;
 };
 
 /// Runs the viewer headless on the synthetic source in the current directory.
 /// @param options [in] the synthetic source's options.
 /// @param plan [in] the frame limit, the timeouts put in, when the exit flag is set, the report
-///        period.
+///        period, the sequence.
 /// @return what the run gave and printed.
 run_output run(const gca_test::synthetic_source_options &options, const run_plan &plan)
 {
@@ -276,9 +408,11 @@ run_output run(const gca_test::synthetic_source_options &options, const run_plan
     opt.headless = true;
     opt.max_frames = plan.max_frames;
     std::ostringstream printed;
-    output.ran = gca_viewer::run_viewer(
-        source, opt,
-        {.report_period = plan.report_period, .exit_requested = exit_flag, .out = printed});
+    output.ran = gca_viewer::run_viewer(source, opt,
+                                        {.report_period = plan.report_period,
+                                         .exit_requested = exit_flag,
+                                         .out = printed,
+                                         .sequence = plan.sequence});
     output.next_calls = source.next_calls();
 
     const std::regex color_code("\x1b\\[[0-9;]*m");
@@ -298,12 +432,31 @@ run_output run(const gca_test::synthetic_source_options &options, const run_plan
 ///         otherwise.
 std::optional<std::size_t> report_points(const std::string &line)
 {
-    const std::regex report(R"(fps [0-9.e+]+ \| grab\+decode [0-9.e+-]+ ms \| )"
-                            R"(gpu point cloud [0-9.e+-]+ ms \| points ([0-9]+))");
+    const std::regex report(report_pattern);
     std::smatch match;
     if (!std::regex_match(line, match, report))
         return std::nullopt;
     return static_cast<std::size_t>(std::stoull(match[1].str()));
+}
+
+/// A report line's numbers in the form with a sequence.
+struct sequence_report
+{
+    std::size_t points; ///< the point count
+    int queue_full;     ///< the pushes since the last report that found the queue full
+};
+
+/// Reads a report line in the form with a sequence: today's form, then " | queue full <count>".
+/// @param line [in] the line.
+/// @return its numbers; nothing when the line is not in that form.
+std::optional<sequence_report> read_sequence_report(const std::string &line)
+{
+    const std::regex report(std::string(report_pattern) + R"( \| queue full ([0-9]+))");
+    std::smatch match;
+    if (!std::regex_match(line, match, report))
+        return std::nullopt;
+    return sequence_report{static_cast<std::size_t>(std::stoull(match[1].str())),
+                           std::stoi(match[2].str())};
 }
 
 /// Says whether a run of lines are all report lines in today's form.
@@ -648,6 +801,325 @@ void check_no_first_frame()
           "no first frame: the failure's message, then \"Couldn't start stream!\"");
     check(directory.files().empty(), "no first frame: no snapshot");
 }
+
+/// Reads the viewer's sequence back and compares it with the synthetic source's frames, rendered
+/// again.
+/// @param name [in] the case, for the check lines.
+/// @param path [in] the sequence's file.
+/// @param options [in] the synthetic source's options.
+/// @param indices [in] the indices of the frames the sequence should hold, in order.
+/// @param ends_early [in] whether the file should end early after them, its writer cut off; else
+///        its end follows them.
+void check_read_back(const std::string &name, const std::filesystem::path &path,
+                     const gca_test::synthetic_source_options &options,
+                     const std::vector<std::uint64_t> &indices, bool ends_early)
+{
+    std::vector<gca_test::frame_copy> rendered; // the source's frames, by index
+    {
+        gca_test::synthetic_source source(options);
+        check(source.open(test_size).opened, (name + ": the synthetic source opens again").c_str());
+        gca::frame one;
+        const std::size_t count = indices.empty() ? 0 : indices.back() + 1;
+        while (rendered.size() < count && source.next(one).status == gca::next_status::frame)
+            rendered.push_back(gca_test::copy_of(one));
+    }
+    gca::sequence_reader reader(path);
+    const gca::open_result opened = reader.open(test_size);
+    check(opened.opened, (name + ": the sequence opens; " + opened.refusal).c_str());
+    gca::frame read;
+    std::vector<std::uint64_t> read_indices;
+    std::size_t equal = 0;
+    gca::next_result result;
+    while ((result = reader.next(read)).status == gca::next_status::frame)
+    {
+        read_indices.push_back(read.index());
+        const bool same = read.index() < rendered.size() &&
+                          gca_test::holds(read, rendered[read.index()]) &&
+                          gca::same_description(read.description(), options.description) &&
+                          std::holds_alternative<gca::not_tracked>(reader.tracking());
+        equal += same ? 1 : 0;
+    }
+    std::string listed;
+    for (const std::uint64_t index : read_indices)
+        listed += " " + std::to_string(index);
+    std::printf("%s: the sequence holds frames%s, %zu of them equal; then %s\n", name.c_str(),
+                listed.c_str(), equal, result.message.c_str());
+    check(read_indices == indices,
+          (name + ": the sequence holds the frames of the expected indices, in order").c_str());
+    check(equal == read_indices.size(),
+          (name + ": each frame the source's, bit for bit, with its description, marked as "
+                  "tracked by nothing")
+              .c_str());
+    if (ends_early)
+        check(result.status == gca::next_status::failure && reader.ended_early(),
+              (name + ": then the sequence ends early").c_str());
+    else
+        check(result.status == gca::next_status::end, (name + ": then the sequence's end").c_str());
+}
+
+/// The line that closes a sequence written whole.
+/// @param sink [in] the sequence.
+/// @param written [in] the frames written.
+/// @param full [in] the frames not written, the queue being full.
+/// @return the line.
+std::string closing_line(const gca_viewer::sequence_sink &sink, int written, int full)
+{
+    return "Wrote " + std::to_string(written) + " frames to " + sink.path().string() + ", " +
+           std::to_string(full) + " not written because the writer's queue was full";
+}
+
+/// The counts that follow a failure's reason in the line that closes a sequence: "; <written> of
+/// <taken> frames taken written, <lost> lost from the writer's queue, <full> not written because
+/// the writer's queue was full".
+struct failure_counts
+{
+    int written; ///< the frames written whole
+    int taken;   ///< the frames taken from the source
+    int lost;    ///< the frames the writer accepted and lost
+    int full;    ///< the frames not written, the queue being full
+};
+
+/// Reads the line that closes a sequence after a failure.
+/// @param line [in] the line.
+/// @param reason [in] the reason it should start with.
+/// @return its counts; nothing when it is not the reason followed by the counts.
+std::optional<failure_counts> read_failure_line(const std::string &line, const std::string &reason)
+{
+    if (!line.starts_with(reason))
+        return std::nullopt;
+    const std::regex counts(R"(; ([0-9]+) of ([0-9]+) frames taken written, ([0-9]+) lost from )"
+                            R"(the writer's queue, ([0-9]+) not written because the writer's )"
+                            R"(queue was full)");
+    std::smatch match;
+    const std::string rest = line.substr(reason.size());
+    if (!std::regex_match(rest, match, counts))
+        return std::nullopt;
+    return failure_counts{std::stoi(match[1].str()), std::stoi(match[2].str()),
+                          std::stoi(match[3].str()), std::stoi(match[4].str())};
+}
+
+/// Three frames and a timeout with a sequence: the first frame and the three after it written bit
+/// for bit, the report lines with " | queue full 0", the snapshot as without a sequence, the
+/// closing line; each frame pushed once.
+void check_sequence_written()
+{
+    std::printf("three frames and a timeout, with a sequence:\n");
+    const auto options = scene_options(5, gca_test::synthetic_ending::end, "the walk's end");
+    check(options.has_value(), "sequence: walk_around() gives the walk");
+    if (!options)
+        return;
+    const snapshot_directory directory;
+    const gca_test::temporary_directory sequence_directory("test_viewer_loop");
+    scripted_sink sink(sequence_directory.path(), {}, 0);
+    // Call 1 gives the first frame (index 0), 2 frame 1, 3 a timeout, 4 frame 2, 5 frame 3.
+    const run_output output =
+        run(*options, {.max_frames = 3, .timeout_calls = {3}, .stop_after = 0, .sequence = &sink});
+    check(output.ran, "sequence: the viewer ran and wrote the sequence");
+    std::vector<std::optional<sequence_report>> reports_read;
+    for (const std::size_t at : {std::size_t{1}, std::size_t{3}, std::size_t{4}})
+        reports_read.push_back(at < output.lines.size() ? read_sequence_report(output.lines[at])
+                                                        : std::nullopt);
+    const bool lines_as_expected =
+        output.lines.size() == 7 && output.lines[0] == intrinsics_line &&
+        std::ranges::all_of(reports_read,
+                            [](const auto &report) { return report && report->queue_full == 0; }) &&
+        output.lines[2] == timeout_line &&
+        output.lines[5] == "Saved " +
+                               std::to_string(reports_read[2] ? reports_read[2]->points : 0) +
+                               " points to cloud_000.ply" &&
+        output.lines[6] == closing_line(sink, 4, 0);
+    check(lines_as_expected,
+          "sequence: the intrinsics line, reports ending in \" | queue full 0\", the timeout line, "
+          "\"Saved ...\", then \"Wrote 4 frames to <file>, 0 not written because ...\"");
+    check(sink.pushes() == 4 && sink.closes() == 1,
+          "sequence: each of the four frames pushed once, the sequence closed once");
+    check(files_in(sequence_directory.path()) ==
+              std::vector<std::string>{gca_viewer::sequence_file_name},
+          "sequence: the sequence's file alone in its directory");
+    if (!lines_as_expected)
+        return;
+    gca::frame third;
+    check(render_frame(*options, 3, third), "sequence: the third frame rendered again");
+    check_snapshot("cloud_000.ply", third, reports_read[2]->points);
+    check_read_back("sequence", sink.path(), *options, {0, 1, 2, 3}, false);
+}
+
+/// Pushes answered by a full queue: each counted in the report line after it, the last frame's in
+/// the closing line; those frames, and only those, missing from the sequence.
+void check_full_queue()
+{
+    std::printf("pushes that find the queue full:\n");
+    const auto options = scene_options(7, gca_test::synthetic_ending::end, "the walk's end");
+    check(options.has_value(), "full: walk_around() gives the walk");
+    if (!options)
+        return;
+    const snapshot_directory directory;
+    const gca_test::temporary_directory sequence_directory("test_viewer_loop");
+    // Push k is frame k - 1's, made when frame k comes, the sixth after the loop: frames 1 and 3
+    // are counted in the reports after frames 2 and 4, frame 5 in the closing line.
+    scripted_sink sink(sequence_directory.path(), {2, 4, 6}, 0);
+    const run_output output =
+        run(*options, {.max_frames = 5, .timeout_calls = {}, .stop_after = 0, .sequence = &sink});
+    check(output.ran, "full: the viewer ran and wrote the sequence");
+    std::vector<int> counts;
+    std::size_t points = 0;
+    for (std::size_t at = 1; at < output.lines.size() && at <= 5; ++at)
+    {
+        if (const auto report = read_sequence_report(output.lines[at]))
+        {
+            counts.push_back(report->queue_full);
+            points = report->points;
+        }
+    }
+    const bool lines_as_expected =
+        output.lines.size() == 8 && output.lines[0] == intrinsics_line &&
+        counts == std::vector<int>{0, 1, 0, 1, 0} &&
+        output.lines[6] == "Saved " + std::to_string(points) + " points to cloud_000.ply" &&
+        output.lines[7] == closing_line(sink, 3, 3);
+    check(lines_as_expected,
+          "full: reports counting 0, 1, 0, 1, 0 full pushes, \"Saved ...\", then \"Wrote 3 "
+          "frames to <file>, 3 not written because ...\"");
+    check(sink.pushes() == 6 && sink.closes() == 1,
+          "full: each of the six frames pushed once, the sequence closed once");
+    if (!lines_as_expected)
+        return;
+    gca::frame fifth;
+    check(render_frame(*options, 5, fifth), "full: the fifth frame rendered again");
+    check_snapshot("cloud_000.ply", fifth, points);
+    check_read_back("full", sink.path(), *options, {0, 2, 4}, false);
+}
+
+/// The exit flag after a timeout, as Ctrl-C sets it: the loop ends, and the last frame taken is
+/// still written before the closing line.
+void check_exit_with_sequence()
+{
+    std::printf("the exit flag with a sequence:\n");
+    const auto options = scene_options(6, gca_test::synthetic_ending::end, "the walk's end");
+    check(options.has_value(), "exit: walk_around() gives the walk");
+    if (!options)
+        return;
+    const snapshot_directory directory;
+    const gca_test::temporary_directory sequence_directory("test_viewer_loop");
+    scripted_sink sink(sequence_directory.path(), {}, 0);
+    // Calls 1 to 3 give frames 0 to 2, call 4 a timeout, after which the flag is set.
+    const run_output output =
+        run(*options, {.max_frames = -1, .timeout_calls = {4}, .stop_after = 1, .sequence = &sink});
+    check(output.ran, "exit: the viewer ran and wrote the sequence");
+    check(output.next_calls == 4, "exit: no frame taken after the flag");
+    const bool lines_as_expected = output.lines.size() == 5 && output.lines[0] == intrinsics_line &&
+                                   read_sequence_report(output.lines[1]).has_value() &&
+                                   read_sequence_report(output.lines[2]).has_value() &&
+                                   output.lines[3] == timeout_line &&
+                                   output.lines[4] == closing_line(sink, 3, 0);
+    check(lines_as_expected, "exit: the intrinsics line, two reports, the timeout line, then "
+                             "\"Wrote 3 frames to <file>, 0 not written because ...\"");
+    check(sink.pushes() == 3 && sink.closes() == 1,
+          "exit: each of the three frames pushed once, the last after the loop");
+    check_read_back("exit", sink.path(), *options, {0, 1, 2}, false);
+}
+
+/// A file where the sequence goes: the writer's reason after the intrinsics line, and the viewer
+/// gives up before its loop, the file left as it was.
+void check_sequence_in_the_way()
+{
+    std::printf("a file where the sequence goes:\n");
+    const auto options = scene_options(3, gca_test::synthetic_ending::end, "the walk's end");
+    check(options.has_value(), "in the way: walk_around() gives the walk");
+    if (!options)
+        return;
+    const snapshot_directory directory;
+    const gca_test::temporary_directory sequence_directory("test_viewer_loop");
+    gca_viewer::sequence_file sequence(sequence_directory.path());
+    gca_test::write_bytes(sequence.path(), "a sequence from before");
+    const run_output output = run(
+        *options, {.max_frames = 2, .timeout_calls = {}, .stop_after = 0, .sequence = &sequence});
+    check(!output.ran, "in the way: the viewer gives up");
+    check(output.lines ==
+              std::vector<std::string>{intrinsics_line,
+                                       sequence.path().string() + ": cannot create: File exists"},
+          "in the way: the intrinsics line, then the writer's reason");
+    check(output.next_calls == 1, "in the way: no frame taken after the first");
+    check(gca_test::bytes_of(sequence.path()) == "a sequence from before",
+          "in the way: the file left as it was");
+    check(directory.files().empty(), "in the way: no snapshot");
+}
+
+/// A push that fails, the third: its reason, and the loop ends there, the frame that came with it
+/// neither shown nor pushed, and no frame pushed after; the sequence closes whole with the two
+/// frames before, and the viewer reports the failure.
+void check_push_fails()
+{
+    std::printf("a push that fails:\n");
+    const auto options = scene_options(7, gca_test::synthetic_ending::end, "the walk's end");
+    check(options.has_value(), "push fails: walk_around() gives the walk");
+    if (!options)
+        return;
+    const snapshot_directory directory;
+    const gca_test::temporary_directory sequence_directory("test_viewer_loop");
+    scripted_sink sink(sequence_directory.path(), {}, 3);
+    // Push 3 is frame 2's, made when frame 3 comes.
+    const run_output output =
+        run(*options, {.max_frames = 5, .timeout_calls = {}, .stop_after = 0, .sequence = &sink});
+    check(!output.ran, "push fails: the viewer reports the failure");
+    check(output.next_calls == 4, "push fails: no frame taken after the one the push came with");
+    const bool lines_as_expected = output.lines.size() == 4 && output.lines[0] == intrinsics_line &&
+                                   read_sequence_report(output.lines[1]).has_value() &&
+                                   read_sequence_report(output.lines[2]).has_value() &&
+                                   output.lines[3] == std::string(test_push_failure) +
+                                                          "; 2 of 4 frames taken written, 0 lost "
+                                                          "from the writer's queue, 0 not written "
+                                                          "because the writer's queue was full";
+    check(lines_as_expected, "push fails: the intrinsics line, a report after each of two frames, "
+                             "then the push's reason with the counts");
+    check(sink.pushes() == 3 && sink.closes() == 1,
+          "push fails: no push after the failed one, the sequence closed once");
+    check(directory.files().empty(), "push fails: no snapshot");
+    check_read_back("push fails", sink.path(), *options, {0, 1}, false);
+}
+
+/// A disk that refuses the third frame's record: the writer's reason, once and last, no closing
+/// line, and the viewer reports the failure; the sequence holds the first two frames, then ends
+/// early.
+void check_disk_refuses()
+{
+    std::printf("a disk that refuses the third frame:\n");
+    const auto options = scene_options(8, gca_test::synthetic_ending::end, "the walk's end");
+    check(options.has_value(), "disk: walk_around() gives the walk");
+    if (!options)
+        return;
+    const snapshot_directory directory;
+    const gca_test::temporary_directory sequence_directory("test_viewer_loop");
+    scripted_sink sink(sequence_directory.path(), {}, 0);
+    run_output output;
+    {
+        // Room for the header, two records and part of the third [S: docs/SEQUENCE_FILE.md].
+        const gca_test::file_size_limit limit(gca::sequence_header_bytes +
+                                              2 * sequence_record_bytes + 100);
+        output = run(*options,
+                     {.max_frames = -1, .timeout_calls = {}, .stop_after = 0, .sequence = &sink});
+    }
+    const std::string reason =
+        sink.path().string() + ": the write of frame index 2 failed: File too large";
+    check(!output.ran, "disk: the viewer reports the failure");
+    const std::optional<failure_counts> counts =
+        output.lines.empty() ? std::nullopt : read_failure_line(output.lines.back(), reason);
+    if (counts)
+        std::printf("disk: %d of %d frames taken written, %d lost, %d full\n", counts->written,
+                    counts->taken, counts->lost, counts->full);
+    check(counts && counts->written == 2 && counts->lost >= 1 && counts->full == 0 &&
+              counts->taken >= counts->written + counts->lost,
+          "disk: the last line the writer's reason, then frames 0 and 1 written, the frame that "
+          "failed and those queued after it lost");
+    check(std::ranges::count_if(
+              output.lines,
+              [&](const std::string &line) { return line.find(reason) != std::string::npos; }) == 1,
+          "disk: the reason once");
+    check(std::ranges::none_of(output.lines,
+                               [](const std::string &line) { return line.starts_with("Wrote "); }),
+          "disk: no line of a sequence written whole");
+    check(sink.closes() == 1, "disk: the sequence closed once");
+    check_read_back("disk", sink.path(), *options, {0, 1}, true);
+}
 } // namespace
 
 /// Runs the cases.
@@ -661,5 +1133,11 @@ int main()
     check_no_frame(gca_test::synthetic_ending::failure, "failure", "the test's failure");
     check_end();
     check_no_first_frame();
+    check_sequence_written();
+    check_full_queue();
+    check_sequence_in_the_way();
+    check_push_fails();
+    check_disk_refuses();
+    check_exit_with_sequence();
     return gca_test::check_summary("test_viewer_loop");
 }

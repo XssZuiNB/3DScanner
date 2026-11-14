@@ -203,4 +203,14 @@ std::string order_refusal(std::uint64_t index, std::uint64_t timestamp_us,
                std::to_string(timestamp_before_us) + " µs";
     return {};
 }
+
+bool same_description(const frame_description &a, const frame_description &b) noexcept
+{
+    const auto bits = [](float value) { return std::bit_cast<std::uint32_t>(value); };
+    return a.size == b.size && bits(a.intrinsics.fx) == bits(b.intrinsics.fx) &&
+           bits(a.intrinsics.fy) == bits(b.intrinsics.fy) &&
+           bits(a.intrinsics.cx) == bits(b.intrinsics.cx) &&
+           bits(a.intrinsics.cy) == bits(b.intrinsics.cy) &&
+           bits(a.depth_unit_m) == bits(b.depth_unit_m);
+}
 } // namespace gca

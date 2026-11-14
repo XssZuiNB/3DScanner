@@ -6,9 +6,10 @@ build/
 /verify-build.*/
 
 # Data recorded on the hardware stays out of the tree (AGENTS.md §2, "Privacy"):
-# orbbec_viewer's snapshots.
+# orbbec_viewer's snapshots and sequences.
 cloud_*.ply
 cloud_*.png
+*.sequence
 
 # Editor state
 .vscode/

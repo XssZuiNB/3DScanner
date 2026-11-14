@@ -5,8 +5,8 @@
 The format of a sequence (GLOSSARY.md, "Sequence"): the frames a scan took, in order, each
 with its index, timestamp, depth and color, and with the pose tracking gave it, the mark of
 tracking loss or the mark that nothing tracked it; once, the frames' size, intrinsics and depth
-unit and the format's version. The scanner, the viewer and the replay tool are planned to write
-or read it. It has one writer and one reader, in `src/camera/` (`sequence_writer`, `sequence_reader`, the
+unit and the format's version. The viewer writes it (`orbbec_viewer --sequence`, AGENTS.md §3);
+the scanner and the replay tool are planned to write or read it. It has one writer and one reader, in `src/camera/` (`sequence_writer`, `sequence_reader`, the
 layout in `sequence_format`); the frames are stored uncompressed. ctest `sequence` pins the
 format: it writes frames and reads them back bit for bit, and compares the writer's bytes with
 bytes it builds from the tables below. The format has one version: a change to it changes this
@@ -23,15 +23,18 @@ frames in a scan [?: a choice, `sequence_queue_frames` in `src/camera/sequence_w
 frame enters the queue by a swap of buffers, without a copy: the caller gets a frame of the
 same size back, its pixels unspecified. When the queue is full the writer says so and does not
 take the frame. The writer tells whether its queue has room, and room it has told of stays until
-the caller's next frame, because only the caller fills the queue. So a frame enters the
-per-frame path only when the queue has room for it; after tracking it goes to the writer with
-its pose or mark, and no frame is fused that is not written. The writer refuses a frame of another
-size, intrinsics or depth unit than the header's, and a frame whose index or timestamp does not
-increase. `close()` writes every frame the writer took, in order, then the end, and syncs the
-file to disk.
+the caller's next frame, because only the caller fills the queue. In the scanner a frame enters
+the per-frame path only when the queue has room for it; after tracking it goes to the writer with
+its pose or mark, and no frame is fused that is not written. The viewer fuses nothing: it shows
+every frame it takes, pushes it after its last use, and counts the frames a full queue refused
+(AGENTS.md §3). The writer refuses a frame of another size, intrinsics or depth unit than the
+header's (bit for bit, `same_description()` in `src/camera/sequence_format.hpp`), and a frame
+whose index or timestamp does not increase. `close()` writes every frame the writer took, in
+order, then the end, and syncs the file to disk.
 
 A write that fails (a full disk) ends the writing: the writer gives the reason to the next
-push and to `close()`, and the frames still in the queue are lost.
+push and to `close()`, and the frames still in the queue are lost. It tells how many frames it
+wrote whole (`frames_written()`), so that its caller can say how many it lost.
 
 The sequence is written under its own name, not beside it as a scan's other files are
 (docs/SCAN_FILES.md, "Writing and reading"), because an unfinished scan keeps its frames. A
@@ -63,7 +66,7 @@ record's first byte is its kind:
 |---|---|
 | `P` | a frame with a pose: its index and timestamp, the pose, its depth, its color |
 | `L` | a frame in tracking loss: its index and timestamp, its depth, its color |
-| `N` | a frame that nothing tracked, as the viewer is planned to write it: the same as `L` |
+| `N` | a frame that nothing tracked, as the viewer writes every frame: the same as `L` |
 | `E` | nothing: the end, the file's last byte |
 
 | bytes after the kind | what |

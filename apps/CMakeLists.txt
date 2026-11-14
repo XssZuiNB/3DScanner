@@ -6,9 +6,11 @@
 # measurement checkerboard_measure and its command-line reader distortion_options, which the
 # offline tests drive too.
 
-# The viewer's command line, host only: built and tested without the camera backend too.
+# The viewer's command line, host only: built and tested without the camera backend too; camera
+# gives it the system's message for a directory it refuses.
 add_library(viewer_options STATIC viewer_options.cpp viewer_options.hpp)
 target_include_directories(viewer_options PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(viewer_options PRIVATE camera)
 
 # The viewer's loop on any frame source, without the camera backend: the offline tests run it on
 # the synthetic source.

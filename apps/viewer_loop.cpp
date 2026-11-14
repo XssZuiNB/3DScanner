@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: 0BSD
 /// @file viewer_loop.cpp
 /// orbbec_viewer's loop on a frame source: the first frame, the prototype's GPU code, the report
-/// line, the window and the snapshots (see viewer_loop.hpp).
+/// line, the window, the snapshots and the sequence (see viewer_loop.hpp).
 
 #include "viewer_loop.hpp"
 
 #include "camera/frame.hpp"
 #include "camera/orbbec_rules.hpp"
+#include "camera/sequence_format.hpp"
 #include "geometry/point_cloud.hpp"
 #include "gpu/cuda_container.hpp"
 #include "types/camera_param.hpp"
@@ -22,6 +23,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -40,7 +42,7 @@ namespace
 constexpr float min_depth_m = 0.15f; ///< [?: a choice] points nearer than this are dropped
 constexpr float max_depth_m = 3.0f;  ///< [?: a choice] points farther than this are dropped
 
-/// Timings accumulated between two reports.
+/// Timings and counts accumulated between two reports.
 struct frame_stats
 {
     /// When these timings started: the loop's start or the last report.
@@ -48,14 +50,26 @@ struct frame_stats
     int frames = 0;       ///< the frames delivered since
     double grab_ms = 0.0; ///< their grab times summed: next() and the conversion to BGR8, in ms
     double gpu_ms = 0.0;  ///< their GPU times summed: upload, point cloud and the wait, in ms
+    int queue_full = 0;   ///< the pushes since that found the sequence writer's queue full
 };
 
 /// The current frame, and its color as the prototype's GPU code, OpenCV's window and its PNG file
-/// take it.
+/// take it, and the frame the next one is taken into.
 struct pictures
 {
-    gca::frame frame;  ///< the current frame, RGB8; the source fills it
-    cv::Mat color_bgr; ///< its color picture as BGR8, converted once per frame
+    gca::frame frame;  ///< the current frame, RGB8: the last delivered, shown and saved
+    gca::frame spare;  ///< the frame the source fills; swapped with frame when one is delivered
+    cv::Mat color_bgr; ///< the current frame's color picture as BGR8, converted once per frame
+};
+
+/// The sequence the loop writes, and what its pushes gave.
+struct sequence_state
+{
+    sequence_sink *sink = nullptr; ///< where the frames go, open; nullptr for no sequence
+    std::uint64_t taken = 0;       ///< the frames taken from the source, the first included
+    std::uint64_t accepted = 0;    ///< the frames the sink took
+    std::uint64_t full = 0;        ///< the frames it did not take, its queue being full
+    std::string failure;           ///< the reason of the push that failed; empty while none has
 };
 
 /// The GPU side of the loop, set up once from the first frame: its parameters and the buffers
@@ -70,7 +84,7 @@ struct gpu_buffers
 /// What one call of next() gave the loop.
 enum class taken
 {
-    frame, ///< a frame, converted
+    frame, ///< a frame, in the spare frame
     none,  ///< a timeout or a failure, its line printed; the loop goes on
     end,   ///< the source's end, its message printed; the loop ends
 };
@@ -85,15 +99,20 @@ cv::Mat depth_picture(gca::frame &frame)
                    frame.depth().data());
 }
 
-/// Converts the current frame's color picture from RGB8 to BGR8, into the picture that stays.
+/// Converts the current frame's color picture from RGB8 to BGR8, into the picture that stays,
+/// timed as part of the grab.
 /// @param current [in,out] the frame, read; color_bgr gains its color, allocated only when its
 ///        size changes.
-void convert_color(pictures &current)
+/// @param stats [in,out] gains the conversion's time as grab time.
+void convert_color(pictures &current, frame_stats &stats)
 {
+    const auto t0 = std::chrono::steady_clock::now();
     const gca::frame_size size = current.frame.description().size;
     const cv::Mat rgb(static_cast<int>(size.height), static_cast<int>(size.width), CV_8UC3,
                       current.frame.color().data());
     cv::cvtColor(rgb, current.color_bgr, cv::COLOR_RGB2BGR);
+    stats.grab_ms +=
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
 /// Writes points as a binary little-endian PLY with float xyz and uchar rgb.
@@ -158,12 +177,15 @@ int show_frames(pictures &current)
 }
 
 /// Prints frame rate, mean grab and GPU times and the point count once the report period has
-/// passed since the last report, then resets.
-/// @param stats [in,out] the accumulated timings; reset after a report.
+/// passed since the last report, with a sequence also the pushes that found its queue full, then
+/// resets.
+/// @param stats [in,out] the accumulated timings and counts; reset after a report.
 /// @param points [in] the current point count.
+/// @param writing [in] whether a sequence is written: only then the line ends in " | queue full
+///        <count>", so that without one it is the line docs/HARDWARE.md reads, unchanged.
 /// @param period [in] the least time between two reports.
 /// @param out [in,out] where the report line is printed.
-void report_if_due(frame_stats &stats, std::size_t points,
+void report_if_due(frame_stats &stats, std::size_t points, bool writing,
                    std::chrono::steady_clock::duration period, std::ostream &out)
 {
     const auto now = std::chrono::steady_clock::now();
@@ -171,8 +193,10 @@ void report_if_due(frame_stats &stats, std::size_t points,
         return;
     const double seconds = std::chrono::duration<double>(now - stats.since).count();
     out << "fps " << stats.frames / seconds << " | grab+decode " << stats.grab_ms / stats.frames
-        << " ms | gpu point cloud " << stats.gpu_ms / stats.frames << " ms | points " << points
-        << std::endl;
+        << " ms | gpu point cloud " << stats.gpu_ms / stats.frames << " ms | points " << points;
+    if (writing)
+        out << " | queue full " << stats.queue_full;
+    out << std::endl;
     stats = frame_stats{};
 }
 
@@ -251,18 +275,17 @@ gpu_buffers make_gpu_buffers(const gca::frame_description &description)
     return {gpu_camera_param(description), {size.width, size.height}, {size.width, size.height}};
 }
 
-/// Takes the next frame and converts its color to BGR8, timed as the grab; prints why when there
-/// is no frame.
+/// Takes the next frame into the spare frame, timed as part of the grab; prints why when there is
+/// no frame.
 /// @param source [in,out] the open source.
-/// @param current [in,out] gains the frame and its BGR8 color when one came; else left as it was.
-/// @param stats [in,out] gains the grab time of a frame that came.
+/// @param into [out] the spare frame; filled when a frame came, else left as it was.
+/// @param stats [in,out] gains the time of next() for a frame that came.
 /// @param out [in,out] where a timeout, a failure or the end is printed.
 /// @return what next() gave.
-taken take_frame(gca::frame_source &source, pictures &current, frame_stats &stats,
-                 std::ostream &out)
+taken take_frame(gca::frame_source &source, gca::frame &into, frame_stats &stats, std::ostream &out)
 {
     const auto t0 = std::chrono::steady_clock::now();
-    const gca::next_result result = source.next(current.frame);
+    const gca::next_result result = source.next(into);
     switch (result.status)
     {
     case gca::next_status::frame:
@@ -277,10 +300,64 @@ taken take_frame(gca::frame_source &source, pictures &current, frame_stats &stat
         out << result.message << std::endl;
         return taken::end;
     }
-    convert_color(current);
     stats.grab_ms +=
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     return taken::frame;
+}
+
+/// Pushes a frame whose last use is over to the sequence, when there is one and no push has
+/// failed, and counts what the push gave.
+/// @param sequence [in,out] the sequence; gains the frame's count, or the push's reason.
+/// @param done [in,out] the frame, shown and saved for the last time; swapped for a frame of the
+///        same description, its pixels unspecified, when the sink took it; else as it was.
+/// @param stats [in,out] gains a push that found the queue full.
+/// @note Allocates nothing unless the push fails. Takes the writer's lock; waits for nothing
+///       else.
+void push_frame(sequence_state &sequence, gca::frame &done, frame_stats &stats)
+{
+    if (sequence.sink == nullptr || !sequence.failure.empty())
+        return;
+    gca::push_result pushed = sequence.sink->push(done);
+    switch (pushed.status)
+    {
+    case gca::push_status::accepted:
+        sequence.accepted++;
+        break;
+    case gca::push_status::full:
+        sequence.full++;
+        stats.queue_full++;
+        break;
+    case gca::push_status::failure:
+        sequence.failure = std::move(pushed.reason);
+        break;
+    }
+}
+
+/// Closes the sequence and prints how it went, in one line: "Wrote <accepted> frames to <file>,
+/// <full> not written because the writer's queue was full"; or, when the close or a push failed,
+/// the reason of the close, else of the push (close() repeats a failed write's), then "; <written>
+/// of <taken> frames taken written, <lost> lost from the writer's queue, <full> not written
+/// because the writer's queue was full", so that no frame is lost unseen.
+/// @param sequence [in,out] the open sequence; closed.
+/// @param out [in,out] where the line is printed.
+/// @return whether the sequence holds every frame the sink took and its end, synced to disk, and
+///         no push failed.
+bool close_sequence(sequence_state &sequence, std::ostream &out)
+{
+    const gca::write_result closed = sequence.sink->close();
+    const std::string &reason = closed.written ? sequence.failure : closed.reason;
+    if (reason.empty())
+    {
+        out << "Wrote " << sequence.accepted << " frames to " << sequence.sink->path().string()
+            << ", " << sequence.full << " not written because the writer's queue was full"
+            << std::endl;
+        return true;
+    }
+    const std::uint64_t written = sequence.sink->frames_written();
+    out << RED << reason << "; " << written << " of " << sequence.taken << " frames taken written, "
+        << sequence.accepted - written << " lost from the writer's queue, " << sequence.full
+        << " not written because the writer's queue was full" << RESET << std::endl;
+    return false;
 }
 
 /// Uploads the current frame and builds its point cloud on the GPU, and adds the GPU time and the
@@ -321,15 +398,19 @@ int read_key(pictures &current, taken what)
     return what == taken::frame ? show_frames(current) : cv::waitKey(1);
 }
 
-/// Grabs, builds and shows frames until quit, the exit flag, the frame limit or the source's end;
-/// 's', or the last frame of a headless run with a frame limit, saves a snapshot.
+/// Grabs, builds and shows frames until quit, the exit flag, the frame limit, the source's end or
+/// a failed push to the sequence; 's', or the last frame of a headless run with a frame limit,
+/// saves a snapshot. Each frame taken goes to the sequence once its successor has come, the last
+/// one after the loop.
 /// @param source [in,out] the open source.
-/// @param current [in,out] the current frame, reused for every frame.
+/// @param current [in,out] the first frame, set up from, then each delivered frame in turn; the
+///        spare frame of the first frame's description.
 /// @param gpu [in,out] the GPU buffers.
+/// @param sequence [in,out] the sequence, open, or none; gains every frame taken.
 /// @param opt [in] the options.
 /// @param context [in] the report period, the exit flag and where the lines go.
-void run_loop(gca::frame_source &source, pictures &current, gpu_buffers &gpu, const options &opt,
-              const run_context &context)
+void run_loop(gca::frame_source &source, pictures &current, gpu_buffers &gpu,
+              sequence_state &sequence, const options &opt, const run_context &context)
 {
     frame_stats stats;
     int frame = 0;
@@ -338,14 +419,23 @@ void run_loop(gca::frame_source &source, pictures &current, gpu_buffers &gpu, co
 
     while (!context.exit_requested.load() && (opt.max_frames < 0 || frame < opt.max_frames))
     {
-        const taken what = take_frame(source, current, stats, context.out);
+        const taken what = take_frame(source, current.spare, stats, context.out);
         if (what == taken::end)
             break;
         if (what == taken::frame)
         {
+            sequence.taken++;
+            // The frame before has been shown and saved for the last time: it goes to the
+            // sequence, and the new one takes its place.
+            push_frame(sequence, current.frame, stats);
+            if (!sequence.failure.empty())
+                break;
+            std::swap(current.frame, current.spare);
+            convert_color(current, stats);
             cloud = build_point_cloud(current, gpu, stats);
             frame++;
-            report_if_due(stats, cloud->points_number(), context.report_period, context.out);
+            report_if_due(stats, cloud->points_number(), sequence.sink != nullptr,
+                          context.report_period, context.out);
         }
 
         const int key = opt.headless ? -1 : read_key(current, what);
@@ -356,8 +446,39 @@ void run_loop(gca::frame_source &source, pictures &current, gpu_buffers &gpu, co
         if ((key == 's' && cloud) || last_headless_frame)
             save_snapshot(current, *cloud, saved++, context.out);
     }
+    push_frame(sequence, current.frame, stats);
 }
 } // namespace
+
+sequence_file::sequence_file(const std::filesystem::path &directory)
+    : m_path(directory / sequence_file_name)
+{
+}
+
+gca::open_result sequence_file::open(const gca::frame_description &description) noexcept
+{
+    return m_writer.open(m_path, description, gca::sequence_queue_frames);
+}
+
+gca::push_result sequence_file::push(gca::frame &in_out) noexcept
+{
+    return m_writer.push(in_out, gca::not_tracked{});
+}
+
+gca::write_result sequence_file::close() noexcept
+{
+    return m_writer.close();
+}
+
+std::uint64_t sequence_file::frames_written() noexcept
+{
+    return m_writer.frames_written();
+}
+
+const std::filesystem::path &sequence_file::path() const noexcept
+{
+    return m_path;
+}
 
 bool run_viewer(gca::frame_source &source, const options &opt, const run_context &context)
 {
@@ -367,9 +488,24 @@ bool run_viewer(gca::frame_source &source, const options &opt, const run_context
         context.out << RED << "Couldn't start stream!" << RESET << std::endl;
         return false;
     }
-    print_intrinsics(current.frame.description(), context.out);
-    gpu_buffers gpu = make_gpu_buffers(current.frame.description());
-    run_loop(source, current, gpu, opt, context);
-    return true;
+    const gca::frame_description description = current.frame.description();
+    print_intrinsics(description, context.out);
+    sequence_state sequence;
+    if (context.sequence != nullptr)
+    {
+        const gca::open_result opened = context.sequence->open(description);
+        if (!opened.opened)
+        {
+            context.out << RED << opened.refusal << RESET << std::endl;
+            return false;
+        }
+        sequence.sink = context.sequence;
+        sequence.taken = 1;
+    }
+    // Sized before the loop, so that its first frame allocates no frame.
+    current.spare.prepare(description, 0, 0);
+    gpu_buffers gpu = make_gpu_buffers(description);
+    run_loop(source, current, gpu, sequence, opt, context);
+    return sequence.sink == nullptr || close_sequence(sequence, context.out);
 }
 } // namespace gca_viewer

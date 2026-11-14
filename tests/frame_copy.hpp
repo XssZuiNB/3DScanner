@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: 0BSD
 /// @file frame_copy.hpp
 /// A copy of a frame's index, timestamp and pixels, for the tests that check a frame source left
-/// the caller's frame as it was: a frame itself cannot be copied (camera/frame.hpp). Header only.
+/// the caller's frame as it was or compare frames read back with frames rendered: a frame itself
+/// cannot be copied (camera/frame.hpp). Header only.
 
 #pragma once
 

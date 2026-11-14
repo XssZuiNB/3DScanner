@@ -10,13 +10,14 @@
 /// - The writer writes the bytes the document lays out, built here from its tables.
 /// - A queue of 2 frames reports full to the caller, through has_room() and push(); a push after
 ///   has_room() said yes is accepted; after close() every accepted frame is on disk, in order,
-///   and no other.
+///   and no other, and frames_written() counts them.
 /// - The writer refuses, as a value with the reason: not open, a queue of 0, a file that cannot
 ///   be created (it exists, no directory, a directory it cannot write), a header the disk
 ///   refuses (no file is left), a second open, a frame of other intrinsics or another depth
 ///   unit, an index or a timestamp that does not increase; a frame refused or not taken is left
 ///   as it was. A disk that refuses a write (a file size limit) reaches push() and close() as the
-///   reason, also when it refuses the end alone, and the frames written before it are read back.
+///   reason, also when it refuses the end alone, and the frames written before it are read back
+///   and counted by frames_written().
 /// - The reader refuses, as a value with the reason: a missing file, a file that is no sequence,
 ///   another version, a header cut short, another size; a file cut at every byte gives every
 ///   whole frame before the cut, then the early end with the record's number, which
@@ -89,18 +90,6 @@ pushed_frame copy_of(const gca::frame &one_frame, const gca::frame_tracking &tra
             {one_frame.depth().begin(), one_frame.depth().end()},
             {one_frame.color().begin(), one_frame.color().end()},
             tracking};
-}
-
-/// Whether two descriptions have the same bits.
-/// @param a [in] one description.
-/// @param b [in] the other.
-/// @return whether size, intrinsics and depth unit are equal bit for bit.
-bool same_description(const gca::frame_description &a, const gca::frame_description &b)
-{
-    return a.size == b.size && same_bits(a.intrinsics.fx, b.intrinsics.fx) &&
-           same_bits(a.intrinsics.fy, b.intrinsics.fy) &&
-           same_bits(a.intrinsics.cx, b.intrinsics.cx) &&
-           same_bits(a.intrinsics.cy, b.intrinsics.cy) && same_bits(a.depth_unit_m, b.depth_unit_m);
 }
 
 /// Whether two trackings are the same: the same mark, or poses with the same bits.
@@ -273,6 +262,7 @@ void test_round_trip(const temporary_directory &directory)
         check(accepted == pushed.size(), "walk: every push accepted");
         const gca::write_result closed = writer.close();
         check(closed.written, ("walk: the writer closed; " + closed.reason).c_str());
+        check(writer.frames_written() == pushed.size(), "walk: every frame counted as written");
     }
     check_read_back("walk", path, walk_size, pushed, description);
 
@@ -450,6 +440,8 @@ void test_full_queue(const temporary_directory &directory)
         // Closed at once after the pushes back to back, with the queue full.
         const gca::write_result closed = writer.close();
         check(closed.written, ("full queue: the writer closed; " + closed.reason).c_str());
+        check(writer.frames_written() == accepted.size(),
+              "full queue: every accepted frame counted as written");
         check(!writer.has_room(), "full queue: no room once the writer is closed");
         const gca::push_result after = writer.push(one_frame, gca::not_tracked{});
         check_refusal("full queue, a push after close()", after.status == gca::push_status::failure,
@@ -626,9 +618,11 @@ void test_disk_refuses(const temporary_directory &directory)
     std::vector<pushed_frame> pushed;
     gca::push_result refused;
     gca::write_result closed;
+    std::uint64_t written = 0;
     {
         const gca_test::file_size_limit limit(limit_bytes);
         gca::sequence_writer writer;
+        check(writer.frames_written() == 0, "a disk that refuses: none written before open()");
         check(writer.open(path, small, 4).opened, "a disk that refuses: the writer opened");
         std::uint64_t index = 0;
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -647,7 +641,13 @@ void test_disk_refuses(const temporary_directory &directory)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         closed = writer.close();
+        written = writer.frames_written();
     }
+    std::printf("a disk that refuses: %zu frames accepted, %llu written\n", pushed.size(),
+                static_cast<unsigned long long>(written));
+    check(written == 1 && pushed.size() > written,
+          "a disk that refuses: the frame before the failure counted as written, the accepted "
+          "frames after it not");
     check_refusal("a disk that refuses, push()", refused.status == gca::push_status::failure,
                   refused.reason,
                   refused.reason.find(": the write of frame index 1 failed: File too large") !=
@@ -686,6 +686,8 @@ void test_disk_refuses(const temporary_directory &directory)
                   "an end the disk refuses: a frame accepted");
         }
         end_refused = writer.close();
+        check(writer.frames_written() == 2,
+              "an end the disk refuses: both frames counted as written");
     }
     check_refusal("an end the disk refuses, close()", !end_refused.written, end_refused.reason,
                   end_refused.reason ==

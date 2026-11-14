@@ -38,8 +38,9 @@ tests link without OrbbecSDK; and `orbbec_camera`, where `orbbec_device` is the 
 frame source and delivers depth aligned to color, so the GPU code sees one resolution and one
 set of intrinsics. `orbbec_viewer` in `apps/` runs its loop (`apps/viewer_loop.*`) on the
 camera as a frame source, and the offline tests run the same loop on their synthetic source;
-the loop turns each frame's color to BGR8 for the prototype's GPU code. `distortion_check`
-reads the viewer's snapshots without the camera; there is no daemon.
+the loop turns each frame's color to BGR8 for the prototype's GPU code and, with `--sequence`,
+writes the frames it takes into a sequence. `distortion_check` reads the viewer's snapshots
+without the camera; there is no daemon.
 
 ## 2. Before you run anything
 
@@ -76,8 +77,9 @@ The left column looks diagnostic and often is not.
 | `tools/fetch_deps.sh` | no hardware access; downloads into `~/.local/share/3dscanner` |
 | `build/apps/distortion_check` | no hardware access: reads a snapshot's two PNG files and prints its numbers; a command line it refuses exits 2 with the reason and the usage [S: distortion_check.cpp; the refusals: ctest `distortion_options`]; links neither OrbbecSDK nor CUDA [M 2026-11-14: `ldd`] |
 | `build/apps/orbbec_viewer --list` | opens the camera, reads its info and stream profiles, starts no stream [S: orbbec_device.cpp]; what OrbbecSDK sends on open is unverified [?] |
-| `build/apps/orbbec_viewer` with an argument it does not know (`--help` too) or an option without its value | prints the reason and the usage line and exits 2; `main` reads the options before it opens the camera or the GPU or installs a signal handler [S: orbbec_viewer.cpp, `main`; the refusals: ctest `viewer_options`]. The load-time code of OrbbecSDK, OpenCV and CUDA runs before `main`; what it does is unverified [?] |
+| `build/apps/orbbec_viewer` with an argument it does not know (`--help` too), an option without its value, or a `--sequence` directory that does not exist, holds something or cannot be read or written | prints the reason and the usage line and exits 2; `main` reads the options, and looks at that directory without changing it, before it opens the camera or the GPU or installs a signal handler [S: orbbec_viewer.cpp, `main`; the refusals: ctest `viewer_options`]. The load-time code of OrbbecSDK, OpenCV and CUDA runs before `main`; what it does is unverified [?] |
 | `build/apps/orbbec_viewer [--frames N]` | streams color and depth with depth-to-color alignment; sets no option of the camera [S]; `s`, or the last of N frames headless, writes `cloud_NNN.ply`, `.color.png`, `.depth.png` into the current directory: run it in a scratch directory. N counts delivered frames: a timeout or a failure prints its line, counts no frame and the loop goes on [S: viewer_loop.cpp; ctest `viewer_loop`] |
+| `build/apps/orbbec_viewer --sequence DIR [...]` | as above, and writes every frame it takes, the first included, unchanged, into one file, `DIR/frames.sequence` (docs/SEQUENCE_FILE.md), each marked as tracked by nothing. These are frames of the camera, so DIR lies in the user's home, outside the repository and every worktree, and not under `/tmp`, which is emptied at boot (§2, "Privacy"; §6), e.g. `~/3dscanner-sequences/<name>/` [?: a choice]; it is not the current directory, where the snapshots and OrbbecSDK's log go. About 38 MB/s at 640x400 and 154 MB/s at 1280x800, 30 fps, so a 5-minute walk takes about 12 GB and 46 GB [S: computed, docs/SEQUENCE_FILE.md, "Layout"]. The report line goes on with ` \| queue full <count>`, the frames since the last report the writer's queue had no room for, which were shown but not written; without `--sequence` the line is unchanged. The run ends on the frame limit, `q`, ESC, Ctrl-C (SIGINT), SIGTERM (a kill, `timeout`) or SIGHUP (a closed terminal or SSH session): all four signals set the loop's exit flag, so the last frame is written and the file gets its end [S: orbbec_viewer.cpp, `install_stop_handlers`; the exit flag: ctest `viewer_loop`]. Then `Wrote <A> frames to DIR/frames.sequence, <F> not written because the writer's queue was full`; a file that cannot be created prints the writer's reason, and a failed write or close its reason followed by `; <W> of <T> frames taken written, <L> lost from the writer's queue, <F> not written because the writer's queue was full`, each with exit 1 [S: viewer_loop.cpp; ctest `viewer_loop`] |
 | any program using OrbbecSDK | writes `Log/OrbbecSDK.log.txt` into the current directory [M 2026-11-13]; closing it hands the camera back to uvcvideo, which logs the enumeration lines again (docs/HARDWARE.md) |
 | OrbbecSDK's examples, OrbbecViewer | not built here; `ob_device_firmware_update`, `ob_device_optional_depth_presets_update`, `ob_multi_devices_firmware_update` and OrbbecViewer's firmware and preset pages WRITE the camera's flash |
 
@@ -211,7 +213,7 @@ checkers; these are the rules no checker holds.
    |---|---|
    | camera parameters, a frame's description and the camera's pose (plain structs), console colors | `src/types/` |
    | the frame; the frame source seam | `src/camera/frame.*`; `src/camera/frame_source.hpp` |
-   | the sequence on disk (docs/SEQUENCE_FILE.md): its layout, writer and reader; the POSIX file calls the writers and readers share | `src/camera/sequence_*`; `src/camera/posix_file.*` |
+   | the sequence on disk (docs/SEQUENCE_FILE.md): its layout, writer and reader, the comparison of two frames' descriptions bit for bit (`src/camera/sequence_format.*`); the POSIX file calls the writers and readers share | `src/camera/sequence_*`; `src/camera/posix_file.*` |
    | Orbbec: alignment, color decoding, OrbbecSDK's report as plain data | `src/camera/orbbec_device.*` |
    | Orbbec: the choice of streams, the checks of a frame, the rule for timestamps, the refusals of an opening | `src/camera/orbbec_rules.*` |
    | the GPU array, the one owner of device memory; the GPU image, an array of pixels; the pinned host buffer, the pool that closes, a frame's upload, a GPU step's result, their messages, a stage kernel's launch | `src/gpu/gpu_array.hpp`, `src/gpu/gpu_image.hpp`, `src/gpu/pinned_buffer.hpp`, `src/gpu/gpu_pool.*`, `src/gpu/gpu_frame.*`, `src/gpu/step_result.hpp`, `src/gpu/gpu_messages.*`, `src/gpu/kernel_launch.cuh` |
@@ -222,7 +224,7 @@ checkers; these are the rules no checker holds.
    | point clouds: creation, filters, normals, search; the 3x3 eigensolver, `float3` arithmetic and its Eigen conversion | `src/geometry/` |
    | registration (colored ICP); the 3x3 LDLT solve | `src/registration/` |
    | the files a scan keeps (docs/SCAN_FILES.md); the parameters of each object class | `src/scan/` |
-   | `orbbec_viewer`'s loop on a frame source: the first frame, the report line, the window, the snapshots | `apps/viewer_loop.*` |
+   | `orbbec_viewer`'s loop on a frame source: the first frame, the report line, the window, the snapshots, the sequence it writes | `apps/viewer_loop.*` |
    | the tests' synthetic source of frames, their one renderer, the trajectories it renders along | `tests/synthetic_source.*` |
    | the tests' copy of a frame, to check a source left it as it was | `tests/frame_copy.hpp` |
    | the stages' test frames: the camera's stream sizes and intrinsics, the tabletop sphere, a scene's frames rendered | `tests/stage_frames.hpp` |
@@ -251,7 +253,7 @@ checkers; these are the rules no checker holds.
 | `GLOSSARY.md`, `docs/adr/` | the scanner's terms; the decisions in force and why |
 | `docs/SCAN_FILES.md` | the formats of the files a scan keeps: the models (PLY), the trajectory, the parameters |
 | `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md`, `normals.md` and `sparse-tsdf.md` |
-| `docs/SEQUENCE_FILE.md` | the format of a sequence: a scan's frames with their poses, which the scanner, the viewer and the replay tool are planned to write or read |
+| `docs/SEQUENCE_FILE.md` | the format of a sequence: a scan's frames with their poses, which the viewer writes and the scanner and the replay tool are planned to write or read |
 | `docs/agents/` | how the workflow skills in `.claude/skills/` find the tracker and the domain docs |
 
 Rules for these documents: each opens with the notice line above; plain, concise English,

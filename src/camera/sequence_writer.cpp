@@ -5,7 +5,6 @@
 
 #include "camera/sequence_writer.hpp"
 
-#include <bit>
 #include <cerrno>
 #include <string_view>
 #include <system_error>
@@ -27,20 +26,6 @@ template <typename T> std::string_view bytes_of(std::span<const T> picture)
     return {reinterpret_cast<const char *>(picture.data()), picture.size_bytes()};
 }
 
-/// Whether two descriptions are the same bit for bit, so that a NaN equals itself and -0 differs
-/// from 0.
-/// @param a [in] one description.
-/// @param b [in] the other.
-/// @return whether size, intrinsics and depth unit have the same bits.
-bool same_description(const frame_description &a, const frame_description &b)
-{
-    const auto bits = [](float value) { return std::bit_cast<std::uint32_t>(value); };
-    return a.size == b.size && bits(a.intrinsics.fx) == bits(b.intrinsics.fx) &&
-           bits(a.intrinsics.fy) == bits(b.intrinsics.fy) &&
-           bits(a.intrinsics.cx) == bits(b.intrinsics.cx) &&
-           bits(a.intrinsics.cy) == bits(b.intrinsics.cy) &&
-           bits(a.depth_unit_m) == bits(b.depth_unit_m);
-}
 } // namespace
 
 sequence_writer::~sequence_writer()
@@ -87,6 +72,7 @@ open_result sequence_writer::open(const std::filesystem::path &path,
     m_count = 0;
     m_closing = false;
     m_failure.clear();
+    m_written = 0;
     m_accepted_any = false;
     try
     {
@@ -135,6 +121,12 @@ push_result sequence_writer::push(frame &in_out, const frame_tracking &tracking)
     }
     m_wake.notify_one();
     return {push_status::accepted, {}};
+}
+
+std::uint64_t sequence_writer::frames_written() noexcept
+{
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    return m_written;
 }
 
 bool sequence_writer::has_room() noexcept
@@ -199,6 +191,7 @@ void sequence_writer::write_queue() noexcept
             m_count = 0;
             return;
         }
+        m_written++;
         m_head = (m_head + 1) % m_slots.size();
         m_count--;
     }
