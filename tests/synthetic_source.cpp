@@ -142,16 +142,47 @@ gca::next_status ending_status(synthetic_ending ending)
     return gca::next_status::failure;
 }
 
-/// Renders the known surfaces as the camera sees them into a prepared frame, by the one pinhole
-/// convention: the ray of pixel (u, v) is ((u - cx) / fx, (v - cy) / fy, 1) in the camera frame.
-/// Its point at parameter s has the camera-frame depth s, so the ray's parameter where it meets
-/// a surface is the hit's depth, and the nearest surface is the one of the smallest s > 0.
+/// Finds where a ray first meets a sphere in front of its origin: the smaller root s of
+/// |origin + s ray - centre|^2 = radius^2 that is > 0, else the larger one when it is > 0, so that
+/// a camera inside the sphere sees its inner surface.
+/// @param sphere [in] the sphere.
+/// @param origin [in] the ray's origin, in the world frame, in m.
+/// @param ray [in] the ray's direction, in the world frame, not zero; not unit: s is in the
+///        units that make origin + s ray a point in m.
+/// @return s; nothing when the ray misses the sphere or meets it only behind its origin.
+std::optional<double> hit_sphere(const synthetic_sphere &sphere, const Eigen::Vector3d &origin,
+                                 const Eigen::Vector3d &ray)
+{
+    const Eigen::Vector3d offset = origin - sphere.centre_m;
+    const double a = ray.dot(ray);
+    const double b = ray.dot(offset);
+    const double c = offset.dot(offset) - sphere.radius_m * sphere.radius_m;
+    const double discriminant = b * b - a * c;
+    if (!(discriminant >= 0.0))
+        return std::nullopt;
+    const double root = std::sqrt(discriminant);
+    const double nearer = (-b - root) / a;
+    const double farther = (-b + root) / a;
+    if (nearer > 0.0)
+        return nearer;
+    if (farther > 0.0)
+        return farther;
+    return std::nullopt;
+}
+
+/// Renders the known surfaces and the sphere as the camera sees them into a prepared frame, by
+/// the one pinhole convention: the ray of pixel (u, v) is ((u - cx) / fx, (v - cy) / fy, 1) in
+/// the camera frame. Its point at parameter s has the camera-frame depth s, so the ray's
+/// parameter where it meets a surface is the hit's depth, and the nearest surface is the one of
+/// the smallest s > 0.
 /// @param surfaces [in] the surfaces, in the world frame.
+/// @param sphere [in] the sphere, in the world frame, or none.
 /// @param camera_to_world [in] the camera's pose: camera frame to world frame.
 /// @param out [in,out] prepared for its description (frame::prepare()); every pixel of its
 ///            color and depth is written.
 void render(const std::vector<synthetic_surface> &surfaces,
-            const Eigen::Isometry3d &camera_to_world, gca::frame &out)
+            const std::optional<synthetic_sphere> &sphere, const Eigen::Isometry3d &camera_to_world,
+            gca::frame &out)
 {
     const gca::frame_description &description = out.description();
     const gca::intrinsics &k = description.intrinsics;
@@ -166,7 +197,7 @@ void render(const std::vector<synthetic_surface> &surfaces,
             const Eigen::Vector3d ray_camera((u - double{k.cx}) / k.fx, (v - double{k.cy}) / k.fy,
                                              1.0);
             const Eigen::Vector3d ray_world = rotation * ray_camera;
-            const synthetic_surface *nearest = nullptr;
+            std::optional<synthetic_texture> nearest;
             double nearest_s = 0.0;
             for (const synthetic_surface &surface : surfaces)
             {
@@ -179,19 +210,26 @@ void render(const std::vector<synthetic_surface> &surfaces,
                 const bool met = s > 0.0 &&
                                  std::abs(offset.dot(surface.axis_u)) <= surface.half_u_m &&
                                  std::abs(offset.dot(surface.axis_v)) <= surface.half_v_m;
-                if (met && (nearest == nullptr || s < nearest_s))
+                if (met && (!nearest || s < nearest_s))
                 {
-                    nearest = &surface;
+                    nearest = surface.texture;
                     nearest_s = s;
                 }
             }
+            const std::optional<double> sphere_s =
+                sphere ? hit_sphere(*sphere, origin, ray_world) : std::nullopt;
+            if (sphere_s && (!nearest || *sphere_s < nearest_s))
+            {
+                nearest = synthetic_texture::box;
+                nearest_s = *sphere_s;
+            }
             const double value = std::round(nearest_s / description.depth_unit_m);
-            const bool seen = nearest != nullptr && value >= 1.0 &&
+            const bool seen = nearest.has_value() && value >= 1.0 &&
                               value <= std::numeric_limits<std::uint16_t>::max();
             const std::size_t pixel = static_cast<std::size_t>(v) * description.size.width + u;
             depth[pixel] = seen ? static_cast<std::uint16_t>(value) : 0;
             const std::array<double, 3> rgb =
-                seen ? texture_color(nearest->texture, origin + nearest_s * ray_world)
+                seen ? texture_color(*nearest, origin + nearest_s * ray_world)
                      : std::array<double, 3>{};
             for (std::size_t c = 0; c < 3; c++)
                 color[3 * pixel + c] = static_cast<std::uint8_t>(std::lround(rgb[c]));
@@ -307,7 +345,7 @@ gca::next_result synthetic_source::next(gca::frame &out) noexcept
     if (m_next_index >= m_options.scene.trajectory.size())
         return {ending_status(m_options.ending), m_options.ending_message};
     out.prepare(m_options.description, m_next_index, m_next_index * frame_period_us);
-    render(m_surfaces, m_options.scene.trajectory[m_next_index], out);
+    render(m_surfaces, m_options.scene.sphere, m_options.scene.trajectory[m_next_index], out);
     m_next_index++;
     return {gca::next_status::frame, {}};
 }

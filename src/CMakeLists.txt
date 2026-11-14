@@ -67,6 +67,7 @@ add_library(
     gpu/gpu_pool.cpp
     gpu/gpu_pool.hpp
     gpu/pinned_buffer.hpp
+    gpu/step_result.hpp
 )
 # PUBLIC: the headers hold thrust and CUDA types, and gpu_frame.hpp the frame of camera.
 target_link_libraries(gpu PUBLIC types camera CUDA::cudart)
@@ -86,6 +87,8 @@ add_library(
     geometry/float3_eigen.cuh
     geometry/float3_ops.cuh
     geometry/geometry_util.cuh
+    geometry/organized_points.cu
+    geometry/organized_points.hpp
     geometry/point_cloud.cu
     geometry/point_cloud.hpp
     geometry/symmetric_eigen_3x3.cuh

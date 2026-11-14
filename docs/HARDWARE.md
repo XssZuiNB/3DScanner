@@ -144,6 +144,38 @@ checkerboard cannot check it: an error of the principal point by δ leaves the p
 plane a homography and moves every deprojected point by z δ / f, 0.4 mm at 0.5 m for half a
 pixel, without bending a plane [S: the pinhole model].
 
+## The per-frame path's stages
+
+Each stage's time on the board (CODING_STANDARDS.md, "Measured stage by stage"), measured on
+synthetic frames by a scratch program, under the build lock with no compiler running, in the
+power mode MAXN_SUPER with the GPU clock under `nvhost_podgov`, 306 to 1020 MHz [M 2026-11-14].
+The replay of sequences taken on the hardware measures the whole path later.
+
+**The upload** (`src/gpu/gpu_frame.hpp`), staged through pinned memory: medians over 10 s per
+case after 2 s [M 2026-11-14, 09:55 to 09:57; the GPU clock was not recorded]. Behind queued
+work, 8 memsets of 256 MiB, 22.3 ms of work, stand queued on the stream before the upload.
+
+| size | stream | host blocked in the call | copies on the GPU | call to copies done |
+|---|---|---|---|---|
+| 640x400 | idle | 0.161 ms | 0.314 ms (1) | 0.342 ms |
+| 640x400 | behind queued work | 0.258 ms | 0.063 ms | 22.285 ms |
+| 1280x800 | idle | 0.896 ms | 1.488 ms (1) | 1.522 ms |
+| 1280x800 | behind queued work | 0.906 ms | 0.201 ms | 22.603 ms |
+
+(1) On an idle stream the GPU's time starts at the call, so it includes the host's staging.
+
+**The organized points** (docs/methods/organized-points.md): the kernel's time by CUDA events
+and the host's call, over 20 s per case after 5 s, on one frame of a box on a plane, depth unit
+1 mm, range 0.30 m to 1.0 m [M 2026-11-14, 10:29 to 10:31]. Paced at 30 fps the governor keeps
+the GPU at 306 MHz throughout; back to back it runs at 1020 MHz throughout.
+
+| size | pace | kernel median / p95 / max | host call median |
+|---|---|---|---|
+| 640x400 | 30 fps | 0.149 / 0.151 / 0.153 ms | 0.027 ms |
+| 640x400 | back to back | 0.055 / 0.057 / 0.096 ms | 0.003 ms |
+| 1280x800 | 30 fps | 0.546 / 0.549 / 0.552 ms | 0.025 ms |
+| 1280x800 | back to back | 0.196 / 0.199 / 0.349 ms | 0.003 ms |
+
 ## Connections
 
 The four USB-A ports sit on a Realtek USB 3.2 hub, seen twice by the host controller

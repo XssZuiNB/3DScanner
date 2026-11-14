@@ -8,6 +8,9 @@
 ///   the plane, which then lies behind it;
 /// - the plane seen from beside the box, looking away from it, with a face of the box behind the
 ///   camera on every pixel's ray: every pixel shows the plane;
+/// - a sphere resting on the plane, every pixel: seen from outside, a pixel shows the sphere or
+///   the plane behind and beside it, whichever its ray meets first; seen from inside, every pixel
+///   shows the sphere's inner surface;
 /// - a walk once around a box standing on the plane: frame i is seen from the trajectory's pose
 ///   i, and every pixel the test names holds the depth and the color that the known box, plane,
 ///   textures and that pose give. The test projects its own box's corners forward into each
@@ -79,9 +82,9 @@ constexpr double geometry_tolerance = 1e-12;
 /// the picture shows part; the upper rows look past its far edge [S: computed, 2026-11-14].
 constexpr gca_test::synthetic_plane test_plane = {0.30, 0.25};
 
-/// The box: 0.20 m x 0.14 m x 0.10 m, a tabletop object within R1's 10 cm to 50 cm, with three
-/// edge lengths, off the plane's centre and turned by 25 degrees against the world's axes, so
-/// that a swap of two edges or of two axes shows [?: a choice].
+/// The box: 0.20 m x 0.14 m x 0.10 m, a tabletop object of 10 cm to 50 cm (GLOSSARY.md), with
+/// three edge lengths, off the plane's centre and turned by 25 degrees against the world's axes,
+/// so that a swap of two edges or of two axes shows [?: a choice].
 constexpr gca_test::synthetic_box test_box = {0.03, -0.02, 25.0, 0.20, 0.14, 0.10};
 
 /// The support plane under the box: 0.9 m x 0.8 m [?: a choice], around the box in every view of
@@ -431,7 +434,7 @@ gca_test::synthetic_source_options picture_options(float depth_unit_m,
 {
     gca_test::synthetic_source_options options;
     options.description = {test_size, test_intrinsics, depth_unit_m};
-    options.scene = {test_plane, std::nullopt, {camera_to_world}};
+    options.scene = {.plane = test_plane, .trajectory = {camera_to_world}};
     options.ending = gca_test::synthetic_ending::end;
     options.ending_message = "end";
     return options;
@@ -598,6 +601,161 @@ void check_pictures()
         check_picture("looking away", picture_options(fine_depth_unit_m, looking_away_pose()));
     check(away.behind > 0 && away.seen == 0, "looking away: the plane behind, nothing seen");
     check_beside_box();
+}
+
+/// The sphere of the pictures of a sphere: 7 cm in radius, resting on the plane, off the plane's
+/// centre [?: a choice, a tabletop object's size].
+const gca_test::synthetic_sphere test_sphere = {Eigen::Vector3d(0.02, -0.03, 0.07), 0.07};
+
+/// The margin by which a named pixel's ray passes inside or outside the sphere's outline, in m:
+/// the distance of its closest approach to the centre from the radius [?: a choice], about
+/// 3e-4 px at 0.47 m with fx = 150 px [S: computed], and far above the two paths' rounding,
+/// about 1e-16 m [S: double's relative step 2.2e-16 on lengths below 1 m].
+constexpr double sphere_margin_m = 1e-6;
+
+/// Where a pixel's ray first meets a sphere, and how near it passes the centre.
+struct sphere_hit
+{
+    ray_hit hit;            ///< the hit; z_m is NaN when the ray meets no point in front
+    double closest_m = 0.0; ///< the distance of the ray's line from the sphere's centre, in m
+};
+
+/// Finds where a pixel's ray first meets a sphere in front of the camera, on a path apart from
+/// the renderer's: the line's closest approach to the centre along its unit direction, and half
+/// the chord from there; from inside the sphere the hit is on its inner surface.
+/// @param sphere [in] the sphere, in the world frame.
+/// @param camera_to_world [in] the camera's pose, camera frame to world frame.
+/// @param ray [in] the pixel's ray (pixel_ray()), in the camera frame.
+/// @return the hit, its z_m the camera-frame depth, NaN when the ray misses the sphere or meets
+///         it only behind the camera; and the closest approach.
+sphere_hit hit_sphere(const gca_test::synthetic_sphere &sphere,
+                      const Eigen::Isometry3d &camera_to_world, const Eigen::Vector3d &ray)
+{
+    const Eigen::Vector3d direction = camera_to_world.linear() * ray.normalized();
+    const Eigen::Vector3d to_centre = sphere.centre_m - camera_to_world.translation();
+    const double along_m = to_centre.dot(direction);
+    sphere_hit result;
+    result.closest_m = (to_centre - along_m * direction).norm();
+    result.hit.z_m = std::numeric_limits<double>::quiet_NaN();
+    if (result.closest_m > sphere.radius_m)
+        return result;
+    const double half_chord_m =
+        std::sqrt(sphere.radius_m * sphere.radius_m - result.closest_m * result.closest_m);
+    const double distance_m =
+        along_m - half_chord_m > 0.0 ? along_m - half_chord_m : along_m + half_chord_m;
+    if (!(distance_m > 0.0))
+        return result;
+    // The ray's z component is 1, so the hit's camera-frame depth is its distance / |ray|.
+    result.hit = {distance_m / ray.norm(), camera_to_world.translation() + distance_m * direction};
+    return result;
+}
+
+/// The pixels of a picture of the sphere on the plane by what they see.
+struct sphere_counts
+{
+    int sphere = 0;    ///< pixels that see the sphere
+    int plane = 0;     ///< pixels that see the plane
+    int nothing = 0;   ///< pixels that see neither
+    int not_named = 0; ///< pixels whose ray passes within sphere_margin_m of the outline
+};
+
+/// Computes what a pixel should hold in a picture of the sphere on the plane, by the one pinhole
+/// convention, on paths apart from the renderer's (hit_sphere(), hit_plane()).
+/// @param plane [in] the plane.
+/// @param camera_to_world [in] the camera's pose, camera frame to world frame.
+/// @param description [in] the frame's intrinsics and depth unit.
+/// @param u [in] the pixel's column, in px.
+/// @param v [in] the pixel's row, in px.
+/// @param counts [in,out] the pixel is counted by what it sees.
+/// @return its depth and color, or not seen; nothing for a pixel at the sphere's outline.
+std::optional<expected_pixel> expect_on_sphere(const gca_test::synthetic_plane &plane,
+                                               const Eigen::Isometry3d &camera_to_world,
+                                               const gca::frame_description &description, int u,
+                                               int v, sphere_counts &counts)
+{
+    const Eigen::Vector3d ray = pixel_ray(description.intrinsics, u, v);
+    const sphere_hit on_sphere = hit_sphere(test_sphere, camera_to_world, ray);
+    if (std::abs(on_sphere.closest_m - test_sphere.radius_m) < sphere_margin_m)
+    {
+        counts.not_named++;
+        return std::nullopt;
+    }
+    const ray_hit on_plane =
+        hit_plane(Eigen::Vector3d::UnitZ(), Eigen::Vector3d::Zero(), camera_to_world, ray);
+    const bool plane_met = on_plane.z_m > 0.0 &&
+                           std::abs(on_plane.point_world.x()) <= plane.half_size_x_m &&
+                           std::abs(on_plane.point_world.y()) <= plane.half_size_y_m;
+    const bool sphere_met = on_sphere.hit.z_m > 0.0;
+    if (sphere_met && (!plane_met || on_sphere.hit.z_m < on_plane.z_m))
+    {
+        counts.sphere++;
+        return expect_at(on_sphere.hit, gca_test::synthetic_texture::box, description);
+    }
+    if (plane_met)
+    {
+        counts.plane++;
+        return expect_at(on_plane, gca_test::synthetic_texture::plane, description);
+    }
+    counts.nothing++;
+    return expected_pixel{};
+}
+
+/// Renders one picture of the sphere resting on the plane and checks every pixel but those at
+/// the sphere's outline: a pixel holds the depth and color of what its ray meets first, or depth
+/// 0 and black.
+/// @param name [in] the case, printed in each line.
+/// @param camera_to_world [in] the camera's pose, camera frame to world frame.
+/// @return the pixels by what they see; all zero when the source gave no frame.
+sphere_counts check_sphere_picture(const std::string &name,
+                                   const Eigen::Isometry3d &camera_to_world)
+{
+    gca_test::synthetic_source_options options =
+        picture_options(fine_depth_unit_m, camera_to_world);
+    options.scene.sphere = test_sphere;
+    gca_test::synthetic_source source(options);
+    check(source.open(test_size).opened, (name + ": opened").c_str());
+    gca::frame frame;
+    sphere_counts counts;
+    if (source.next(frame).status != gca::next_status::frame)
+    {
+        check(false, (name + ": a frame").c_str());
+        return counts;
+    }
+    pixel_errors errors;
+    for (int v = 0; v < static_cast<int>(test_size.height); v++)
+    {
+        for (int u = 0; u < static_cast<int>(test_size.width); u++)
+        {
+            const std::optional<expected_pixel> expected = expect_on_sphere(
+                source.scene().plane, camera_to_world, frame.description(), u, v, counts);
+            if (expected)
+                compare_pixel(frame, u, v, *expected, errors);
+        }
+    }
+    std::printf("%s: %d pixels see the sphere, %d the plane, %d nothing, %d at the sphere's "
+                "outline not named\n",
+                name.c_str(), counts.sphere, counts.plane, counts.nothing, counts.not_named);
+    check_errors(name, errors);
+    return counts;
+}
+
+/// Checks the pictures of the sphere resting on the plane: from 0.47 m outside it, looking at
+/// its centre, it hides part of the plane, which is seen around it; from inside it, every pixel
+/// sees its inner surface [?: a choice of poses].
+void check_sphere_pictures()
+{
+    const sphere_counts outside = check_sphere_picture(
+        "sphere from outside", pose_looking("the pose outside the sphere", {0.10, -0.40, 0.35},
+                                            test_sphere.centre_m, 8.0));
+    check(outside.sphere > 0 && outside.plane > 0,
+          "sphere from outside: pixels on the sphere and on the plane");
+    const sphere_counts inside = check_sphere_picture(
+        "sphere from inside",
+        pose_looking("the pose inside the sphere",
+                     test_sphere.centre_m + Eigen::Vector3d(0.01, -0.02, 0.01),
+                     test_sphere.centre_m + Eigen::Vector3d(0.0, 0.10, -0.03), -6.0));
+    const int pixels = static_cast<int>(test_size.width * test_size.height);
+    check(inside.sphere == pixels, "sphere from inside: every pixel sees the sphere");
 }
 
 /// Returns a surface's corners.
@@ -930,7 +1088,7 @@ gca_test::synthetic_source_options walk_options(const std::vector<Eigen::Isometr
 {
     gca_test::synthetic_source_options options;
     options.description = {test_size, test_intrinsics, fine_depth_unit_m};
-    options.scene = {box_plane, test_box, trajectory};
+    options.scene = {.plane = box_plane, .box = test_box, .trajectory = trajectory};
     options.ending = gca_test::synthetic_ending::end;
     options.ending_message = walk_ending;
     return options;
@@ -1016,6 +1174,7 @@ int main()
 {
     check_look_at();
     check_pictures();
+    check_sphere_pictures();
     check_walk();
     return gca_test::check_summary("test_synthetic_source");
 }

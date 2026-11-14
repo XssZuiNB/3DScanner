@@ -3,15 +3,15 @@
 /// The tests' synthetic source: a frame source (camera/frame_source.hpp) that renders a known
 /// scene by the one pinhole convention (types/camera_param.hpp) and tells a test what it
 /// rendered. The scene is a textured support plane, a textured box of known size standing on it
-/// or none, and a known trajectory: frame i of an opening is seen from the trajectory's pose i.
-/// The source tells a test the trajectory and the known surfaces, textured rectangles in the
-/// world frame, which are exactly what it renders. It also builds the trajectories its scenes are
-/// seen along: a camera's upright pose looking at a point, and a walk once around a point, each
-/// refused as a value where the view is not defined. This is the
-/// one renderer of the tests' frames: a test whose scene it lacks adds the scene here as one more
-/// option. A test builds the source to deliver its trajectory's frames and then to report the
-/// end, a timeout or a failure, or to refuse its opening, each with the message it is given.
-/// No camera and no OrbbecSDK; host only.
+/// or none, a textured sphere of known centre and radius or none, and a known trajectory: frame i
+/// of an opening is seen from the trajectory's pose i. The source tells a test the trajectory and
+/// the known surfaces, textured rectangles in the world frame, and the sphere, which are exactly
+/// what it renders. It also builds the trajectories its scenes are seen along: a camera's upright
+/// pose looking at a point, and a walk once around a point, each refused as a value where the
+/// view is not defined. This is the one renderer of the tests' frames: a test whose scene it
+/// lacks adds the scene here as one more option. A test builds the source to deliver its
+/// trajectory's frames and then to report the end, a timeout or a failure, or to refuse its
+/// opening, each with the message it is given. No camera and no OrbbecSDK; host only.
 
 #pragma once
 
@@ -52,12 +52,23 @@ struct synthetic_box
     double height_m;   ///< its edge length along the world's z axis, up from the plane, in m, > 0
 };
 
+/// A sphere, textured by synthetic_texture::box, seen from either side: from inside it the
+/// camera sees its inner surface. Where it meets the plane or the box, the nearer surface along a
+/// ray hides the other.
+struct synthetic_sphere
+{
+    Eigen::Vector3d centre_m; ///< its centre, in the world frame, in m
+    double radius_m;          ///< its radius, in m, > 0
+};
+
 /// The scene the synthetic source renders. The world frame is the scene's own, in m: x and y in
-/// the support plane, z up from it.
+/// the support plane, z up from it. A test builds it with designated initializers, so that a
+/// scene it does not name is none.
 struct synthetic_scene
 {
-    synthetic_plane plane;            ///< the support plane
-    std::optional<synthetic_box> box; ///< the box standing on the plane, or none
+    synthetic_plane plane;                                 ///< the support plane
+    std::optional<synthetic_box> box = std::nullopt;       ///< the box on the plane, or none
+    std::optional<synthetic_sphere> sphere = std::nullopt; ///< the sphere, or none
     /// The trajectory: pose i maps a point from the camera frame of frame i of an opening (x
     /// right, y down, z forward, in m) into the world frame. The source delivers one frame for
     /// each pose.
@@ -71,11 +82,12 @@ enum class synthetic_texture
     /// diagonally, each with its own wavelength, so that the color changes along every direction
     /// of the plane and has a gradient everywhere [?: a choice].
     plane,
-    /// The box's, painted through the box like a solid: three sine waves in space, one per
-    /// channel, along directions that each rise or fall by 35 to 50 degrees, with wavelengths and
-    /// phases other than the plane's [?: a choice; the tables in synthetic_source.cpp]. On a face
-    /// of any turn every channel changes along the face, by at least 0.57 of its wave's slope
-    /// [S: computed, sin 35 degrees on a side, cos 50 degrees on the top].
+    /// The box's and the sphere's, painted through them like a solid: three sine waves in space,
+    /// one per channel, along directions that each rise or fall by 35 to 50 degrees, with
+    /// wavelengths and phases other than the plane's [?: a choice; the tables in
+    /// synthetic_source.cpp]. On a face of the box of any turn every channel changes along the
+    /// face, by at least 0.57 of its wave's slope [S: computed, sin 35 degrees on a side, cos 50
+    /// degrees on the top].
     box,
 };
 
@@ -122,9 +134,9 @@ std::optional<Eigen::Isometry3d> look_at(const Eigen::Vector3d &position,
 /// rate, so that no two views differ by a turn about the centre alone [?: a choice]:
 /// distance radius_m + radius_swing_m sin 2a, height height_m + height_swing_m cos 3a, roll
 /// roll_swing_deg sin 5a, the point looked at the centre moved by target_jitter_m
-/// (sin 3a, cos 5a, 0), at the pose's azimuth a. Every field is the test's to set: the tabletop
-/// box's walk of today's test and the large box's walk of the scan-level tests (spec, "Testing
-/// Decisions") take other values.
+/// (sin 3a, cos 5a, 0), at the pose's azimuth a. Every field is the test's to set: a walk around
+/// a tabletop object and one around a large object (GLOSSARY.md, "Object class") take other
+/// values.
 struct synthetic_walk
 {
     Eigen::Vector3d centre_m; ///< the point walked around, in the world frame, in m
@@ -183,8 +195,8 @@ public:
     gca::open_result open(const gca::frame_size &size) noexcept override;
 
     /// Renders the next frame: frame i of an opening has index i and timestamp i * 33333 µs
-    /// (30 fps [?: a choice, the camera's rate]) and shows the known surfaces from the
-    /// trajectory's pose i. Each pixel shows the nearest surface its ray meets in front of the
+    /// (30 fps [?: a choice, the camera's rate]) and shows the known surfaces and the sphere from
+    /// the trajectory's pose i. Each pixel shows the nearest surface its ray meets in front of the
     /// camera: depth is the hit's z in the camera frame, rounded to the nearest depth value;
     /// color is the surface's texture there, rounded. A pixel whose ray meets no surface in front
     /// of the camera, or whose depth rounds below 1 or above the largest 16-bit value, 65535 [S],
@@ -208,7 +220,8 @@ public:
     ///         of an opening; valid as long as the source.
     const synthetic_scene &scene() const noexcept;
 
-    /// Tells a test the known surfaces, the ones every frame is rendered from.
+    /// Tells a test the known surfaces, the rectangles every frame is rendered from; the sphere,
+    /// the one surface that is not a rectangle, is the scene's (scene()).
     /// @return the plane first, then, when the scene has a box, its top and its sides on its own
     ///         +x, +y, -x and -y; valid as long as the source.
     const std::vector<synthetic_surface> &surfaces() const noexcept;

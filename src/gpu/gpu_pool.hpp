@@ -39,6 +39,21 @@ template <typename Buffer> struct request_result
     Buffer granted;      ///< the granted buffer; empty unless granted
 };
 
+/// Carries a refused request's status and message over into the result of something made of
+/// several requests, such as a GPU frame (gpu/gpu_frame.hpp).
+/// @param refused [in] the refused request.
+/// @return its status and message, with nothing granted.
+/// @note Allocates for the message; a failed allocation ends the program (std::terminate): the
+///       function is noexcept. Waits for nothing.
+template <typename Made, typename Buffer>
+request_result<Made> refused_as(const request_result<Buffer> &refused) noexcept
+{
+    request_result<Made> result;
+    result.status = refused.status;
+    result.message = refused.message;
+    return result;
+}
+
 /// The gate of the per-frame path's buffers: open when built, closed once by close(), never
 /// opened again; a scan builds a pool of its own. Not copied and not moved, so that a stage that
 /// keeps a reference to the pool asks the one the scan closed. Not synchronized: one thread at a

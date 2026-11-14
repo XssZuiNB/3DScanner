@@ -28,22 +28,15 @@
 #include "gpu/gpu_image.hpp"
 #include "gpu/gpu_pool.hpp"
 #include "gpu/pinned_buffer.hpp"
+#include "gpu/step_result.hpp"
 #include "types/frame_description.hpp"
 
 #include <cuda_runtime_api.h>
 
 #include <cstdint>
-#include <string>
 
 namespace gca
 {
-/// What an upload or a download gave.
-struct copy_result
-{
-    bool done = false;   ///< whether the copies were queued (upload) or finished (download)
-    std::string message; ///< why not, in plain English; empty when done
-};
-
 /// A frame's pictures on the GPU, its index, timestamp and description, and the pinned host
 /// buffer its upload stages through. Its images keep the size it was requested with, and its
 /// description is the one of the frame uploaded last, of that size. Move-only. Not
@@ -118,7 +111,7 @@ public:
     ///       synchronization behavior"]. Allocates nothing when done; allocates for the message
     ///       when not, and a failed allocation ends the program (std::terminate): the function
     ///       is noexcept. When CUDA fails, its last error is cleared.
-    copy_result upload(const frame &host, cudaStream_t stream) noexcept;
+    step_result upload(const frame &host, cudaStream_t stream) noexcept;
 
     /// Downloads the GPU frame into a frame, for the tests: its description, index, timestamp
     /// and both pictures, and waits until they are in host memory.
@@ -139,7 +132,7 @@ public:
     ///       function is noexcept. When CUDA fails, its last error is cleared. Two threads may
     ///       call it at once only for different GPU frames and different frames. Not for the
     ///       per-frame path: it reads back whole pictures and waits.
-    copy_result download(frame &host, cudaStream_t stream) const noexcept;
+    step_result download(frame &host, cudaStream_t stream) const noexcept;
 
     /// Gives the description of the frame uploaded last.
     /// @return its size, intrinsics and depth unit; 0 x 0, zero intrinsics and depth unit before

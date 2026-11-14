@@ -27,6 +27,8 @@
 #include "gpu/gpu_image.hpp"
 #include "gpu/gpu_pool.hpp"
 #include "gpu/pinned_buffer.hpp"
+#include "gpu/step_result.hpp"
+#include "gpu_test_helpers.hpp"
 #include "synthetic_source.hpp"
 #include "types/frame_description.hpp"
 
@@ -50,7 +52,10 @@
 namespace
 {
 using gca_test::check;
+using gca_test::check_no_cuda_error;
 using gca_test::check_refusal;
+using gca_test::create_stream;
+using gca_test::granted;
 
 // An image, a pinned buffer and a GPU frame are moved, never copied; a pool is neither.
 static_assert(!std::is_copy_constructible_v<gca::gpu_image<uchar3>> &&
@@ -146,7 +151,9 @@ bool take_frame(const std::optional<Eigen::Isometry3d> &pose, std::uint64_t inde
         return false;
     gca_test::synthetic_source_options options;
     options.description = {test_size, test_intrinsics, test_depth_unit_m};
-    options.scene = {test_plane, test_box, std::vector<Eigen::Isometry3d>(index + 1, *pose)};
+    options.scene = {.plane = test_plane,
+                     .box = test_box,
+                     .trajectory = std::vector<Eigen::Isometry3d>(index + 1, *pose)};
     gca_test::synthetic_source source(std::move(options));
     if (!source.open(test_size).opened)
         return false;
@@ -246,28 +253,6 @@ void check_same_frame(const std::string &what, const gca::frame &got, const gca:
     check_same_pictures(what, got.color(), expected.color(), got.depth(), expected.depth());
 }
 
-/// Checks that CUDA's last error is clear, so that a refusal left nothing for the next check.
-/// @param what [in] the case, named in the check line.
-void check_no_cuda_error(const std::string &what)
-{
-    const cudaError_t error = cudaPeekAtLastError();
-    if (error != cudaSuccess)
-        std::printf("%s: CUDA's last error is %s\n", what.c_str(), cudaGetErrorName(error));
-    check(error == cudaSuccess, (what + ": CUDA's last error clear").c_str());
-}
-
-/// Requests a GPU frame from a pool and checks that it was granted.
-/// @param pool [in,out] the pool, open.
-/// @param size [in] the frames' size, in px.
-/// @return the GPU frame; an empty one, and a failed check, when the pool refused it.
-gca::gpu_frame request_gpu_frame(gca::gpu_pool &pool, const gca::frame_size &size)
-{
-    gca::request_result<gca::gpu_frame> requested = gca::gpu_frame::request(pool, size);
-    check(requested.status == gca::request_status::granted,
-          ("a GPU frame granted, " + requested.message).c_str());
-    return std::move(requested.granted);
-}
-
 /// A frame uploaded and downloaded again is the frame bit for bit; a frame of another view
 /// uploaded into the same GPU frame replaces it; a refused upload leaves the GPU frame as it was.
 /// @param stream [in] the CUDA stream the copies run on.
@@ -278,31 +263,31 @@ void check_round_trip(cudaStream_t stream)
     if (!take_two_views(first, second))
         return;
     gca::gpu_pool pool;
-    gca::gpu_frame on_gpu = request_gpu_frame(pool, test_size);
+    gca::gpu_frame on_gpu = granted("a GPU frame", gca::gpu_frame::request(pool, test_size));
     pool.close();
     gca::frame back;
 
-    const gca::copy_result up = on_gpu.upload(first, stream);
+    const gca::step_result up = on_gpu.upload(first, stream);
     check(up.done, ("round trip: upload, " + up.message).c_str());
     fill_with_other_bytes(back);
-    const gca::copy_result down = on_gpu.download(back, stream);
+    const gca::step_result down = on_gpu.download(back, stream);
     check(down.done, ("round trip: download, " + down.message).c_str());
     check_same_frame("round trip, frame 2 of the first view", back, first);
 
-    const gca::copy_result up_again = on_gpu.upload(second, stream);
+    const gca::step_result up_again = on_gpu.upload(second, stream);
     check(up_again.done, ("round trip: second upload, " + up_again.message).c_str());
     fill_with_other_bytes(back);
-    const gca::copy_result down_again = on_gpu.download(back, stream);
+    const gca::step_result down_again = on_gpu.download(back, stream);
     check(down_again.done, ("round trip: second download, " + down_again.message).c_str());
     check_same_frame("round trip, frame 0 of the second view", back, second);
 
     // A frame moved from keeps its description, not its buffers.
     gca::frame taker(std::move(first));
-    const gca::copy_result moved = on_gpu.upload(first, stream);
+    const gca::step_result moved = on_gpu.upload(first, stream);
     check_refusal("upload of a frame moved from", !moved.done, moved.message,
                   moved.message.find("a frame moved from") != std::string::npos);
     fill_with_other_bytes(back);
-    const gca::copy_result kept = on_gpu.download(back, stream);
+    const gca::step_result kept = on_gpu.download(back, stream);
     check(kept.done, ("refused upload: download, " + kept.message).c_str());
     check_same_frame("refused upload: the GPU frame as it was", back, second);
     check(pool.refused_while_closed() == 0, "round trip: the closed pool asked for nothing");
@@ -332,7 +317,7 @@ void check_staging(cudaStream_t stream)
     const std::vector<std::uint8_t> first_color(first.color().begin(), first.color().end());
     const std::vector<std::uint16_t> first_depth(first.depth().begin(), first.depth().end());
     gca::gpu_pool pool;
-    gca::gpu_frame on_gpu = request_gpu_frame(pool, test_size);
+    gca::gpu_frame on_gpu = granted("a GPU frame", gca::gpu_frame::request(pool, test_size));
     gca::request_result<gca::gpu_image<uchar3>> seen_color = pool.request<uchar3>(test_size);
     gca::request_result<gca::gpu_image<std::uint16_t>> seen_depth =
         pool.request<std::uint16_t>(test_size);
@@ -343,7 +328,7 @@ void check_staging(cudaStream_t stream)
 
     check(cudaLaunchHostFunc(stream, hold_stream, nullptr) == cudaSuccess,
           "staging: the stream held back");
-    const gca::copy_result up = on_gpu.upload(first, stream);
+    const gca::step_result up = on_gpu.upload(first, stream);
     check(up.done, ("staging: first upload, " + up.message).c_str());
     std::ranges::fill(first.color(), std::uint8_t{0});
     std::ranges::fill(first.depth(), std::uint16_t{0});
@@ -356,7 +341,7 @@ void check_staging(cudaStream_t stream)
                               stream) == cudaSuccess,
           "staging: the work between the uploads queued");
     const auto before = std::chrono::steady_clock::now();
-    const gca::copy_result up_again = on_gpu.upload(second, stream);
+    const gca::step_result up_again = on_gpu.upload(second, stream);
     const std::chrono::duration<double, std::milli> waited =
         std::chrono::steady_clock::now() - before;
     check(up_again.done, ("staging: second upload, " + up_again.message).c_str());
@@ -364,7 +349,7 @@ void check_staging(cudaStream_t stream)
                 waited.count(), static_cast<long long>(stream_hold.count()));
 
     gca::frame back;
-    const gca::copy_result down = on_gpu.download(back, stream);
+    const gca::step_result down = on_gpu.download(back, stream);
     check(down.done, ("staging: download, " + down.message).c_str());
     check_same_frame("staging: the second upload", back, second);
     std::vector<std::uint8_t> seen_color_host(first_color.size());
@@ -432,15 +417,17 @@ void check_moves(cudaStream_t stream)
     gca::frame second;
     if (!take_two_views(first, second))
         return;
-    gca::gpu_frame uploaded = request_gpu_frame(pool, test_size);
-    gca::gpu_frame target = request_gpu_frame(pool, test_size);
+    gca::gpu_frame uploaded =
+        gca_test::granted("a GPU frame", gca::gpu_frame::request(pool, test_size));
+    gca::gpu_frame target =
+        gca_test::granted("a GPU frame", gca::gpu_frame::request(pool, test_size));
     check(uploaded.upload(first, stream).done, "moves: a frame uploaded");
     gca::gpu_frame frame_constructed(std::move(uploaded));
     check(uploaded.color().empty() && uploaded.depth().empty() &&
               uploaded.description().size == gca::frame_size{0, 0} && uploaded.index() == 0 &&
               uploaded.timestamp_us() == 0,
           "moves: a GPU frame moved from by construction holds nothing");
-    const gca::copy_result into_moved = uploaded.upload(first, stream);
+    const gca::step_result into_moved = uploaded.upload(first, stream);
     check_refusal("upload into a GPU frame moved from", !into_moved.done, into_moved.message,
                   into_moved.message.find("the GPU frame is empty") != std::string::npos);
     target = std::move(frame_constructed);
@@ -448,7 +435,7 @@ void check_moves(cudaStream_t stream)
               frame_constructed.index() == 0,
           "moves: a GPU frame moved from by assignment holds nothing");
     gca::frame back;
-    const gca::copy_result down = target.download(back, stream);
+    const gca::step_result down = target.download(back, stream);
     check(down.done, ("moves: download, " + down.message).c_str());
     check_same_frame("moves: the GPU frame assigned to holds the uploaded frame", back, first);
 }
@@ -550,13 +537,13 @@ void check_copy_refusals(cudaStream_t stream)
           "refusals: the synthetic source gave a frame");
 
     gca::gpu_frame empty;
-    const gca::copy_result none = empty.upload(frame, stream);
+    const gca::step_result none = empty.upload(frame, stream);
     check_refusal("upload into an empty GPU frame", !none.done, none.message,
                   none.message.find("the GPU frame is empty") != std::string::npos);
 
     gca::gpu_pool pool;
-    gca::gpu_frame larger = request_gpu_frame(pool, other_size);
-    const gca::copy_result other = larger.upload(frame, stream);
+    gca::gpu_frame larger = granted("a GPU frame", gca::gpu_frame::request(pool, other_size));
+    const gca::step_result other = larger.upload(frame, stream);
     check_refusal("upload into a GPU frame of 320x240 px", !other.done, other.message,
                   other.message.find("the frame is 160x120 px, the GPU frame 320x240 px") !=
                       std::string::npos);
@@ -564,29 +551,17 @@ void check_copy_refusals(cudaStream_t stream)
               larger.timestamp_us() == 0,
           "refusals: the refused upload left the GPU frame as it was");
 
-    gca::gpu_frame never_uploaded = request_gpu_frame(pool, test_size);
+    gca::gpu_frame never_uploaded =
+        granted("a GPU frame", gca::gpu_frame::request(pool, test_size));
     gca::frame back;
-    const gca::copy_result no_frame = never_uploaded.download(back, stream);
+    const gca::step_result no_frame = never_uploaded.download(back, stream);
     check_refusal("download of a GPU frame that holds no frame yet", !no_frame.done,
                   no_frame.message,
                   no_frame.message.find("holds no frame yet") != std::string::npos);
-    const gca::copy_result from_empty = empty.download(back, stream);
+    const gca::step_result from_empty = empty.download(back, stream);
     check_refusal("download of an empty GPU frame", !from_empty.done, from_empty.message,
                   from_empty.message.find("the GPU frame is empty") != std::string::npos);
     check_no_cuda_error("refusals");
-}
-
-/// Creates the CUDA stream the checks queue their copies on.
-/// @param stream [out] the stream, not blocking with the default stream; nullptr on failure.
-/// @return whether it was created; a failed check and CUDA's error printed when not.
-bool create_stream(cudaStream_t &stream)
-{
-    stream = nullptr;
-    const cudaError_t created = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
-    check(created == cudaSuccess, "a CUDA stream");
-    if (created != cudaSuccess)
-        std::fprintf(stderr, "cudaStreamCreateWithFlags: %s\n", cudaGetErrorString(created));
-    return created == cudaSuccess;
 }
 } // namespace
 

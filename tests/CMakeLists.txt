@@ -51,3 +51,7 @@ add_test(NAME distortion_options COMMAND test_distortion_options)
 add_executable(test_gpu_images test_gpu_images.cpp)
 target_link_libraries(test_gpu_images PRIVATE gpu synthetic_source)
 add_test(NAME gpu_images COMMAND test_gpu_images)
+
+add_executable(test_organized_points test_organized_points.cpp)
+target_link_libraries(test_organized_points PRIVATE geometry synthetic_source)
+add_test(NAME organized_points COMMAND test_organized_points)

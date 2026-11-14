@@ -18,32 +18,20 @@ namespace
 {
 // A frame's color is 3 bytes per pixel (camera/frame.hpp), copied byte by byte into uchar3.
 static_assert(sizeof(uchar3) == 3, "a color pixel is 3 bytes, as in a frame");
-
-/// Copies a request's refusal into the result of another type.
-/// @param refused [in] the refused request.
-/// @return its status and message, with an empty GPU frame.
-template <typename Buffer>
-request_result<gpu_frame> refused_as(const request_result<Buffer> &refused) noexcept
-{
-    request_result<gpu_frame> result;
-    result.status = refused.status;
-    result.message = refused.message;
-    return result;
-}
 } // namespace
 
 request_result<gpu_frame> gpu_frame::request(gpu_pool &pool, const frame_size &size) noexcept
 {
     request_result<gpu_image<uchar3>> color = pool.request<uchar3>(size);
     if (color.status != request_status::granted)
-        return refused_as(color);
+        return refused_as<gpu_frame>(color);
     request_result<gpu_image<std::uint16_t>> depth = pool.request<std::uint16_t>(size);
     if (depth.status != request_status::granted)
-        return refused_as(depth);
+        return refused_as<gpu_frame>(depth);
     request_result<pinned_buffer> staging =
         pool.request_pinned(color.granted.size_bytes() + depth.granted.size_bytes());
     if (staging.status != request_status::granted)
-        return refused_as(staging);
+        return refused_as<gpu_frame>(staging);
     cudaEvent_t event = nullptr;
     const cudaError_t error = cudaEventCreateWithFlags(&event, cudaEventDisableTiming);
     request_result<gpu_frame> result;
@@ -104,7 +92,7 @@ void gpu_frame::release_event() noexcept
     m_staging_copied = nullptr;
 }
 
-copy_result gpu_frame::upload(const frame &host, cudaStream_t stream) noexcept
+step_result gpu_frame::upload(const frame &host, cudaStream_t stream) noexcept
 {
     if (m_staging.empty())
     {
@@ -158,7 +146,7 @@ copy_result gpu_frame::upload(const frame &host, cudaStream_t stream) noexcept
     return {true, {}};
 }
 
-copy_result gpu_frame::download(frame &host, cudaStream_t stream) const noexcept
+step_result gpu_frame::download(frame &host, cudaStream_t stream) const noexcept
 {
     if (m_staging.empty())
     {

@@ -20,11 +20,11 @@ What the rewrite builds: an operator scans a tabletop object or a large object w
 hand-held camera and works the scan from a web page the Jetson serves (the terms: GLOSSARY.md;
 the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the frame and the frame
 source seam (`src/camera/`); the GPU image, the pool that closes and a frame's upload
-(`src/gpu/`); the files a scan keeps and the parameters of each object class (`src/scan/`).
-The tree is CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to
-build here and given the Orbbec camera. It is the rewrite's prototype: its methods carry over,
-and its code is the test oracle until new code replaces it (CODING_STANDARDS.md, "The rewrite's
-code").
+(`src/gpu/`); the organized points from a frame's depth (`src/geometry/organized_points.*`);
+the files a scan keeps and the parameters of each object class (`src/scan/`). The tree is
+CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to build here and given the
+Orbbec camera. It is the rewrite's prototype: its methods carry over, and its code is the test
+oracle until new code replaces it (CODING_STANDARDS.md, "The rewrite's code").
 
 The tree today: `src/` is six static libraries and the header-only `types`, each linking only
 the ones below it: `types`, `camera`, `orbbec_camera`, `gpu`, `geometry`, `registration`,
@@ -167,7 +167,9 @@ Free choices: the stream size 640x400 at 30 fps [?: a choice; it exists on USB 2
   (`cuda_point_cloud_factory.cu`, `depth_uv`), half a pixel off the convention OrbbecSDK's own
   code uses for its intrinsics, pixel centres at whole numbers (docs/HARDWARE.md, "What the
   camera is and reports"): about 1 mm at 1 m with fx = 500 [S]. Pinned as is by
-  `tests/test_point_cloud_from_rgbd.cpp`.
+  `tests/test_point_cloud_from_rgbd.cpp`. The rewrite's organized points deproject pixel u at u
+  (docs/methods/organized-points.md); `tests/test_organized_points.cpp` states the half pixel
+  between the two.
 
 ## 7. How the code is written
 
@@ -207,8 +209,9 @@ checkers; these are the rules no checker holds.
    | the frame; the frame source seam | `src/camera/frame.*`; `src/camera/frame_source.hpp` |
    | a camera behind one interface | `src/camera/camera_device.hpp` (`gca::device`) |
    | Orbbec: profiles, alignment, color decoding | `src/camera/orbbec_device.*` |
-   | the GPU image, the pinned host buffer, the pool that closes, a frame's upload, their messages | `src/gpu/gpu_image.hpp`, `src/gpu/pinned_buffer.hpp`, `src/gpu/gpu_pool.*`, `src/gpu/gpu_frame.*`, `src/gpu/gpu_messages.*` |
+   | the GPU image, the pinned host buffer, the pool that closes, a frame's upload, a GPU step's result, their messages | `src/gpu/gpu_image.hpp`, `src/gpu/pinned_buffer.hpp`, `src/gpu/gpu_pool.*`, `src/gpu/gpu_frame.*`, `src/gpu/step_result.hpp`, `src/gpu/gpu_messages.*` |
    | the prototype's frames and camera parameters on the GPU, CUDA helpers, GPU checks | `src/gpu/` |
+   | organized points from a frame's depth, their validity mask | `src/geometry/organized_points.*` |
    | point clouds: creation, filters, normals, search; the 3x3 eigensolver, `float3` arithmetic and its Eigen conversion | `src/geometry/` |
    | registration (colored ICP); the 3x3 LDLT solve | `src/registration/` |
    | the files a scan keeps (docs/SCAN_FILES.md); the parameters of each object class | `src/scan/` |
@@ -237,6 +240,7 @@ checkers; these are the rules no checker holds.
 | `CODING_STANDARDS.md` | the style guides, what they leave to this tree, the rules for the rewrite's code, the checkers |
 | `GLOSSARY.md`, `docs/adr/` | the scanner's terms; the decisions in force and why |
 | `docs/SCAN_FILES.md` | the formats of the files a scan keeps: the models (PLY), the trajectory, the parameters |
+| `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md` |
 | `docs/agents/` | how the workflow skills in `.claude/skills/` find the tracker and the domain docs |
 
 Rules for these documents: each opens with the notice line above; plain, concise English,

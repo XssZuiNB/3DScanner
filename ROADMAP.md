@@ -48,4 +48,3 @@ Each needs a measurement that shows the cost first (docs/HARDWARE.md has the fir
   scene with about 1.5x the points [M 2026-11-13] (docs/HARDWARE.md):
   where the time goes (the bilateral filter, the invalid-point removal, the upload).
 * Undistort color, or check that the SDK's aligned output needs none.
-* The half-pixel deprojection of the point-cloud kernel (AGENTS.md §6).

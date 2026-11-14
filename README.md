@@ -21,7 +21,7 @@ result is a colored model of the object, later a mesh and measurements
 | `tests/` | offline tests, run by ctest; they need the GPU, no camera; the synthetic source that renders their frames |
 | `tools/` | fetch the dependencies, build, verify (AGENTS.md §4) |
 | `data/` | the two colored-ICP fragments, `frag_115.ply` and `frag_116.ply` |
-| `docs/` | the hardware, the files a scan keeps, the decisions (`adr/`), the workflow's tracker and domain conventions |
+| `docs/` | the hardware, the files a scan keeps, the decisions (`adr/`), each stage's method (`methods/`), the workflow's tracker and domain conventions |
 
 ## Build
 
