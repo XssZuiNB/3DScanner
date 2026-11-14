@@ -17,13 +17,17 @@ reads first. What outlives them is in GLOSSARY.md, docs/adr/ 0002 to 0004 and
 CODING_STANDARDS.md, "The rewrite's code".
 
 The user agreed on 2026-11-14 to the choices the spec marks (spec) and to the breakdown into
-tickets. 14 of 51 tickets are done (git log, `Ticket ...`) [M 2026-11-14: a script over the
-tickets' Status and Blocked-by lines]. The frontier: `sparse-tsdf-allocate-near-surface`,
-`intensity-and-pyramid`, `point-to-plane-registration`, `hold-color-exposure-and-white-balance`,
-`propose-support-plane-and-box` and `box-fit-acceptance-tool` (agent), and
-`measure-aligned-frame-distortion` (hardware, the checkerboard below). Done when
-`accept-the-colored-model` is done. `.scratch/cleanup/` can go on the user's word: the
-requirements hold what it recorded of the old loop.
+tickets. 18 of 53 tickets are done (git log, `Ticket ...`), 29 are `ready-for-agent` and 6
+`ready-for-human` [M 2026-11-14: a script over the tickets' Status and Blocked-by lines]. The
+frontier, the open tickets with no open blocker: `memory-budget-two-gigabytes`,
+`color-term-and-coarse-to-fine`, `pose-graph-solver`, `sparse-tsdf-integrate-and-extract`,
+`hold-color-exposure-and-white-balance`, `propose-support-plane-and-box` and
+`box-fit-acceptance-tool` (agent), and `measure-aligned-frame-distortion` (hardware, the
+checkerboard below). The hash's design is decided by a measurement once the ray cast exists
+(`.scratch/rewrite/brief.md`, §8). The other 22 tickets for an agent and 5 for the user wait on a
+ticket of the frontier or after it. Done when `accept-the-colored-model` is done.
+`.scratch/cleanup/` can go on the user's word: the requirements hold what it recorded of the old
+loop.
 
 ## 2. What the first phase needs from the user (hardware, decision)
 

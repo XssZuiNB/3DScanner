@@ -7,10 +7,10 @@ from CUDA_3D, a GPU point-cloud library (point clouds from RGB-D, voxel filter, 
 [colored ICP](https://openaccess.thecvf.com/content_ICCV_2017/papers/Park_Colored_Point_Cloud_ICCV_2017_paper.pdf);
 its RealSense SLAM demo: https://youtu.be/5NcDEhguzGU). Agents start at [CLAUDE.md](CLAUDE.md).
 
-What the rewrite builds, none of it yet: an operator walks the hand-held camera around a
-tabletop object or a large object and works the scan from a web page the Jetson serves; the
-result is a colored model of the object, later a mesh and measurements
-([GLOSSARY.md](GLOSSARY.md), [docs/adr/](docs/adr/), [ROADMAP.md](ROADMAP.md)).
+What the rewrite builds, of which so far only parts exist (libraries and their tests, no scan
+yet): an operator walks the hand-held camera around a tabletop object or a large object and
+works the scan from a web page the Jetson serves; the result is a colored model of the object,
+later a mesh and measurements ([GLOSSARY.md](GLOSSARY.md), [docs/adr/](docs/adr/), [ROADMAP.md](ROADMAP.md)).
 
 ## Layout
 

@@ -103,9 +103,12 @@ them.
 - **A registration returns its evidence**: the transform, the fitness, the inlier RMSE, the
   iterations, whether it converged and the conditioning of its system. A degenerate or
   diverged registration is reported as tracking loss (GLOSSARY.md).
-- **Numerics.** Normal equations are accumulated in double precision; a covariance is centred
-  first; the pose solve is damped and checks for degeneracy; the pose update is the SE(3)
-  exponential; residuals carry a robust weight. The tests feed the ill-conditioned cases: a
+- **Numerics.** Normal equations are accumulated in double precision; for live tracking the
+  sums within a warp may be float and the sums above a warp are double
+  [?: a choice, the user's, 2026-11-14; measured in docs/methods/registration.md], and
+  refinement accumulates in double throughout; a covariance is centred first; the pose solve is
+  damped and checks for degeneracy; the pose update is the SE(3) exponential; residuals carry a
+  robust weight. The tests feed the ill-conditioned cases: a
   single plane, points 2 m away [?: a choice], few correspondences, none.
 - **Dependencies** are OrbbecSDK, Eigen and OpenCV, and small libraries for the web page
   ([ADR-0002](docs/adr/0002-own-reconstruction-code.md)). Each has a permissive license,

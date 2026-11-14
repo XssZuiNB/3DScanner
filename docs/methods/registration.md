@@ -218,9 +218,10 @@ three turns about its centre give 0, which a scale taken from the rotation's own
   Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd ed., 2002, chapter 4, pairwise
   summation], 3.0e-7 of the sum of the terms' sizes; every sum above the warp, of up to 32000 warps
   at 1280x800, is double, in a fixed order, so that the same input gives the same sums bit for bit.
-  This departs from double accumulation within the warp's 32 terms [?: a choice, on the measured
-  benefit: double within the warp is 11 to 13 times as slow], on the measured cost of the
-  alternative: one iteration takes, by the host's call that waits for its sums, on the tests'
+  Float within the warp's 32 terms is what CODING_STANDARDS.md, "Numerics", allows live tracking,
+  while refinement sums in double throughout [?: a choice, the user's, 2026-11-14]. Its measured
+  benefit: double within the warp is 11 to 13 times as slow; one iteration takes, by the host's
+  call that waits for its sums, on the tests'
   tabletop object (the pair of "Accuracy"), the medians of 20 s after 5 s [M 2026-11-14, 19:54 to
   19:58, MAXN_SUPER by `nvpmodel -q`, no compiler running, a scratch program]:
 
