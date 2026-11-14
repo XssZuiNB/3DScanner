@@ -31,6 +31,10 @@ add_executable(test_frame_source test_frame_source.cpp)
 target_link_libraries(test_frame_source PRIVATE synthetic_source)
 add_test(NAME frame_source COMMAND test_frame_source)
 
+add_executable(test_synthetic_source test_synthetic_source.cpp)
+target_link_libraries(test_synthetic_source PRIVATE synthetic_source)
+add_test(NAME synthetic_source COMMAND test_synthetic_source)
+
 add_executable(test_checkerboard_measure test_checkerboard_measure.cpp)
 target_link_libraries(test_checkerboard_measure PRIVATE checkerboard_measure Eigen3::Eigen)
 add_test(NAME checkerboard_measure COMMAND test_checkerboard_measure)

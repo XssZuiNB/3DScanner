@@ -206,7 +206,7 @@ checkers; these are the rules no checker holds.
    | frames and camera parameters on the GPU, CUDA helpers, GPU checks | `src/gpu/` |
    | point clouds: creation, filters, normals, search; the 3x3 eigensolver, `float3` arithmetic and its Eigen conversion | `src/geometry/` |
    | registration (colored ICP); the 3x3 LDLT solve | `src/registration/` |
-   | the tests' synthetic source of frames, their one renderer | `tests/synthetic_source.*` |
+   | the tests' synthetic source of frames, their one renderer, the trajectories it renders along | `tests/synthetic_source.*` |
 
 5. **Log lines are an interface.** A tool that reads a program's output holds the strings
    it reads: before a log line, a refusal or a dump key changes, grep the tools and tests
