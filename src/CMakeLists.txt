@@ -121,6 +121,8 @@ add_library(
 target_link_libraries(geometry PUBLIC gpu Eigen3::Eigen)
 
 # ---------------------------------------------------------------- registration
+# The registration of a frame against a surface (docs/methods/registration.md), and the
+# prototype's colored ICP, its oracle until the prototype is retired.
 add_library(
     registration
     STATIC
@@ -132,6 +134,12 @@ add_library(
     registration/cuda_compute_color_gradient.cuh
     registration/eigen_solver.hpp
     registration/ldlt_3x3.cuh
+    registration/normal_equations.cpp
+    registration/normal_equations.hpp
+    registration/registration.cu
+    registration/registration.hpp
+    registration/se3.cpp
+    registration/se3.hpp
 )
 target_link_libraries(registration PUBLIC geometry Eigen3::Eigen)
 

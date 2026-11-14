@@ -81,6 +81,12 @@ add_executable(test_frame_pyramid test_frame_pyramid.cpp)
 target_link_libraries(test_frame_pyramid PRIVATE geometry synthetic_source)
 add_test(NAME frame_pyramid COMMAND test_frame_pyramid)
 
+# The registration of a frame against a surface, on pairs of frames of the synthetic source whose
+# transform is known; scan gives the object classes' depth ranges.
+add_executable(test_registration test_registration.cpp)
+target_link_libraries(test_registration PRIVATE registration scan synthetic_source)
+add_test(NAME registration COMMAND test_registration)
+
 # The sparse TSDF's hash of blocks and its pool, fed with block coordinates the test builds.
 add_executable(test_sparse_tsdf_blocks test_sparse_tsdf_blocks.cpp)
 target_link_libraries(test_sparse_tsdf_blocks PRIVATE fusion)

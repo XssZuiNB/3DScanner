@@ -7,6 +7,7 @@
 
 #include "gpu/gpu_messages.hpp"
 #include "gpu/kernel_launch.cuh"
+#include "types/camera_param.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -79,8 +80,7 @@ std::string description_refusal(const frame_description &description)
 {
     const intrinsics &k = description.intrinsics;
     const float unit_m = description.depth_unit_m;
-    if (std::isfinite(k.fx) && k.fx > 0.0f && std::isfinite(k.fy) && k.fy > 0.0f &&
-        std::isfinite(k.cx) && std::isfinite(k.cy) && std::isfinite(unit_m) && unit_m > 0.0f)
+    if (usable_intrinsics(k) && std::isfinite(unit_m) && unit_m > 0.0f)
         return {};
     return "the frame's intrinsics (fx " + std::to_string(k.fx) + ", fy " + std::to_string(k.fy) +
            ", cx " + std::to_string(k.cx) + ", cy " + std::to_string(k.cy) +

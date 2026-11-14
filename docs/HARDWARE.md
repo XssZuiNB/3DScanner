@@ -266,6 +266,29 @@ count [B 2026-11-14: `cuobjdump -sass` of `allocate_kernel`, VOTEU.ANY, POPC, RE
 is not gathered by hand; the difference between the two frames holds the read of the 6.3 MB of
 points besides that count, not timed apart [?].
 
+**One iteration of the registration** (docs/methods/registration.md): the host's call of
+`registration::align()` with one iteration, which queues the system's kernel and the totals'
+kernel, copies the 280 bytes of the sums, waits for them and solves the system, on level 0 of the
+tabletop object's pair of `tests/test_registration.cpp` (a box and a sphere on a plane from 0.5 m,
+fitness 0.92 to 0.93 at the start), the medians of 20 s per case after 5 s [M 2026-11-14, 19:54 to
+19:58, MAXN_SUPER by `nvpmodel -q`, no compiler running, a scratch program;
+`/sys/class/devfreq/17000000.gpu/cur_freq` sampled every 16 runs]. Paced at 30 fps the governor
+keeps the GPU at 306 MHz throughout; back to back it runs at 1020 MHz throughout.
+
+| size | pace | call median / p95 / max |
+|---|---|---|
+| 640x400 | 30 fps | 1.649 / 1.690 / 1.909 ms |
+| 640x400 | back to back | 0.355 / 0.363 / 0.670 ms |
+| 1280x800 | 30 fps | 4.348 / 4.401 / 4.604 ms |
+| 1280x800 | back to back | 1.209 / 1.232 / 1.759 ms |
+
+With each warp adding in double instead (docs/methods/registration.md, "Precision"), the same
+runs took 13.718, 3.988, 22.813 and 15.712 ms, the last paced case at a GPU clock of 714 MHz; with
+each warp's 35 sums converted to double in its own lane, 1.49 and 4.34 ms back to back
+[M 2026-11-14, as the table, but 1 s per case after 0.2 s, at 19:50]. A registration takes several
+iterations at each level of the pyramid; their count is the coarse-to-fine registration's to
+measure.
+
 ## Connections
 
 The four USB-A ports sit on a Realtek USB 3.2 hub, seen twice by the host controller

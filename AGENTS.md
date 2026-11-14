@@ -22,12 +22,14 @@ the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the frame, t
 seam and the sequence on disk (`src/camera/`); the GPU image, the pool that closes and a
 frame's upload (`src/gpu/`); the organized points from a frame's depth
 (`src/geometry/organized_points.*`), their normals (`src/geometry/organized_normals.*`) and the
-frame's pyramid of them with the intensity (`src/geometry/frame_pyramid.*`); the sparse TSDF's
-hash of blocks, its pool and the allocation of the blocks near a frame's surface
-(`src/fusion/`); the files a scan keeps and the parameters of each object class (`src/scan/`).
-The tree is CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to build here and
-given the Orbbec camera. It is the rewrite's prototype: its methods carry over, and its code is
-the test oracle until new code replaces it (CODING_STANDARDS.md, "The rewrite's code").
+frame's pyramid of them with the intensity (`src/geometry/frame_pyramid.*`); the registration of
+a frame against a surface by the point-to-plane term on one level
+(`src/registration/registration.*`); the sparse TSDF's hash of blocks, its pool and the allocation
+of the blocks near a frame's surface (`src/fusion/`); the files a scan keeps and the parameters of
+each object class (`src/scan/`). The tree is CUDA_3D cleaned up (dead code, RealSense and PCL
+removed), made to build here and given the Orbbec camera. It is the rewrite's prototype: its
+methods carry over, and its code is the test oracle until new code replaces it
+(CODING_STANDARDS.md, "The rewrite's code").
 
 The tree today: `src/` is seven static libraries and the header-only `types`, each linking only
 the ones below it: `types`, `camera`, `orbbec_camera`, `gpu`, `geometry`, `registration`,
@@ -213,7 +215,7 @@ checkers; these are the rules no checker holds.
 
    | concern | home |
    |---|---|
-   | camera parameters, a frame's description and the camera's pose (plain structs), console colors | `src/types/` |
+   | camera parameters, a frame's description and the camera's pose (plain structs), the one check that intrinsics can be used, console colors | `src/types/` |
    | the frame; the frame source seam | `src/camera/frame.*`; `src/camera/frame_source.hpp` |
    | the sequence on disk (docs/SEQUENCE_FILE.md): its layout, writer and reader, the comparison of two frames' descriptions bit for bit (`src/camera/sequence_format.*`); the POSIX file calls the writers and readers share | `src/camera/sequence_*`; `src/camera/posix_file.*` |
    | Orbbec: alignment, color decoding, OrbbecSDK's report as plain data | `src/camera/orbbec_device.*` |
@@ -225,7 +227,10 @@ checkers; these are the rules no checker holds.
    | the frame's pyramid: the intensity, the coarser levels and their intrinsics; the rule of one surface the stages share | `src/geometry/frame_pyramid.*`; `src/geometry/one_surface.cuh` |
    | the sparse TSDF (docs/methods/sparse-tsdf.md): its voxel, its parameters (the voxel size, the truncation's rule, the far depth) and their check against one frame's bound, its hash of blocks, its pool and the division of the memory budget, the allocation of the blocks near a frame's surface; the hash's insertion and lookup as device code, which every fusion kernel calls | `src/fusion/sparse_tsdf.*`; `src/fusion/block_hash.cuh` |
    | point clouds: creation, filters, normals, search; the 3x3 eigensolver, `float3` arithmetic and its Eigen conversion | `src/geometry/` |
-   | registration (colored ICP); the 3x3 LDLT solve | `src/registration/` |
+   | the registration of a frame against a surface (docs/methods/registration.md): the surface's view, the parameters, the result, the association and the system on the GPU | `src/registration/registration.*` |
+   | one iteration's normal equations solved on the host: the sums' positions, the centring, the degeneracy test and the damped step, the constants that judge a system | `src/registration/normal_equations.*` |
+   | the SE(3) exponential, the registration's pose update, its one copy | `src/registration/se3.*` |
+   | the prototype's colored ICP, the oracle until it is retired; the 3x3 LDLT solve | `src/registration/` |
    | the files a scan keeps (docs/SCAN_FILES.md); the parameters of each object class | `src/scan/` |
    | `orbbec_viewer`'s loop on a frame source: the first frame, the report line, the window, the snapshots, the sequence it writes | `apps/viewer_loop.*` |
    | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, a point's distance from a known surface, the trajectories it renders along | `tests/synthetic_source.*` |
@@ -257,7 +262,7 @@ checkers; these are the rules no checker holds.
 | `CODING_STANDARDS.md` | the style guides, what they leave to this tree, the rules for the rewrite's code, the checkers |
 | `GLOSSARY.md`, `docs/adr/` | the scanner's terms; the decisions in force and why |
 | `docs/SCAN_FILES.md` | the formats of the files a scan keeps: the models (PLY), the trajectory, the parameters |
-| `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md`, `normals.md`, `frame-pyramid.md` and `sparse-tsdf.md` |
+| `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md`, `normals.md`, `frame-pyramid.md`, `registration.md` and `sparse-tsdf.md` |
 | `docs/SEQUENCE_FILE.md` | the format of a sequence: a scan's frames with their poses, which the viewer writes and the scanner and the replay tool are planned to write or read |
 | `docs/agents/` | how the workflow skills in `.claude/skills/` find the tracker and the domain docs |
 
