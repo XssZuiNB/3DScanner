@@ -29,8 +29,9 @@ the ones below it: `types`, `camera`, `orbbec_camera`, `gpu`, `geometry`, `regis
 two so that only the Orbbec camera links OrbbecSDK: `camera`, the frame and the frame source
 seam, which the offline tests link without OrbbecSDK; and `orbbec_camera`, which puts the
 camera behind `gca::device`, where `orbbec_device` delivers depth aligned to color, so the GPU
-code sees one resolution and one set of intrinsics. The camera is not on the seam yet. The
-programs in `apps/` each open the camera themselves; there is no daemon.
+code sees one resolution and one set of intrinsics. The camera is not on the seam yet.
+`orbbec_viewer` in `apps/` opens the camera itself, and `distortion_check` reads the viewer's
+snapshots without it; there is no daemon.
 
 ## 2. Before you run anything
 
@@ -65,6 +66,7 @@ The left column looks diagnostic and often is not.
 |---|---|
 | `tools/build.sh`, `tools/verify.sh`, `tools/run_mutant.sh` | no hardware access |
 | `tools/fetch_deps.sh` | no hardware access; downloads into `~/.local/share/3dscanner` |
+| `build/apps/distortion_check` | no hardware access: reads a snapshot's two PNG files and prints its numbers; a command line it refuses exits 2 with the reason and the usage [S: distortion_check.cpp; the refusals: ctest `distortion_options`]; links neither OrbbecSDK nor CUDA [M 2026-11-14: `ldd`] |
 | `build/apps/orbbec_viewer --list` | opens the camera, reads its info and stream profiles, starts no stream [S: orbbec_device.cpp]; what OrbbecSDK sends on open is unverified [?] |
 | `build/apps/orbbec_viewer` with an argument it does not know (`--help` too) or an option without its value | prints the reason and the usage line and exits 2; `main` reads the options before it opens the camera or the GPU or installs a signal handler [S: orbbec_viewer.cpp, `main`; the refusals: ctest `viewer_options`]. The load-time code of OrbbecSDK, OpenCV and CUDA runs before `main`; what it does is unverified [?] |
 | `build/apps/orbbec_viewer [--frames N]` | streams color and depth with depth-to-color alignment; sets no option of the camera [S]; `s`, or the last of N frames headless, writes `cloud_NNN.ply`, `.color.png`, `.depth.png` into the current directory: run it in a scratch directory |
@@ -158,9 +160,10 @@ Free choices: the stream size 640x400 at 30 fps [?: a choice; it exists on USB 2
   `thrust::make_pair<float, float3>(a, b)` no longer compiles with lvalues; construct
   `thrust::pair<float, float3>(a, b)` [M 2026-11-13, CUDA 12.6].
 * **The point-cloud kernel deprojects pixel u at u - 0.5**
-  (`cuda_point_cloud_factory.cu`, `depth_uv`), half a pixel off the pinhole model with the
-  principal point the SDK reports, about 1 mm at 1 m with fx = 500 [S]. Pinned as is by
-  `tests/test_point_cloud_from_rgbd.cpp`; whether it is right for Orbbec intrinsics is open.
+  (`cuda_point_cloud_factory.cu`, `depth_uv`), half a pixel off the convention OrbbecSDK's own
+  code uses for its intrinsics, pixel centres at whole numbers (docs/HARDWARE.md, "What the
+  camera is and reports"): about 1 mm at 1 m with fx = 500 [S]. Pinned as is by
+  `tests/test_point_cloud_from_rgbd.cpp`.
 
 ## 7. How the code is written
 

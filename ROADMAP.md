@@ -30,7 +30,12 @@ old loop.
   network").
 * A box of measured size for each object class, for the phase's acceptance.
 * A printed checkerboard on a flat, stiff board, its square size measured, for the
-  measurement of the aligned frames' distortion.
+  measurement of the aligned frames' distortion. It has to span at least half the picture,
+  about A3 (11x7 inner corners of 30 mm) at 0.35 m [?: computed from the color coefficients,
+  not measured]: reaching from the middle into a corner it is 0.3 px rms and up to 0.8 to 1.1 px
+  off a homography at 1280x800, centred 0.2 px rms and 0.5 px at most, and a small board near a
+  corner only 0.02 to 0.05 px, below the 0.04 px rms (0.12 px at most) the corner finder leaves
+  on a synthetic pinhole picture [M 2026-11-14: `tests/test_checkerboard_measure.cpp`].
 * The license of `data/frag_115.ply` and `frag_116.ply`: unchecked (README.md, "License"),
   while ADR 0002 admits permissive licenses only.
 * The go for each `ready-for-human` ticket.

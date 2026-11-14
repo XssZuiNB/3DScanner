@@ -17,7 +17,7 @@ result is a colored model of the object, later a mesh and measurements
 | directory | what |
 |---|---|
 | `src/` | one library per directory: `types/` (camera parameters, a frame's description and console colors, header only), `camera/`, `gpu/`, `geometry/`, `registration/`; `camera/` holds two, so that only the Orbbec camera links OrbbecSDK: `camera` (the frame and the frame source seam) and `orbbec_camera` (Orbbec behind `gca::device`) |
-| `apps/` | `orbbec_viewer` (camera test, live point cloud) and its command line, `viewer_options` |
+| `apps/` | `orbbec_viewer` (camera test, live point cloud) and its command line, `viewer_options`; `distortion_check` (whether the aligned frames are distorted, from a snapshot of a checkerboard), its measurement, `checkerboard_measure`, and its command line, `distortion_options` |
 | `tests/` | offline tests, run by ctest; they need the GPU, no camera; the synthetic source that renders their frames |
 | `tools/` | fetch the dependencies, build, verify (AGENTS.md §4) |
 | `data/` | the two colored-ICP fragments, `frag_115.ply` and `frag_116.ply` |
@@ -25,9 +25,11 @@ result is a colored model of the object, later a mesh and measurements
 
 ## Build
 
-Needs CUDA 12 (12.6 tested), CMake 3.25.2+ (4.4.4 tested), OpenCV 4 and ccache
-(CODING_STANDARDS.md, "Tools"). The tree builds as C++20 for C++ and CUDA, and Eigen's LGPL
-files are shut out (CODING_STANDARDS.md, "What the guides leave to this tree").
+Needs CUDA 12 (12.6 tested), CMake 3.25.2+ (4.4.4 tested), OpenCV 4 (4.8.0 tested) with
+core, imgproc, imgcodecs, highgui, and calib3d with the features2d and flann it links, which
+`distortion_check` adds for the checkerboard, and ccache (CODING_STANDARDS.md, "Tools"). The
+tree builds as C++20 for C++ and CUDA, and Eigen's LGPL files are shut out
+(CODING_STANDARDS.md, "What the guides leave to this tree").
 Then:
 
     tools/fetch_deps.sh     # OrbbecSDK v2 and Eigen into ~/.local/share/3dscanner
@@ -42,6 +44,12 @@ Once per machine, as root: the Orbbec udev rule, from the SDK
 
     <repo>/build/apps/orbbec_viewer --list     # device and stream profiles
     <repo>/build/apps/orbbec_viewer            # color | depth | overlay; s saves a PLY, q quits
+
+A snapshot of a flat checkerboard, measured without the camera; the intrinsics and the depth
+scale are the ones the viewer prints at that stream size:
+
+    <repo>/build/apps/distortion_check --fx 612.369 --fy 612.286 --cx 635.814 --cy 398.267 \
+        --depth-scale 0.001 --square-mm 30 --corners 11x7 cloud_000.ply.color.png cloud_000.ply.depth.png
 
 ## License
 

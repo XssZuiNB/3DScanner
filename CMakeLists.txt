@@ -86,9 +86,15 @@ endif()
 # "What the guides leave to this tree", Eigen).
 set_property(TARGET Eigen3::Eigen APPEND PROPERTY INTERFACE_COMPILE_DEFINITIONS EIGEN_MPL2_ONLY)
 
+# ---------------------------------------------------------------- OpenCV
+# The Orbbec camera library (orbbec_camera) and the viewer decode, save and show images with it;
+# distortion_check finds the checkerboard and fits its homography with calib3d, which links
+# features2d and flann [M 2026-11-14: ldd of distortion_check, OpenCV 4.8.0].
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui calib3d features2d flann)
+
 # ---------------------------------------------------------------- Camera backends
-# The Orbbec camera library (orbbec_camera) and the viewer, the only users of OpenCV, are built
-# with the Orbbec backend; the camera library, the frame and its seam, is built without it too.
+# The Orbbec camera library (orbbec_camera) and the viewer are built with the Orbbec backend;
+# the camera library, the frame and its seam, is built without it too.
 option(GCA_WITH_ORBBEC "Build Orbbec camera support (OrbbecSDK v2)" ON)
 if(GCA_WITH_ORBBEC)
     if(NOT OrbbecSDK_DIR)
@@ -100,7 +106,6 @@ if(GCA_WITH_ORBBEC)
         set(OrbbecSDK_DIR "${_ob_sdk_dir}" CACHE PATH "OrbbecSDK cmake config dir")
     endif()
     find_package(OrbbecSDK REQUIRED)
-    find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui)
 endif()
 
 message(STATUS "GCA: Orbbec=${GCA_WITH_ORBBEC}")

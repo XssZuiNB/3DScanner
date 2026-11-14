@@ -130,7 +130,19 @@ Depth to color [M]: a rotation within 0.001 of the identity, translation -25.064
 left and right edges, 2.5 px at the middle of the top and bottom edges and 8.6 px in a
 corner [?: computed from the coefficients, not measured on an image]. Whether hardware
 depth-to-color alignment delivers depth on the distorted color grid or on an undistorted one
-is unverified [?].
+is unverified [?]; `distortion_check` measures it on a snapshot of a flat checkerboard
+(README.md, "Run").
+
+**Pixel convention** [S: OrbbecSDK_v2's source at tag v2.10.6, the installed version]: the
+SDK's own code uses its intrinsics with pixel centres at whole numbers, the convention of the
+rewrite. Its deprojection takes the pixel index as it is, x = d (u - cx) / fx
+(`src/shared/utils/CoordinateUtil.cpp`, `transformation2dTo3d`; its xy tables put pixel u at
+`(float)u`), and mirroring an image maps cx to w - cx - 1
+(`src/shared/utils/CameraParamProcess.cpp`, `cameraIntrinsicParamsMirror`). That is how the
+SDK's code uses the intrinsics, not a statement of the calibration that produced them. A
+checkerboard cannot check it: an error of the principal point by δ leaves the picture of a
+plane a homography and moves every deprojected point by z δ / f, 0.4 mm at 0.5 m for half a
+pixel, without bending a plane [S: the pinhole model].
 
 ## Connections
 
