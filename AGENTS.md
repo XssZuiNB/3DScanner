@@ -22,25 +22,26 @@ the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the frame, t
 seam and the sequence on disk (`src/camera/`); the GPU image, the pool that closes and a
 frame's upload (`src/gpu/`); the organized points from a frame's depth
 (`src/geometry/organized_points.*`) and their normals (`src/geometry/organized_normals.*`); the
-sparse TSDF's hash of blocks and its pool (`src/fusion/`); the files a scan keeps and the
-parameters of each object class (`src/scan/`). The tree is CUDA_3D cleaned up (dead code,
-RealSense and PCL removed), made to build here and given the Orbbec camera. It is the rewrite's
-prototype: its methods carry over, and its code is the test oracle until new code replaces it
-(CODING_STANDARDS.md, "The rewrite's code").
+sparse TSDF's hash of blocks, its pool and the allocation of the blocks near a frame's surface
+(`src/fusion/`); the files a scan keeps and the parameters of each object class (`src/scan/`).
+The tree is CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to build here and
+given the Orbbec camera. It is the rewrite's prototype: its methods carry over, and its code is
+the test oracle until new code replaces it (CODING_STANDARDS.md, "The rewrite's code").
 
 The tree today: `src/` is seven static libraries and the header-only `types`, each linking only
 the ones below it: `types`, `camera`, `orbbec_camera`, `gpu`, `geometry`, `registration`,
-`fusion`, `scan` (`src/CMakeLists.txt`; `gpu` links `camera` for the frame it uploads, `scan`
-for the POSIX file calls). There is one library per directory, except `src/camera/`, which
-holds two so that only the Orbbec camera links OrbbecSDK: `camera`, the frame, the frame source
-seam, the sequence on disk and the Orbbec camera's rules that need no camera, which the offline
-tests link without OrbbecSDK; and `orbbec_camera`, where `orbbec_device` is the camera as a
-frame source and delivers depth aligned to color, so the GPU code sees one resolution and one
-set of intrinsics. `orbbec_viewer` in `apps/` runs its loop (`apps/viewer_loop.*`) on the
-camera as a frame source, and the offline tests run the same loop on their synthetic source;
-the loop turns each frame's color to BGR8 for the prototype's GPU code and, with `--sequence`,
-writes the frames it takes into a sequence. `distortion_check` reads the viewer's snapshots
-without the camera; there is no daemon.
+`fusion`, `scan` (`src/CMakeLists.txt`; `gpu` links `camera` for the frame it uploads, `scan` for
+the POSIX file calls; `fusion` links `geometry` for a frame's organized points). There is one
+library per directory, except `src/camera/`, which holds two so that only the Orbbec camera
+links OrbbecSDK: `camera`, the frame, the frame source seam, the sequence on disk and the Orbbec
+camera's rules that need no camera, which the offline tests link without OrbbecSDK; and
+`orbbec_camera`, where `orbbec_device` is the camera as a frame source and delivers depth
+aligned to color, so the GPU code sees one resolution and one set of intrinsics.
+`orbbec_viewer` in `apps/` runs its loop (`apps/viewer_loop.*`) on the camera as a frame source,
+and the offline tests run the same loop on their synthetic source; the loop turns each frame's
+color to BGR8 for the prototype's GPU code and, with `--sequence`, writes the frames it takes
+into a sequence. `distortion_check` reads the viewer's snapshots without the camera; there is no
+daemon.
 
 ## 2. Before you run anything
 
@@ -220,13 +221,14 @@ checkers; these are the rules no checker holds.
    | the prototype's frames and camera parameters on the GPU, CUDA helpers, GPU checks | `src/gpu/` |
    | organized points from a frame's depth, their validity mask | `src/geometry/organized_points.*` |
    | the organized points' normals in image space | `src/geometry/organized_normals.*` |
-   | the sparse TSDF (docs/methods/sparse-tsdf.md): its voxel, its hash of blocks, its pool and the division of the memory budget; the hash's insertion and lookup as device code, which every fusion kernel calls | `src/fusion/sparse_tsdf.*`; `src/fusion/block_hash.cuh` |
+   | the sparse TSDF (docs/methods/sparse-tsdf.md): its voxel, its parameters (the voxel size, the truncation's rule), its hash of blocks, its pool and the division of the memory budget, the allocation of the blocks near a frame's surface; the hash's insertion and lookup as device code, which every fusion kernel calls | `src/fusion/sparse_tsdf.*`; `src/fusion/block_hash.cuh` |
    | point clouds: creation, filters, normals, search; the 3x3 eigensolver, `float3` arithmetic and its Eigen conversion | `src/geometry/` |
    | registration (colored ICP); the 3x3 LDLT solve | `src/registration/` |
    | the files a scan keeps (docs/SCAN_FILES.md); the parameters of each object class | `src/scan/` |
    | `orbbec_viewer`'s loop on a frame source: the first frame, the report line, the window, the snapshots, the sequence it writes | `apps/viewer_loop.*` |
-   | the tests' synthetic source of frames, their one renderer, the trajectories it renders along | `tests/synthetic_source.*` |
+   | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, the trajectories it renders along | `tests/synthetic_source.*` |
    | the tests' copy of a frame, to check a source left it as it was | `tests/frame_copy.hpp` |
+   | the sparse TSDF tests' lookups of blocks, their readings of the usage and the method's starting truncation | `tests/sparse_tsdf_helpers.hpp` |
    | the stages' test frames: the camera's stream sizes and intrinsics, the tabletop sphere, a scene's frames rendered | `tests/stage_frames.hpp` |
 
 5. **Log lines are an interface.** A tool that reads a program's output holds the strings

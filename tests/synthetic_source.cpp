@@ -194,42 +194,17 @@ void render(const std::vector<synthetic_surface> &surfaces,
     {
         for (std::uint32_t u = 0; u < description.size.width; u++)
         {
-            const Eigen::Vector3d ray_camera((u - double{k.cx}) / k.fx, (v - double{k.cy}) / k.fy,
-                                             1.0);
-            const Eigen::Vector3d ray_world = rotation * ray_camera;
-            std::optional<synthetic_texture> nearest;
-            double nearest_s = 0.0;
-            for (const synthetic_surface &surface : surfaces)
-            {
-                // Where origin + s * ray_world meets the surface's plane. A plane behind the
-                // camera gives s <= 0, a ray parallel to it an infinite or NaN s, and the
-                // comparisons below refuse each.
-                const Eigen::Vector3d normal = surface.axis_u.cross(surface.axis_v);
-                const double s = normal.dot(surface.centre_m - origin) / normal.dot(ray_world);
-                const Eigen::Vector3d offset = origin + s * ray_world - surface.centre_m;
-                const bool met = s > 0.0 &&
-                                 std::abs(offset.dot(surface.axis_u)) <= surface.half_u_m &&
-                                 std::abs(offset.dot(surface.axis_v)) <= surface.half_v_m;
-                if (met && (!nearest || s < nearest_s))
-                {
-                    nearest = surface.texture;
-                    nearest_s = s;
-                }
-            }
-            const std::optional<double> sphere_s =
-                sphere ? hit_sphere(*sphere, origin, ray_world) : std::nullopt;
-            if (sphere_s && (!nearest || *sphere_s < nearest_s))
-            {
-                nearest = synthetic_texture::box;
-                nearest_s = *sphere_s;
-            }
+            const Eigen::Vector3d ray_world = rotation * pixel_ray(k, u, v);
+            const std::optional<synthetic_hit> nearest =
+                first_hit(surfaces, sphere, origin, ray_world);
+            const double nearest_s = nearest ? nearest->s : 0.0;
             const double value = std::round(nearest_s / description.depth_unit_m);
             const bool seen = nearest.has_value() && value >= 1.0 &&
                               value <= std::numeric_limits<std::uint16_t>::max();
             const std::size_t pixel = static_cast<std::size_t>(v) * description.size.width + u;
             depth[pixel] = seen ? static_cast<std::uint16_t>(value) : 0;
             const std::array<double, 3> rgb =
-                seen ? texture_color(*nearest, origin + nearest_s * ray_world)
+                seen ? texture_color(nearest->texture, origin + nearest_s * ray_world)
                      : std::array<double, 3>{};
             for (std::size_t c = 0; c < 3; c++)
                 color[3 * pixel + c] = static_cast<std::uint8_t>(std::lround(rgb[c]));
@@ -262,6 +237,36 @@ std::array<double, 3> texture_color(synthetic_texture texture, const Eigen::Vect
         }
     }
     return rgb;
+}
+
+Eigen::Vector3d pixel_ray(const gca::intrinsics &k, double u, double v)
+{
+    return {(u - double{k.cx}) / k.fx, (v - double{k.cy}) / k.fy, 1.0};
+}
+
+std::optional<synthetic_hit> first_hit(const std::vector<synthetic_surface> &surfaces,
+                                       const std::optional<synthetic_sphere> &sphere,
+                                       const Eigen::Vector3d &origin, const Eigen::Vector3d &ray)
+{
+    std::optional<synthetic_hit> nearest;
+    for (std::size_t i = 0; i < surfaces.size(); i++)
+    {
+        const synthetic_surface &surface = surfaces[i];
+        // Where origin + s * ray meets the surface's plane. A plane behind the camera gives
+        // s <= 0, a ray parallel to it an infinite or NaN s, and the comparisons below refuse
+        // each.
+        const Eigen::Vector3d normal = surface.axis_u.cross(surface.axis_v);
+        const double s = normal.dot(surface.centre_m - origin) / normal.dot(ray);
+        const Eigen::Vector3d offset = origin + s * ray - surface.centre_m;
+        const bool met = s > 0.0 && std::abs(offset.dot(surface.axis_u)) <= surface.half_u_m &&
+                         std::abs(offset.dot(surface.axis_v)) <= surface.half_v_m;
+        if (met && (!nearest || s < nearest->s))
+            nearest = synthetic_hit{s, i, surface.texture};
+    }
+    const std::optional<double> sphere_s = sphere ? hit_sphere(*sphere, origin, ray) : std::nullopt;
+    if (sphere_s && (!nearest || *sphere_s < nearest->s))
+        nearest = synthetic_hit{*sphere_s, surfaces.size(), synthetic_texture::box};
+    return nearest;
 }
 
 std::optional<Eigen::Isometry3d> look_at(const Eigen::Vector3d &position,

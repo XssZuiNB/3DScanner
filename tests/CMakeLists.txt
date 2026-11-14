@@ -79,3 +79,9 @@ add_test(NAME organized_normals COMMAND test_organized_normals)
 add_executable(test_sparse_tsdf_blocks test_sparse_tsdf_blocks.cpp)
 target_link_libraries(test_sparse_tsdf_blocks PRIVATE fusion)
 add_test(NAME sparse_tsdf_blocks COMMAND test_sparse_tsdf_blocks)
+
+# The sparse TSDF's allocation near a frame's surface, on frames of the synthetic source at their
+# known poses; scan gives the object classes' voxel sizes and depth ranges.
+add_executable(test_sparse_tsdf_allocation test_sparse_tsdf_allocation.cpp)
+target_link_libraries(test_sparse_tsdf_allocation PRIVATE fusion scan synthetic_source)
+add_test(NAME sparse_tsdf_allocation COMMAND test_sparse_tsdf_allocation)

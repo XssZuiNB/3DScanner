@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: 0BSD
 /// @file synthetic_source.hpp
-/// The tests' synthetic source: a frame source (camera/frame_source.hpp) that renders a known
-/// scene by the one pinhole convention (types/camera_param.hpp) and tells a test what it
-/// rendered. The scene is a textured support plane, a textured box of known size standing on it
-/// or none, a textured sphere of known centre and radius or none, and a known trajectory: frame i
-/// of an opening is seen from the trajectory's pose i. The source tells a test the trajectory and
-/// the known surfaces, textured rectangles in the world frame, and the sphere, which are exactly
-/// what it renders. It also builds the trajectories its scenes are seen along: a camera's upright
-/// pose looking at a point, and a walk once around a point, each refused as a value where the
-/// view is not defined. This is the one renderer of the tests' frames: a test whose scene it
-/// lacks adds the scene here as one more option. A test builds the source to deliver its
+/// The tests' synthetic source: a frame source (camera/frame_source.hpp) that renders a known scene
+/// by the one pinhole convention (types/camera_param.hpp) and tells a test what it rendered. The
+/// scene is a textured support plane, a textured box of known size standing on it or none, a
+/// textured sphere of known centre and radius or none, and a known trajectory: frame i of an
+/// opening is seen from the trajectory's pose i. The source tells a test the trajectory and the
+/// known surfaces, textured rectangles in the world frame, and the sphere, which are exactly what
+/// it renders, the pinhole ray of any point of the picture, and where any ray first meets them, the
+/// hit it renders each pixel from. It also builds the trajectories its scenes are seen along: a
+/// camera's upright pose looking at a point, and a walk once around a point, each refused as a
+/// value where the view is not defined. This is the one renderer of the tests' frames: a test whose
+/// scene it lacks adds the scene here as one more option. A test builds the source to deliver its
 /// trajectory's frames and then to report the end, a timeout or a failure, or to refuse its
 /// opening, each with the message it is given. No camera and no OrbbecSDK; host only.
 
@@ -17,6 +18,7 @@
 
 #include "camera/frame.hpp"
 #include "camera/frame_source.hpp"
+#include "types/camera_param.hpp"
 #include "types/frame_description.hpp"
 
 #include <array>
@@ -110,6 +112,37 @@ struct synthetic_surface
     double half_v_m;           ///< half its extent along axis_v, in m, > 0
     synthetic_texture texture; ///< its texture
 };
+
+/// Returns the ray of a point of the picture by the one pinhole convention
+/// (types/camera_param.hpp: pixel centres at whole numbers), the ray the synthetic source renders
+/// each pixel along.
+/// @param k [in] the intrinsics, in px.
+/// @param u [in] the column, in px, any real value: between pixels too.
+/// @param v [in] the row, in px, any real value.
+/// @return ((u - cx) / fx, (v - cy) / fy, 1), in the camera frame.
+Eigen::Vector3d pixel_ray(const gca::intrinsics &k, double u, double v);
+
+/// Where a ray first meets a scene in front of its origin.
+struct synthetic_hit
+{
+    double s;                  ///< the ray's parameter at the hit: the hit is origin + s ray
+    std::size_t surface;       ///< the surface met: its index in the known surfaces, or their
+                               ///< count for the sphere
+    synthetic_texture texture; ///< the texture of the surface met
+};
+
+/// Finds where a ray first meets the known surfaces and the sphere in front of its origin, as the
+/// synthetic source renders each pixel: the hit of the smallest s > 0, the earlier surface on a tie
+/// and a surface before the sphere.
+/// @param surfaces [in] the known surfaces, in the world frame (synthetic_source::surfaces()).
+/// @param sphere [in] the sphere, in the world frame, or none.
+/// @param origin [in] the ray's origin, the camera's centre in the world frame, in m.
+/// @param ray [in] the ray's direction in the world frame, not zero; not unit: for a camera's ray
+///        whose z in the camera frame is 1, s is the hit's depth along the camera's z, in m.
+/// @return the hit; nothing when the ray meets no surface in front of its origin.
+std::optional<synthetic_hit> first_hit(const std::vector<synthetic_surface> &surfaces,
+                                       const std::optional<synthetic_sphere> &sphere,
+                                       const Eigen::Vector3d &origin, const Eigen::Vector3d &ray);
 
 /// Returns a camera's pose looking from a position toward a target, upright, then rolled about
 /// its viewing axis. Before the roll its z axis points to the target, its x axis is level and to

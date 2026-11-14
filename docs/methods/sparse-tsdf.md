@@ -10,9 +10,9 @@ pose, giving the surface the registration takes; extract the colored points with
 the full model is made of.
 
 Built so far: the hash of blocks and the pool they come from (`src/fusion/sparse_tsdf.*`, its
-test `tests/test_sparse_tsdf_blocks.cpp`). The allocation near a frame's surface, the
-integration, the extraction and the ray cast are not built yet; this document is their method,
-written before their code.
+test `tests/test_sparse_tsdf_blocks.cpp`), and the allocation near a frame's surface (its test
+`tests/test_sparse_tsdf_allocation.cpp`). The integration, the extraction and the ray cast are
+not built yet; this document is their method, written before their code.
 
 The method is the volumetric fusion of Curless and Levoy [S: B. Curless, M. Levoy, "A
 Volumetric Method for Building Complex Models from Range Images", SIGGRAPH 1996], in the
@@ -96,6 +96,17 @@ section 5]. Here it follows the camera's depth noise at the measured depth z_m:
   each side of a zero crossing, along any axis and diagonal, with room to spare; its half is the
   ray cast's step ("The ray cast").
 
+The sparse TSDF takes the voxel size v and the rule's c, k and μ_min as its parameters when it
+is requested (`gca::sparse_tsdf_parameters`) and keeps them for every operation, so that the
+allocation, the integration and the ray cast use the same μ. The scan fills them, v from the
+object class; the tests name the values above. The request refuses a value outside its range [?:
+a choice], so that a mistaken value is a refusal and not a kernel that runs for minutes: v from
+0.5 mm to 16 mm, half the object classes' finest voxel size and twice their coarsest; c above 0
+up to 0.1 /m, ten times the datasheet's bound, room for the measured c; k from 1 to 10; μ_min
+from 1 voxel, the least the zero crossing needs, to 16. Within the ranges a band can still cross
+far more blocks than the starting values give; the allocation caps that ("The allocation near a
+frame's surface").
+
 What the rule gives, in mm [S: computed]:
 
 | voxel size | μ_min | μ at 0.3 m | 0.5 m | 1.0 m | 2.0 m | 3.0 m | 3σ passes μ_min at |
@@ -174,8 +185,11 @@ atomic compare-and-swap on the key.
 * **Lookup**: the slots h, h + 1, ... (mod S) in turn, until the key (its block's number, or
   none when it has no block), the empty key (none), or S slots (none).
 * **Insertion**, by many threads at once, each with one coordinate, in one kernel: each tries
-  the slots in the same order, h, h + 1, ..., with atomicCAS(slot, empty, key) [S: CUDA C++
-  Programming Guide, "Atomic Functions", atomicCAS on 64-bit words]. The swap returns:
+  the slots in the same order, h, h + 1, ..., reading each slot's key by a relaxed atomic load
+  first [S: libcu++, `cuda::atomic_ref`]: the key itself ends the insertion and another key
+  passes the slot, as the swap's answers below do, without the swap. An empty slot takes
+  atomicCAS(slot, empty, key) [S: CUDA C++ Programming Guide, "Atomic Functions", atomicCAS on
+  64-bit words], which returns:
   * the empty key: this thread has put the key there and is the one thread that inserts it. It
     takes the next block's number n with atomicAdd on the pool's count of claims; n below the
     pool's blocks is written as the slot's block, otherwise the slot keeps "no block" and the
@@ -187,24 +201,24 @@ atomic compare-and-swap on the key.
 
 **Why no key is lost or doubled.** A slot changes once, from empty to a key, and never back.
 Every thread that inserts key K tries the same slots in the same order, and passes a slot only
-when it holds another key, which it then holds for good. Let s be the first slot of that order
-that ever holds K: every slot before s held another key when the first of these threads passed
-it, so every later thread passes it too, reaches s and finds K there or puts it there; the swap
-on s succeeds for exactly one of them. So K stands in exactly one slot, gets at most one
-block's number, and a lookup, which tries the same order, finds it.
+when it holds another key, by the load or by the swap, which it then holds for good. Let s be
+the first slot of that order that ever holds K: every slot before s held another key when the
+first of these threads passed it, so every later thread passes it too, reaches s and finds K
+there or puts it there; the swap on s succeeds for exactly one of them. So K stands in exactly
+one slot, gets at most one block's number, and a lookup, which tries the same order, finds it.
 
 **What is wait-free, and what is not.** No thread waits for another and none holds a lock: an
-insertion ends after at most S swaps whatever the other threads do, a bound on its own steps
-(wait-free, not only lock-free). What is not atomic: the block's number is written by a plain
-store after the swap, so within the kernel that inserts, another thread can find the key before
-its number and read the slot's cleared "no block". Lookups and every reading of a block's number
-therefore run in a kernel queued after the insertions on the same stream, which sees all their
-writes [S: CUDA C++ Programming Guide, "Streams": the work of one stream runs in order]; the
-TSDF is used from one stream at a time. The insertion and the lookup are one device function
-each (`src/fusion/block_hash.cuh`), which every kernel that inserts or finds a block calls. Nießner et al.
-lock a bucket for an insertion instead, and "all other allocations for the same bucket are
-staggered until the next frame is processed" [S: 2013, section 4.2]: a block is then missing for
-a frame. Here none is.
+insertion ends after at most S slots, a load and at most one swap each, whatever the other
+threads do, a bound on its own steps (wait-free, not only lock-free). What is not atomic: the
+block's number is written by a plain store after the swap, so within the kernel that inserts,
+another thread can find the key before its number and read the slot's cleared "no block".
+Lookups and every reading of a block's number therefore run in a kernel queued after the
+insertions on the same stream, which sees all their writes [S: CUDA C++ Programming Guide,
+"Streams": the work of one stream runs in order]; the TSDF is used from one stream at a time.
+The insertion and the lookup are one device function each (`src/fusion/block_hash.cuh`), which
+every kernel that inserts or finds a block calls. Nießner et al. lock a bucket for an insertion
+instead, and "all other allocations for the same bucket are staggered until the next frame is
+processed" [S: 2013, section 4.2]: a block is then missing for a frame. Here none is.
 
 **Probes.** At a load α of keys per slot, linear probing needs about (1 + 1 / (1 - α)) / 2
 probes to find a key and (1 + 1 / (1 - α)²) / 2 to find it absent [S: Knuth, section 6.4]: at
@@ -223,19 +237,19 @@ Blocks are numbered in the order they are claimed and never freed during a scan:
 pool ends with the scan. (Nießner et al. free blocks far from the surface and stream blocks
 between GPU and host [S: 2013, sections 6 and 8]; neither is built here.)
 
-**The memory budget** is all of the sparse TSDF's device memory: the pool's blocks (4096
-bytes each); the hash's keys, blocks' numbers and stamps of the last frame (16 bytes a slot);
-the frame's list of slots (4 bytes a block, "The allocation near a frame's surface"); and three
-32-bit counts, of claims, of refusals and of the list. The object class sets it
-(`src/scan/object_class.cpp`), 1.0 GB to start with [?: initial]. The pool holds the largest
-number of blocks B for which
+**The memory budget** is all of the sparse TSDF's device memory: the pool's blocks (4096 bytes
+each); the hash's keys, blocks' numbers and stamps of the last frame (16 bytes a slot); the
+frame's list of slots (4 bytes a block, "The allocation near a frame's surface"); and four
+32-bit counts, of claims, of refusals, of the list and of the rays not walked. The object class
+sets it (`src/scan/object_class.cpp`), 1.0 GB to start with [?: initial]. The pool holds the
+largest number of blocks B for which
 
-    4100 B + 16 S + 12 <= budget,   S = the least power of two >= 2 B
+    4100 B + 16 S + 16 <= budget,   S = the least power of two >= 2 B
 
-so at 1.0 GB, B = 241856 blocks and S = 524288 slots, 999998220 bytes, of which the keys and
+so at 1.0 GB, B = 241856 blocks and S = 524288 slots, 999998224 bytes, of which the keys and
 numbers take 6.3 MB and the stamps and the list 3.1 MB [S: computed]. B is at most 2^30, so that
-S fits 32 bits. The stamps and the list are counted and requested now, before their first user,
-the allocation, so that the budget's division stays as it is.
+S fits 32 bits. The stamps and the list are the allocation's ("The allocation near a frame's
+surface").
 
 **One sparse TSDF exists at a time.** Refinement's, at the full voxel size, is requested from a
 pool of its own after the live model's is released, within the same budget.
@@ -258,15 +272,20 @@ is read. After that no operation of the sparse TSDF allocates.
 
 **A pool too small** is reported as a value. Reading the usage gives the blocks the pool holds,
 the blocks in use, the coordinates refused for a full pool and those refused for a full hash or
-out of range; the share in use is the blocks in use over the blocks held, and the pool is used
-up when the two are equal. A reading that fails gives no usage, so it is never taken for a
+out of range, the last allocation's slots on the frame's list and those past its room, and the
+rays not walked; the share in use is the blocks in use over the blocks held, and the pool is
+used up when the two are equal. A reading that fails gives no usage, so it is never taken for a
 used-up pool. The reading copies the counts and waits for the stream, and so for all the work
 queued on it before; in the per-frame path it comes after the registration's own readback, which
-has waited for that work already, so that it costs only its copy of 12 bytes. A coordinate refused for
-a full pool keeps its slot without a block, so the count of claims is the count of distinct
-coordinates the hash took, and the same set of insertions gives the same counts in every run;
-the hash fills only when more distinct coordinates than S arrive, which a scan that ends on a
-used-up pool never sends.
+has waited for that work already, so that it costs only its copy of 16 bytes. A coordinate
+refused for a full pool keeps its slot without a block, so the count of claims is the count of
+distinct coordinates the hash took, and the same set of insertions gives the same counts in
+every run; the hash fills only when more distinct coordinates than S arrive. One frame can send
+that many: then each later insertion and each lookup of an absent block probes all S slots. With
+the starting values a frame touches far fewer, 5215 and 10950 blocks at 1280x800
+(docs/HARDWARE.md, "The per-frame path's stages"); within the parameters' ranges one can touch
+more than S, a plane facing the camera 0.7 m away at 1280x800, 1 mm voxels and c = 0.1 /m about
+790000 [S: computed, (2 μ / (8 v) + 1) / (8 v)^2 blocks a square metre over 1.34 m^2].
 
 **Nothing is written outside the pool.** The block numbers handed out are 0 to B - 1, each to
 one coordinate; a stage writes a voxel only of a block whose number it found by a lookup, and
@@ -281,22 +300,60 @@ determine all the voxel blocks that intersect with the ray"]:
 
 1. For each valid pixel with depth z_m, the segment of its ray between the depths z_m - μ(z_m)
    and z_m + μ(z_m) (docs/methods/organized-points.md, "Deprojection", at each depth), carried
-   into the models' frame by the pose.
-2. The blocks the segment passes through, in order, by the grid traversal of Amanatides and Woo
-   [S: J. Amanatides, A. Woo, "A Fast Voxel Traversal Algorithm for Ray Tracing", Eurographics
-   1987] on the grid of blocks, each inserted into the hash.
-3. The list of the frame's blocks, each block once, which the integration runs over: each slot
-   keeps the number of the last frame that touched it, exchanged atomically; the thread that
-   changes it appends the slot to the list. The list holds B slots, as many as the pool has
-   blocks; a frame that touches more distinct slots, which only happens once the pool is used
-   up, has the rest counted, not written.
+   into the models' frame by the pose. The pixel's organized point p = z_m r lies on the ray, so
+   the segment runs from p (z_m - μ) / z_m to p (z_m + μ) / z_m; no intrinsics are needed. The
+   pose is rounded to float, its quaternion normalized; a pose that is not finite in float, or a
+   quaternion of zero, is refused.
+2. The blocks the segment passes through, in order, by the grid traversal of Amanatides and
+   Woo [S: J. Amanatides, A. Woo, "A Fast Voxel Traversal Algorithm for Ray Tracing",
+   Eurographics 1987] on the grid of blocks, each inserted into the hash. Each axis counts its
+   steps from the start's block to the end's, |floor(end) - floor(start)|, and the traversal
+   takes the axis whose next border comes first among those with a step left, so that float's
+   rounding cannot carry it past the end's block or end it early: it visits exactly the sum of
+   the steps plus one block. A segment of length L blocks visits at most 1 + Σ⌈|Δ_i|⌉ < √3 L + 4
+   blocks, Δ its extent along each axis. With the starting values, at the object classes'
+   farthest depths and the camera's longest ray, |r| = 1.591 at either stream size, that is 14
+   blocks at 2 mm voxels and 27 at 8 mm (the live models), 24 at 1 mm and 50 at 4 mm (the final
+   models) [S: computed, the most over the segment's directions]. **The cap**: a thread walks at
+   most 64 blocks [?: a choice, above the 50]; a ray whose band crosses more, or whose segment
+   has an end that is not finite in float, is not walked and is counted (`rays_not_walked` of
+   the usage), so that no thread runs long whatever the parameters within their ranges. Before
+   the count, each end is clamped to one block past the hash's range on each side, so that it
+   converts to an integer; an end beyond the range, which only a broken pose gives, then lies in
+   a block the hash refuses, and the in-range part of such a segment may differ from the true
+   one's.
+3. The list of the frame's blocks, each block once, which the integration runs over: each
+   slot keeps the number of the last frame that touched it, exchanged atomically after a relaxed
+   load finds another; the thread whose exchange changes it appends the slot to the list. The
+   two loads spare the atomics for the blocks a frame finds held, most of them (their times:
+   docs/HARDWARE.md, "The per-frame path's stages"). Each allocation is a frame of its own,
+   numbered by the sparse TSDF's count of allocations from 0, so that allocating the same frame
+   again lists its slots again; the stamp with every bit 1 means "no frame", which the count
+   reaches after 2^32 - 1 allocations, 4.5 years at 30 fps [S: computed]. The list's count is
+   set to 0 before each allocation. The list holds B slots, as many as the pool has blocks; a
+   frame that touches more distinct slots, which only happens once the pool is used up, has the
+   rest counted, not written. Reading the usage gives both counts.
 
 Between the rays: a block that the band crosses but no ray does is missed. Neighbouring rays are
-z / fx apart: at 640x400 (fx = 306.18 px [M 2026-11-13: the camera's intrinsics at
-640x400, as `tests/test_organized_points.cpp` takes them]) 3.3 mm at 1 m and 9.8 mm at 3 m, at 1280x800 1.6 mm
-and 4.9 mm, against a block's edge of 16 mm at 2 mm voxels and 64 mm at 8 mm [S: computed], so
-only a block grazed at a corner can be missed. The allocation's test states how far from the
-surface such a miss lies.
+z / fx apart: at 640x400 (fx = 306.18 px [M 2026-11-13: the camera's intrinsics at 640x400, as
+`tests/test_organized_points.cpp` takes them]) 3.3 mm at 1 m and 9.8 mm at 3 m, at 1280x800 1.6
+mm and 4.9 mm, against a block's edge of 16 mm at 2 mm voxels and 64 mm at 8 mm [S: computed],
+so only a block grazed at a corner can be missed. The allocation's test bounds such a miss: a
+point of the band between the rays, anywhere from one end of the band to the other, in a cell of
+four valid pixels, lies in an allocated block or within h of one, h its distance from the
+nearest of the four pixels' segments, each narrowed by the depth's rounding, whose points all
+lie in allocated blocks [S: geometry]. On the tabletop scene's two frames at 2 mm voxels and a
+large box's frame at 8 mm, 640x400, of 19.3 million points between the rays, 17 at three
+positions in each cell, every one lies within its bound [M 2026-11-14]. On one surface the
+misses lie only at the band's ends, |η| = μ: 21, 0 and 171 points, at most 0.21, 0 and 1.21 mm
+from an allocated block. At an edge between two surfaces a sliver that no pixel's ray meets can
+be missed whole, its surface included: 4, 46 and 3 points, at most 0.90, 2.68 and 2.47 mm from a
+block, the nearest at |η| = 0.125 μ, 0 and μ [M 2026-11-14]. None of 6.5 million points of the
+band on the pixels' own rays, narrowed by the depth's rounding, lies outside an allocated block
+by more than float's rounding (10 µm) [M 2026-11-14]. Every allocated block there lies within ε
+of a point of the band, ε up to 1.6 mm at 2 mm voxels and 4.1 mm at 8 mm (the depth's rounding
+to whole millimetres and the test's sampling of the band), so within μ(z) |r| + √3 ε of the
+surface [M 2026-11-14].
 
 ## The ray cast
 

@@ -3,7 +3,7 @@
 /// The fusion module's hash of blocks and its pool (fusion/sparse_tsdf.hpp), fed with block
 /// coordinates the test builds; the method is docs/methods/sparse-tsdf.md. Each case requests
 /// its sparse TSDF and its arrays, then closes the pool, so that every operation runs with the
-/// pool closed; the largest sparse TSDF here holds 1024 blocks, 4231180 bytes of device memory
+/// pool closed; the largest sparse TSDF here holds 1024 blocks, 4231184 bytes of device memory
 /// [S: computed], far below the memory budget's 1.0 GB, which is divided but not allocated. The
 /// coordinates go to the GPU and the numbers come back by copies on the stream the kernels run
 /// on.
@@ -24,8 +24,10 @@
 ///   blocks, a lookup of the coordinates past the range still finds none.
 /// - Refusals as values, each leaving the counts as they were: an empty sparse TSDF, no
 ///   coordinates, room for another number of blocks, CUDA's last error left by an earlier call,
-///   a budget that holds no block, a request to the closed pool; and the GPU arrays' own
-///   requests and moves.
+///   a budget that holds no block, a request to the closed pool; and the GPU arrays' own requests
+///   and moves.
+/// - The request's ranges of the voxel size and the truncation's rule: granted at their ends,
+///   refused one float step past them, at NaN, infinity and 0.
 
 #include "check.hpp"
 #include "fusion/sparse_tsdf.hpp"
@@ -33,10 +35,12 @@
 #include "gpu/gpu_pool.hpp"
 #include "gpu/step_result.hpp"
 #include "gpu_test_helpers.hpp"
+#include "sparse_tsdf_helpers.hpp"
 
 #include <cuda_runtime_api.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -55,25 +59,43 @@ namespace
 using gca_test::check;
 using gca_test::check_no_cuda_error;
 using gca_test::check_refusal;
+using gca_test::check_usage;
 using gca_test::create_stream;
+using gca_test::find;
 using gca_test::granted;
+using gca_test::lookup;
+using gca_test::make_lookup;
+using gca_test::read_usage;
 
 /// The budget of the cases' sparse TSDF: 1024 blocks and 2048 slots exactly, 1024 x 4100 +
-/// 2048 x 16 + 12 bytes [S: computed, docs/methods/sparse-tsdf.md, "The pool and the memory
+/// 2048 x 16 + 16 bytes [S: computed, docs/methods/sparse-tsdf.md, "The pool and the memory
 /// budget"].
-constexpr std::uint64_t test_budget = 4'231'180;
+constexpr std::uint64_t test_budget = 4'231'184;
 
 /// The blocks and slots of test_budget [S: computed].
 constexpr std::uint32_t test_blocks = 1024;
 constexpr std::uint32_t test_slots = 2048;
 
-/// A budget of 16 blocks and 32 slots, 16 x 4100 + 32 x 16 + 12 bytes [S: computed], whose hash
+/// A budget of 16 blocks and 32 slots, 16 x 4100 + 32 x 16 + 16 bytes [S: computed], whose hash
 /// fills with 32 distinct coordinates.
-constexpr std::uint64_t small_budget = 66'124;
+constexpr std::uint64_t small_budget = 66'128;
 
-/// A budget of 256 blocks and 512 slots, 256 x 4100 + 512 x 16 + 12 bytes [S: computed], too
+/// A budget of 256 blocks and 512 slots, 256 x 4100 + 512 x 16 + 16 bytes [S: computed], too
 /// small for the 296 coordinates of the collisions' set.
-constexpr std::uint64_t too_small_budget = 1'057'804;
+constexpr std::uint64_t too_small_budget = 1'057'808;
+
+/// The voxel size of the cases: 2 mm [?: a choice, any size in the request's range; the hash and
+/// the pool do not use it].
+constexpr float test_voxel_m = 0.002f;
+
+/// Gives a sparse TSDF's parameters with a budget, the voxel size of the cases and the method's
+/// starting values of the truncation's rule (sparse_tsdf_helpers.hpp).
+/// @param budget [in] the memory budget, in bytes.
+/// @return the parameters.
+gca::sparse_tsdf_parameters with_budget(std::uint64_t budget)
+{
+    return {budget, test_voxel_m, gca_test::method_truncation};
+}
 
 /// How many threads insert each coordinate of the collisions' set in one launch [?: a choice:
 /// more than two warps' worth, so that one warp's 32 threads may all hold one coordinate, and
@@ -99,38 +121,6 @@ coordinate_tuple as_tuple(const gca::block_coordinate &b)
     return {b.x, b.y, b.z};
 }
 
-/// Coordinates on the GPU with room for their block numbers, and the same coordinates on the host.
-struct lookup
-{
-    coordinate_list host;                              ///< the coordinates
-    gca::gpu_array<gca::block_coordinate> coordinates; ///< the coordinates on the GPU
-    gca::gpu_array<std::uint32_t> numbers;             ///< room for their block numbers
-};
-
-/// Requests the arrays of a lookup from the pool and uploads the coordinates on the stream the
-/// kernels run on, waiting for the copy, so that no kernel reads coordinates not yet copied.
-/// @param pool [in,out] the pool, open.
-/// @param host [in] the coordinates, not empty; taken over.
-/// @param stream [in] the stream of the kernels.
-/// @param what [in] the case, named in the check lines.
-/// @return the lookup; empty arrays and a failed check when the pool refused.
-lookup make_lookup(gca::gpu_pool &pool, coordinate_list host, cudaStream_t stream,
-                   const std::string &what)
-{
-    lookup made{std::move(host), {}, {}};
-    made.coordinates = granted(what + ": the coordinates' array",
-                               pool.request_array<gca::block_coordinate>(made.host.size()));
-    made.numbers =
-        granted(what + ": the numbers' array", pool.request_array<std::uint32_t>(made.host.size()));
-    if (!made.coordinates.empty())
-        check(cudaMemcpyAsync(made.coordinates.data(), made.host.data(),
-                              made.coordinates.size_bytes(), cudaMemcpyHostToDevice,
-                              stream) == cudaSuccess &&
-                  cudaStreamSynchronize(stream) == cudaSuccess,
-              (what + ": the coordinates uploaded").c_str());
-    return made;
-}
-
 /// Inserts a lookup's coordinates and checks that the work was queued.
 /// @param tsdf [in,out] the sparse TSDF.
 /// @param inserted [in] the coordinates.
@@ -141,61 +131,6 @@ void insert(gca::sparse_tsdf &tsdf, const lookup &inserted, cudaStream_t stream,
 {
     const gca::step_result queued = tsdf.insert_blocks(inserted.coordinates, stream);
     check(queued.done, (what + ": insertion queued, " + queued.message).c_str());
-}
-
-/// Finds a lookup's coordinates and downloads their block numbers on the same stream.
-/// @param tsdf [in] the sparse TSDF.
-/// @param found [in,out] the coordinates and the room for their numbers, which are written.
-/// @param stream [in] the stream, which the download waits for.
-/// @param what [in] the case, named in the check lines.
-/// @return each coordinate's block number or no_block; empty when the lookup failed.
-std::vector<std::uint32_t> find(const gca::sparse_tsdf &tsdf, lookup &found, cudaStream_t stream,
-                                const std::string &what)
-{
-    const gca::step_result queued = tsdf.find_blocks(found.coordinates, found.numbers, stream);
-    check(queued.done, (what + ": lookup queued, " + queued.message).c_str());
-    std::vector<std::uint32_t> numbers(found.host.size(), 0);
-    const bool downloaded =
-        queued.done &&
-        cudaMemcpyAsync(numbers.data(), found.numbers.data(), found.numbers.size_bytes(),
-                        cudaMemcpyDeviceToHost, stream) == cudaSuccess &&
-        cudaStreamSynchronize(stream) == cudaSuccess;
-    check(downloaded, (what + ": the numbers downloaded").c_str());
-    if (!downloaded)
-        numbers.clear();
-    return numbers;
-}
-
-/// Reads the usage and checks that it was read.
-/// @param tsdf [in,out] the sparse TSDF.
-/// @param stream [in] the stream.
-/// @param what [in] the case, named in the check line.
-/// @return the usage; all 0, which no usage read is, and a failed check when it was not read.
-gca::sparse_tsdf_usage read_usage(gca::sparse_tsdf &tsdf, cudaStream_t stream,
-                                  const std::string &what)
-{
-    const gca::usage_result read = tsdf.read_usage(stream);
-    check(read.usage.has_value() && read.message.empty(),
-          (what + ": usage read, " + read.message).c_str());
-    return read.usage.value_or(gca::sparse_tsdf_usage{0, 0, 0, 0});
-}
-
-/// Prints a usage and checks it against the expected counts.
-/// @param what [in] the case, printed and named in the check line.
-/// @param usage [in] the usage read.
-/// @param expected [in] the expected usage.
-void check_usage(const std::string &what, const gca::sparse_tsdf_usage &usage,
-                 const gca::sparse_tsdf_usage &expected)
-{
-    std::printf("%s: %u of %u blocks in use, %u refused for a used-up pool, %u coordinates "
-                "refused\n",
-                what.c_str(), usage.blocks_in_use, usage.capacity_blocks, usage.blocks_refused,
-                usage.coordinates_refused);
-    check(usage.capacity_blocks == expected.capacity_blocks &&
-              usage.blocks_in_use == expected.blocks_in_use &&
-              usage.blocks_refused == expected.blocks_refused &&
-              usage.coordinates_refused == expected.coordinates_refused,
-          (what + ": the usage expected").c_str());
 }
 
 /// What a lookup found: how many coordinates have a block, and whether their numbers are
@@ -330,7 +265,8 @@ coordinate_list collisions_set(gca::block_coordinate &left_out)
 gca::sparse_tsdf requested(gca::gpu_pool &pool, std::uint64_t budget, cudaStream_t stream,
                            const std::string &what)
 {
-    return granted(what + ": the sparse TSDF", gca::sparse_tsdf::request(pool, {budget}, stream));
+    return granted(what + ": the sparse TSDF",
+                   gca::sparse_tsdf::request(pool, with_budget(budget), stream));
 }
 
 /// Checks that the pool, closed after the case's requests, was asked for nothing more.
@@ -361,17 +297,17 @@ void check_layout(cudaStream_t stream)
     {
         const char *what;
         std::uint64_t budget;
-        gca::sparse_tsdf_layout expected; // [S: computed by hand, 4100 B + 16 S + 12]
+        gca::sparse_tsdf_layout expected; // [S: computed by hand, 4100 B + 16 S + 16]
     };
     const layout_case cases[] = {
         {"layout, 1024 blocks exactly", test_budget, {test_blocks, test_slots, test_budget}},
-        {"layout, one byte below 1024 blocks", test_budget - 1, {1023, 2048, 4'227'080}},
-        {"layout, one block exactly", 4144, {1, 2, 4144}},
-        {"layout, one byte below one block", 4143, {0, 0, 0}},
-        {"layout, 1.0 GB", 1'000'000'000, {241'856, 524'288, 999'998'220}},
+        {"layout, one byte below 1024 blocks", test_budget - 1, {1023, 2048, 4'227'084}},
+        {"layout, one block exactly", 4148, {1, 2, 4148}},
+        {"layout, one byte below one block", 4147, {0, 0, 0}},
+        {"layout, 1.0 GB", 1'000'000'000, {241'856, 524'288, 999'998'224}},
         {"layout, 2^53 bytes, 2^30 blocks at most",
          std::uint64_t{1} << 53,
-         {std::uint32_t{1} << 30, std::uint32_t{1} << 31, 4'436'701'216'780}},
+         {std::uint32_t{1} << 30, std::uint32_t{1} << 31, 4'436'701'216'784}},
     };
     for (const layout_case &c : cases)
     {
@@ -409,7 +345,7 @@ void check_collisions(cudaStream_t stream)
     const std::vector<std::uint32_t> first = find(tsdf, distinct, stream, what);
     check_found(what, first, test_blocks, set.size());
     const gca::sparse_tsdf_usage usage = read_usage(tsdf, stream, what);
-    check_usage(what, usage, {test_blocks, static_cast<std::uint32_t>(set.size()), 0, 0});
+    check_usage(what, usage, {test_blocks, static_cast<std::uint32_t>(set.size()), 0, 0, 0, 0, 0});
     const std::vector<std::uint32_t> not_there = find(tsdf, absent, stream, what);
     check(not_there.size() == 1 && not_there.front() == gca::no_block,
           "collisions: a coordinate of a full run's home slot, never inserted, is not found");
@@ -503,7 +439,7 @@ void check_pool_too_small(cudaStream_t stream)
 
     insert(tsdf, all, stream, what);
     const gca::sparse_tsdf_usage usage = read_usage(tsdf, stream, what);
-    check_usage(what, usage, {test_blocks, test_blocks, 512, 0});
+    check_usage(what, usage, {test_blocks, test_blocks, 512, 0, 0, 0, 0});
     std::printf("%s: share in use %.3f, used up: %s\n", what.c_str(), usage.share_in_use(),
                 usage.used_up() ? "yes" : "no");
     check(usage.share_in_use() == 1.0 && usage.used_up(),
@@ -521,7 +457,7 @@ void check_pool_too_small(cudaStream_t stream)
 
     insert(tsdf, late, stream, what + ", one more");
     check_usage(what + ", one more", read_usage(tsdf, stream, what + ", one more"),
-                {test_blocks, test_blocks, 513, 0});
+                {test_blocks, test_blocks, 513, 0, 0, 0, 0});
     const std::vector<std::uint32_t> late_number = find(tsdf, late, stream, what + ", one more");
     check(late_number.size() == 1 && late_number.front() == gca::no_block,
           "pool too small: a coordinate inserted after the pool was used up has no block");
@@ -542,10 +478,11 @@ void check_hash_full(cudaStream_t stream)
     check(same_layout(tsdf.layout(), {16, 32, small_budget}), "hash full: 16 blocks, 32 slots");
 
     insert(tsdf, distinct, stream, what);
-    check_usage(what, read_usage(tsdf, stream, what), {16, 16, 16, 10});
+    check_usage(what, read_usage(tsdf, stream, what), {16, 16, 16, 10, 0, 0, 0});
     check_found(what, find(tsdf, distinct, stream, what), 16, 16);
     insert(tsdf, distinct, stream, what + ", again");
-    check_usage(what + ", again", read_usage(tsdf, stream, what + ", again"), {16, 16, 16, 20});
+    check_usage(what + ", again", read_usage(tsdf, stream, what + ", again"),
+                {16, 16, 16, 20, 0, 0, 0});
     check_closed_pool(what, pool);
 }
 
@@ -576,7 +513,7 @@ void check_key_range(cudaStream_t stream)
     pool.close();
 
     insert(tsdf, all, stream, what);
-    check_usage(what, read_usage(tsdf, stream, what), {test_blocks, 4, 0, 6});
+    check_usage(what, read_usage(tsdf, stream, what), {test_blocks, 4, 0, 6, 0, 0, 0});
     const std::vector<std::uint32_t> numbers = find(tsdf, all, stream, what);
     bool as_expected = numbers.size() == inserted.size();
     for (std::size_t i = 0; as_expected && i < numbers.size(); i++)
@@ -590,7 +527,8 @@ void check_key_range(cudaStream_t stream)
     // The aliases now hold blocks; a lookup of the coordinates past the range, whose keys would
     // be theirs, still finds none.
     insert(tsdf, would_alias, stream, what + ", the aliases");
-    check_usage(what + ", the aliases", read_usage(tsdf, stream, what), {test_blocks, 6, 0, 6});
+    check_usage(what + ", the aliases", read_usage(tsdf, stream, what),
+                {test_blocks, 6, 0, 6, 0, 0, 0});
     const std::vector<std::uint32_t> after = find(tsdf, all, stream, what + ", the aliases");
     bool past_range_found = false;
     for (std::size_t i = inside.size(); i < after.size(); i++)
@@ -599,6 +537,86 @@ void check_key_range(cudaStream_t stream)
           "key range: with the aliases inserted, the coordinates past the range are not found");
     check_found(what + ", the aliases", find(tsdf, would_alias, stream, what), test_blocks, 2);
     check_closed_pool(what, pool);
+}
+
+/// The request's ranges of the voxel size and the truncation's rule (sparse_tsdf.hpp): a request
+/// with every value at the low ends and one with every value at the high ends are granted; a value
+/// one float step past an end, NaN, infinity or 0 is refused before any request to the pool.
+/// @param pool [in,out] the pool, open.
+/// @param stream [in] the stream.
+void check_parameter_ranges(gca::gpu_pool &pool, cudaStream_t stream)
+{
+    constexpr float nan = std::numeric_limits<float>::quiet_NaN();
+    constexpr float infinity = std::numeric_limits<float>::infinity();
+    const auto below = [](float end) { return std::nextafter(end, 0.0f); };
+    const auto above = [](float end) { return std::nextafter(end, infinity); };
+    // c has no low end but 0, excluded: the least positive float stands for it [S: float32].
+    const float least_c = std::numeric_limits<float>::denorm_min();
+    const gca::sparse_tsdf_parameters low = {
+        small_budget,
+        gca::min_voxel_size_m,
+        {least_c, gca::min_noise_multiple, gca::min_truncation_voxels}};
+    const gca::sparse_tsdf_parameters high = {
+        small_budget,
+        gca::max_voxel_size_m,
+        {gca::max_noise_per_m, gca::max_noise_multiple, gca::max_truncation_voxels}};
+    for (const auto &[what, parameters] : {std::pair{"ranges, every value at its low end", low},
+                                           std::pair{"ranges, every value at its high end", high}})
+    {
+        const gca::request_result<gca::sparse_tsdf> made =
+            gca::sparse_tsdf::request(pool, parameters, stream);
+        check(made.status == gca::request_status::granted && made.granted.layout().slot_count == 32,
+              (std::string(what) + ": granted, " + made.message).c_str());
+    }
+    const gca::truncation_parameters t = gca_test::method_truncation;
+    const struct
+    {
+        const char *what;
+        gca::sparse_tsdf_parameters parameters;
+    } unusable[] = {
+        {"ranges, a voxel size of 0", {small_budget, 0.0f, t}},
+        {"ranges, a voxel size of NaN", {small_budget, nan, t}},
+        {"ranges, a voxel size below the least", {small_budget, below(gca::min_voxel_size_m), t}},
+        {"ranges, a voxel size above the greatest",
+         {small_budget, above(gca::max_voxel_size_m), t}},
+        {"ranges, c of 0", {small_budget, test_voxel_m, {0.0f, t.noise_multiple, t.min_voxels}}},
+        {"ranges, c of -0.01 /m",
+         {small_budget, test_voxel_m, {-0.01f, t.noise_multiple, t.min_voxels}}},
+        {"ranges, c above the greatest",
+         {small_budget,
+          test_voxel_m,
+          {above(gca::max_noise_per_m), t.noise_multiple, t.min_voxels}}},
+        {"ranges, c of NaN", {small_budget, test_voxel_m, {nan, t.noise_multiple, t.min_voxels}}},
+        {"ranges, k below the least",
+         {small_budget,
+          test_voxel_m,
+          {t.noise_per_m, below(gca::min_noise_multiple), t.min_voxels}}},
+        {"ranges, k above the greatest",
+         {small_budget,
+          test_voxel_m,
+          {t.noise_per_m, above(gca::max_noise_multiple), t.min_voxels}}},
+        {"ranges, k of infinity",
+         {small_budget, test_voxel_m, {t.noise_per_m, infinity, t.min_voxels}}},
+        {"ranges, mu_min below the least",
+         {small_budget,
+          test_voxel_m,
+          {t.noise_per_m, t.noise_multiple, below(gca::min_truncation_voxels)}}},
+        {"ranges, mu_min above the greatest",
+         {small_budget,
+          test_voxel_m,
+          {t.noise_per_m, t.noise_multiple, above(gca::max_truncation_voxels)}}},
+        {"ranges, mu_min of 0",
+         {small_budget, test_voxel_m, {t.noise_per_m, t.noise_multiple, 0.0f}}},
+    };
+    for (const auto &u : unusable)
+    {
+        const gca::request_result<gca::sparse_tsdf> refused =
+            gca::sparse_tsdf::request(pool, u.parameters, stream);
+        check_refusal(u.what,
+                      refused.status == gca::request_status::failure &&
+                          refused.granted.layout().capacity_blocks == 0,
+                      refused.message, refused.message.find("cannot be used") != std::string::npos);
+    }
 }
 
 /// Refusals as values, each leaving the counts as they were and CUDA's last error clear.
@@ -617,13 +635,14 @@ void check_refusals(cudaStream_t stream)
     check(moved_from.layout().capacity_blocks == 0 && moved_to.layout().capacity_blocks == 16,
           "refusals: a sparse TSDF moved from holds no blocks, the one moved to its 16");
     const gca::request_result<gca::sparse_tsdf> no_block_budget =
-        gca::sparse_tsdf::request(pool, {4143}, stream);
-    check_refusal("refusals, a budget of 4143 bytes",
+        gca::sparse_tsdf::request(pool, with_budget(4147), stream);
+    check_refusal("refusals, a budget of 4147 bytes",
                   no_block_budget.status == gca::request_status::failure, no_block_budget.message,
                   no_block_budget.message.find("holds no block") != std::string::npos);
+    check_parameter_ranges(pool, stream);
     pool.close();
     const gca::request_result<gca::sparse_tsdf> closed =
-        gca::sparse_tsdf::request(pool, {test_budget}, stream);
+        gca::sparse_tsdf::request(pool, with_budget(test_budget), stream);
     check_refusal("refusals, a request to the closed pool",
                   closed.status == gca::request_status::closed, closed.message,
                   closed.message.find("the GPU pool is closed") != std::string::npos);

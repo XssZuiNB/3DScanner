@@ -11,6 +11,8 @@
 
 #include <cstdint>
 
+#include <cuda/atomic>
+
 namespace gca
 {
 /// The key of an empty slot: every bit 1, which no block's key is, as its top bit is 0
@@ -32,12 +34,17 @@ struct block_hash_view
 };
 
 /// Inserts one block by its coordinates: tries the slots from the home slot on, swapping the
-/// empty key for the block's key atomically (atomicCAS). The one thread whose swap succeeds takes
-/// the next block's number (atomicAdd on the claims) and writes it as the slot's block when the
-/// pool holds that block, else leaves the slot without one; a thread that finds the key already
-/// there does nothing. Out of range, or after slot_count slots without room, the coordinate is
-/// refused and counted. Wait-free: it ends after at most slot_count swaps, whatever the other
-/// threads do, and waits for none.
+/// empty key for the block's key atomically (atomicCAS). Each slot's key is read first by a
+/// relaxed atomic load: a slot that holds a key holds it for good, so a slot found holding this
+/// key ends the insertion and one holding another is passed, both without the swap, which only an
+/// empty slot takes. That spares the atomic for a block already held, which most of a frame's
+/// rays find in the allocation near its surface (the times with and without: docs/HARDWARE.md,
+/// "The per-frame path's stages"). The one thread whose swap succeeds takes the next block's
+/// number (atomicAdd on the claims) and writes it as the slot's block when the pool holds that
+/// block, else leaves the slot without one; a thread that finds the key already there does
+/// nothing. Out of range, or after slot_count slots without room, the coordinate is refused and
+/// counted. Wait-free: it ends after at most slot_count slots, a load and at most one swap each,
+/// whatever the other threads do, and waits for none.
 /// @param hash [in] the hash; its arrays are written as above.
 /// @param b [in] the coordinates, in blocks.
 /// @return the slot that holds the block's key, or no_slot when refused.
@@ -58,6 +65,16 @@ __device__ inline std::uint32_t insert_block(const block_hash_view &hash, const 
     std::uint32_t slot = home_slot(b, hash.slot_count);
     for (std::uint32_t tried = 0; tried < hash.slot_count; tried++)
     {
+        const unsigned long long held =
+            cuda::atomic_ref<unsigned long long, cuda::thread_scope_device>(hash.keys[slot])
+                .load(cuda::memory_order_relaxed);
+        if (held == key)
+            return slot;
+        if (held != empty_key)
+        {
+            slot = (slot + 1) & (hash.slot_count - 1);
+            continue;
+        }
         const unsigned long long seen = atomicCAS(&hash.keys[slot], empty_key, key);
         if (seen == empty_key)
         {

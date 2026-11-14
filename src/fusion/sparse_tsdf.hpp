@@ -2,19 +2,23 @@
 /// @file sparse_tsdf.hpp
 /// The sparse TSDF (docs/adr/0004-sparse-tsdf-model.md): blocks of 8 x 8 x 8 voxels near the
 /// surfaces, found by their coordinates through a hash on the GPU, taken from a pool; all of its
-/// device memory together is the scan's memory budget. Built so far: the hash of blocks and the
-/// pool. A block is inserted and found by its coordinates, many at once from many threads; a
-/// pool too small says so in its usage, a value. The device side of the hash, which every kernel
-/// of the module calls, is fusion/block_hash.cuh. The method, its rules and their sources stand in
-/// docs/methods/sparse-tsdf.md. All its memory comes from the pool that closes (gpu/gpu_pool.hpp)
-/// before a scan starts; its operations allocate nothing.
+/// device memory together is the scan's memory budget. Built so far: the hash of blocks, the pool
+/// and the allocation of the blocks near a frame's surface at its pose. A block is inserted and
+/// found by its coordinates, many at once from many threads; a frame's organized points at a pose
+/// insert every block their band of the truncation distance passes through and list them for the
+/// frame; a pool too small says so in its usage, a value. The device side of the hash, which every
+/// kernel of the module calls, is fusion/block_hash.cuh. The method, its rules and their sources
+/// stand in docs/methods/sparse-tsdf.md. All its memory comes from the pool that closes
+/// (gpu/gpu_pool.hpp) before a scan starts; its operations allocate nothing.
 
 #pragma once
 
+#include "geometry/organized_points.hpp"
 #include "gpu/gpu_array.hpp"
 #include "gpu/gpu_pool.hpp"
 #include "gpu/pinned_buffer.hpp"
 #include "gpu/step_result.hpp"
+#include "types/camera_pose.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime_api.h>
@@ -107,11 +111,48 @@ __host__ __device__ constexpr std::uint32_t home_slot(const block_coordinate &b,
     return static_cast<std::uint32_t>(k & (slot_count - 1));
 }
 
-/// The parameters of the sparse TSDF's memory.
+/// The ranges the request takes the voxel size and the truncation's rule from, inclusive
+/// (docs/methods/sparse-tsdf.md, "The truncation distance", which states why) [?: a choice]: the
+/// voxel size from half the object classes' finest, 1 mm, to twice their coarsest, 8 mm; c up to
+/// ten times the datasheet's bound, 0.01 /m; k from 1 to 10 standard deviations; mu_min from 1 to
+/// 16 voxels.
+constexpr float min_voxel_size_m = 0.0005f;
+constexpr float max_voxel_size_m = 0.016f;
+constexpr float max_noise_per_m = 0.1f;
+constexpr float min_noise_multiple = 1.0f;
+constexpr float max_noise_multiple = 10.0f;
+constexpr float min_truncation_voxels = 1.0f;
+constexpr float max_truncation_voxels = 16.0f;
+
+/// The most blocks the allocation walks along one ray's band: a ray whose band crosses more is
+/// not walked and is counted (docs/methods/sparse-tsdf.md, "The allocation near a frame's
+/// surface", which gives the most the starting values need, 50) [?: a choice].
+constexpr std::uint32_t max_blocks_per_ray = 64;
+
+/// The truncation distance's rule (docs/methods/sparse-tsdf.md, "The truncation distance"): at the
+/// measured depth z, mu(z) = max(mu_min v, k sigma(z)) with the depth noise sigma(z) = c z^2, v the
+/// voxel size.
+struct truncation_parameters
+{
+    float noise_per_m;    ///< c, the depth noise's coefficient, sigma(z) = c z^2, in 1/m; finite,
+                          ///< > 0 and <= max_noise_per_m
+    float noise_multiple; ///< k, the standard deviations of the noise within mu, from
+                          ///< min_noise_multiple to max_noise_multiple
+    float min_voxels;     ///< mu_min, the least truncation distance, in voxels, from
+                          ///< min_truncation_voxels to max_truncation_voxels
+};
+
+/// The sparse TSDF's parameters: its memory, its one length and its truncation distance. Its
+/// operations all take them from the sparse TSDF, which keeps them from its request. The scan
+/// fills them: the budget and the voxel size from the object class (scan/object_class.hpp), the
+/// live model's voxel size or the final models'.
 struct sparse_tsdf_parameters
 {
     std::uint64_t memory_budget_bytes; ///< all of the sparse TSDF's device memory, in bytes;
                                        ///< the object class's value
+    float voxel_size_m;                ///< v, a voxel's edge, in m, from min_voxel_size_m to
+                                       ///< max_voxel_size_m
+    truncation_parameters truncation;  ///< the truncation distance's rule
 };
 
 /// How a memory budget is divided: the blocks of the pool and the slots of the hash.
@@ -123,10 +164,10 @@ struct sparse_tsdf_layout
 };
 
 /// Divides a memory budget: the largest number of blocks B, at most 2^30, for which
-/// 4100 B + 16 S + 12 <= budget, S the least power of two >= 2 B (docs/methods/sparse-tsdf.md,
+/// 4100 B + 16 S + 16 <= budget, S the least power of two >= 2 B (docs/methods/sparse-tsdf.md,
 /// "The pool and the memory budget").
 /// @param memory_budget_bytes [in] the budget, in bytes.
-/// @return B, S and the bytes they take; all 0 when the budget holds no block (below 4144 bytes).
+/// @return B, S and the bytes they take; all 0 when the budget holds no block (below 4148 bytes).
 sparse_tsdf_layout layout_for_budget(std::uint64_t memory_budget_bytes) noexcept;
 
 /// The counts on the GPU, from the sparse TSDF's request on.
@@ -136,9 +177,12 @@ struct block_counts
                                        ///< the claim of the next block's number
     std::uint32_t coordinates_refused; ///< insertions refused, the coordinate out of range or
                                        ///< the hash full
-    std::uint32_t listed_slots;        ///< the slots on the frame's list of blocks; its first
-                                       ///< user is the allocation near a frame's surface
-                                       ///< (docs/methods/sparse-tsdf.md)
+    std::uint32_t listed_slots;        ///< the slots the last allocation near a frame's surface
+                                       ///< touched, each once; the frame's list holds the first
+                                       ///< capacity_blocks of them
+    std::uint32_t rays_not_walked;     ///< the rays the allocations did not walk: a band across
+                                       ///< more than max_blocks_per_ray blocks, or an end that is
+                                       ///< not finite
 };
 
 /// The use of the pool and the hash, read back from the GPU; it exists only for a reading that
@@ -150,6 +194,13 @@ struct sparse_tsdf_usage
     std::uint32_t blocks_refused;      ///< the distinct coordinates that found the pool used up;
                                        ///< each keeps its slot, without a block
     std::uint32_t coordinates_refused; ///< insertions refused, out of range or the hash full
+    std::uint32_t listed_slots;        ///< the slots on the list of the last allocation near a
+                                       ///< frame's surface, each once, <= capacity_blocks
+    std::uint32_t unlisted_slots;      ///< the slots that allocation touched past the list's
+                                       ///< room: counted, not listed; > 0 only once the pool is
+                                       ///< used up
+    std::uint32_t rays_not_walked;     ///< the rays the allocations near a frame's surface did
+                                       ///< not walk, from the request on (block_counts)
 
     /// Gives the share of the pool in use.
     /// @return blocks_in_use / capacity_blocks, from 0 to 1.
@@ -173,12 +224,13 @@ struct usage_result
     std::string message;                    ///< why not, in plain English; empty when read
 };
 
-/// The sparse TSDF's hash of blocks and its pool, on the GPU. Its memory comes from the pool that
-/// closes when it is requested, before a scan; its insertions, lookups and readings of the usage
-/// allocate nothing. One exists at a time (docs/methods/sparse-tsdf.md, "The pool and the memory
-/// budget"). Move-only. Not synchronized: each member function's note says whether two threads
-/// may call it at once; the work it queues goes to one stream at a time, the stream the request
-/// queued its clearing on or one ordered after it.
+/// The sparse TSDF's hash of blocks and its pool, on the GPU, with its parameters. Its memory comes
+/// from the pool that closes when it is requested, before a scan; its insertions, lookups,
+/// allocations near a frame's surface and readings of the usage allocate nothing. One exists at a
+/// time (docs/methods/sparse-tsdf.md, "The pool and the memory budget"). Move-only. Not
+/// synchronized: each member function's note says whether two threads may call it at once; the
+/// work it queues goes to one stream at a time, the stream the request queued its clearing on or
+/// one ordered after it.
 class sparse_tsdf
 {
 public:
@@ -191,17 +243,19 @@ public:
     /// pool's voxels; and the pinned buffer the usage is read through. Queues their clearing on
     /// a stream: the keys to empty, the blocks' numbers to none, the stamps to every bit 1 (no
     /// frame), the counts and every voxel to 0, unobserved; the list is written before it is
-    /// read. No code uses the stamps and the list yet: their first user is the allocation near a
-    /// frame's surface; and no code reads the voxels yet: their first reader is the integration
-    /// (docs/methods/sparse-tsdf.md).
+    /// read. No code reads the voxels yet: their first reader is the integration
+    /// (docs/methods/sparse-tsdf.md). Keeps the parameters for its operations.
     /// @param pool [in,out] the pool; open, else the request is refused as closed.
-    /// @param parameters [in] the memory budget.
+    /// @param parameters [in] the memory budget, the voxel size and the truncation's rule.
     /// @param stream [in] the CUDA stream of the current device the clearing is queued on; owned
     ///        by the caller. Work queued on it later sees the cleared memory.
     /// @return granted, with a sparse TSDF that holds no block; failure with the reason when the
-    ///         budget holds no block (below 4144 bytes); or the first of its requests that was
-    ///         refused, with its status and message (gpu_pool::request_array()); or failure with
-    ///         CUDA's error, then cleared, when the clearing could not be queued.
+    ///         voxel size or a value of the truncation's rule is not finite or lies outside its
+    ///         range (min_voxel_size_m and the others above), or when the budget holds no block
+    ///         (below 4148 bytes), both before any request; or the first of
+    ///         its requests that was refused, with its status and message
+    ///         (gpu_pool::request_array()); or failure with CUDA's error, then cleared, when the
+    ///         clearing could not be queued.
     /// @note Allocates device memory (cudaMalloc, six times) and page-locked host memory
     ///       (cudaMallocHost), so it is called before the pool is closed; whether CUDA's
     ///       allocators wait for the GPU is not stated by CUDA [?]. Queues five cudaMemsetAsync
@@ -287,6 +341,55 @@ public:
     step_result find_blocks(const gpu_array<block_coordinate> &coordinates,
                             gpu_array<std::uint32_t> &blocks, cudaStream_t stream) const noexcept;
 
+    /// Allocates the blocks near a frame's surface at its pose (docs/methods/sparse-tsdf.md, "The
+    /// allocation near a frame's surface"), one GPU thread for each pixel: for each valid pixel
+    /// with depth z, the segment of its ray between the depths z - mu(z) and z + mu(z) (the
+    /// truncation's rule, kept from the request), carried into the models' frame by the pose;
+    /// every block the segment passes through is inserted as insert_blocks() inserts a
+    /// coordinate, refusals and a used-up pool counted alike. A segment with an end that is not
+    /// finite is not walked; the others' ends are clamped to one block past the hash's range on
+    /// each side, and one that then crosses more than max_blocks_per_ray blocks is not walked
+    /// either: both are counted in rays_not_walked, so that no thread takes more than
+    /// max_blocks_per_ray steps. Lists the frame's blocks: every
+    /// slot the frame touched, once, the first capacity_blocks of them on the frame's list and
+    /// the rest counted, not listed. Each call is a frame of its own: allocating the same points
+    /// at the same pose again changes no block and lists the same slots again. A block that the
+    /// band crosses but no pixel's ray does can be missed; docs/methods/sparse-tsdf.md states how
+    /// far such a miss lies from an allocated block. The keys' trap of insert_blocks() holds: a
+    /// block's number is read only by work queued after this call.
+    /// @param points [in] a frame's organized points and validity mask, in the camera frame, in
+    ///        m; device memory owned by the caller, which holds them until the work queued here
+    ///        has run. Their points written on stream or on a stream ordered before it.
+    /// @param pose [in] the frame's pose: camera frame to the models' frame, as
+    ///        types/camera_pose.hpp says; its position finite and in m, its orientation a finite
+    ///        quaternion, not zero, normalized here. Both are rounded to float.
+    /// @param stream [in] the CUDA stream of the current device the work is queued on, ordered
+    ///        after the request's clearing; owned by the caller. Work queued on it later sees the
+    ///        blocks and the frame's list; read_usage() reads the list's counts.
+    /// @return done when the work is queued; not done with the reason when refused before it:
+    ///         this sparse TSDF is empty, the organized points are, or the pose rounded to float
+    ///         is not finite or its orientation is zero. When refused, nothing is queued and the
+    ///         counts are left as they were. Not done with CUDA's error, which is then cleared:
+    ///         when CUDA's last error is set before the call, by an earlier call, with nothing
+    ///         queued; when CUDA refuses the reset of the list's count, with nothing queued; when
+    ///         CUDA refuses the launch, for points whose rows need more than 65535 blocks of 8 rows
+    ///         [S: CUDA C++ Programming Guide, "Compute Capabilities", the grid's y dimension],
+    ///         with the list's count then reset to 0.
+    /// @pre At most 2^32 - 1 allocations over the sparse TSDF's life, 4.5 years at 30 fps
+    ///      [S: computed]: each takes the next number of a 32-bit count from 0 as its frame's
+    ///      stamp, and the stamp with every bit 1, the count's next value after them, means "no
+    ///      frame". Not checked; a scan requests its own sparse TSDF.
+    /// @note A cudaMemsetAsync of 4 bytes, the list's count, then one kernel on stream, which
+    ///       writes the hash's slots, the stamps, the list and the counts and no voxel. A thread
+    ///       takes at most max_blocks_per_ray steps, each an insertion that probes until it finds
+    ///       its key or an empty slot, at most slot_count slots when the hash is full. Waits for
+    ///       nothing: cudaPeekAtLastError before and cudaGetLastError after ask only whether an
+    ///       error is set. Allocates nothing when done; allocates for the message when not, and a
+    ///       failed allocation ends the program (std::terminate): the function is noexcept. Not
+    ///       while another thread uses this sparse TSDF.
+    step_result allocate_near_surface(const organized_points &points, const camera_pose &pose,
+                                      cudaStream_t stream) noexcept;
+
     /// Reads the use of the pool and the hash back from the GPU, after the work queued on a
     /// stream. In the per-frame path it is called after the registration's own readback, so that
     /// its wait finds the stream's earlier work done and costs only its copy
@@ -296,11 +399,11 @@ public:
     /// @return the usage; none, with the reason, when this sparse TSDF is empty, or with CUDA's
     ///         error, then cleared, when the copy or the wait failed. A failure gives no usage,
     ///         so it is never read as a used-up pool.
-    /// @note One copy of 12 bytes into the pinned buffer on stream, then the one written wait,
-    ///       cudaStreamSynchronize(stream): it waits for all the stream's earlier work. Allocates
-    ///       nothing when done; allocates for the message when not, and a failed allocation ends
-    ///       the program (std::terminate): the function is noexcept. Not while another thread uses
-    ///       this sparse TSDF.
+    /// @note One copy of 16 bytes, the four counts, into the pinned buffer on stream, then the
+    ///       one written wait, cudaStreamSynchronize(stream): it waits for all the stream's earlier
+    ///       work. Allocates nothing when done; allocates for the message when not, and a failed
+    ///       allocation ends the program (std::terminate): the function is noexcept. Not while
+    ///       another thread uses this sparse TSDF.
     usage_result read_usage(cudaStream_t stream) noexcept;
 
     /// Gives how the memory budget was divided.
@@ -309,6 +412,9 @@ public:
 
 private:
     sparse_tsdf_layout m_layout{0, 0, 0};
+    sparse_tsdf_parameters m_parameters{0, 0.0f, {0.0f, 0.0f, 0.0f}}; ///< from the request
+    std::uint32_t m_frames_allocated = 0;   ///< the allocations near a frame's surface so far, the
+                                            ///< next one's stamp
     gpu_array<unsigned long long> m_keys;   ///< each slot's key, or every bit 1 when empty
     gpu_array<std::uint32_t> m_blocks;      ///< each slot's block number, or no_block
     gpu_array<std::uint32_t> m_stamps;      ///< each slot's last frame, every bit 1 for none

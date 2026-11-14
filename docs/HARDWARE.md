@@ -197,6 +197,37 @@ and 2.969 ms back to back], so it was not kept.
 | 1280x800 | 30 fps | 9.488 / 9.499 / 9.509 ms | 0.019 ms |
 | 1280x800 | back to back | 2.934 / 2.938 / 2.949 ms | 0.005 ms |
 
+**The allocation near a frame's surface** (docs/methods/sparse-tsdf.md): the reset of the list's
+count and the kernel, timed together by CUDA events, and the host's call, over 20 s per case
+after 5 s, the same frame allocated again and again into a sparse TSDF of 1.0 GB that holds its
+blocks already, as a scan's frame finds most of its blocks held [M 2026-11-14, 15:43 to 15:47].
+The scenes of `tests/test_sparse_tsdf_allocation.cpp`: the tabletop box on its plane from the
+first pose of its walk, at 2 mm voxels and the range 0.30 m to 1.0 m; a box of 1.2 m x 0.8 m x
+1.0 m on a floor from 2.7 m, at 8 mm voxels and 0.4 m to 3.0 m. Paced at 30 fps the governor
+keeps the GPU at 306 MHz throughout; back to back it runs at 1020 MHz throughout.
+
+| size | voxel | valid pixels, blocks | pace | kernel median / p95 / max | host call median |
+|---|---|---|---|---|---|
+| 640x400 | 2 mm | 131065, 5180 | 30 fps | 0.546 / 0.551 / 0.560 ms | 0.043 ms |
+| 640x400 | 2 mm | | back to back | 0.186 / 0.190 / 0.266 ms | 0.007 ms |
+| 1280x800 | 2 mm | 524849, 5215 | 30 fps | 1.513 / 1.519 / 1.523 ms | 0.024 ms |
+| 1280x800 | 2 mm | | back to back | 0.522 / 0.524 / 0.532 ms | 0.007 ms |
+| 640x400 | 8 mm | 118421, 10877 | 30 fps | 1.478 / 1.485 / 1.494 ms | 0.025 ms |
+| 640x400 | 8 mm | | back to back | 0.447 / 0.451 / 0.530 ms | 0.007 ms |
+| 1280x800 | 8 mm | 473794, 10950 | 30 fps | 3.131 / 3.141 / 3.150 ms | 0.027 ms |
+| 1280x800 | 8 mm | | back to back | 0.985 / 0.988 / 0.994 ms | 0.007 ms |
+
+The first frame into a new, empty sparse TSDF, each right after the request's clearing, the
+clock not controlled: medians of 10 of 0.691, 1.695, 1.688 and 3.397 ms, in the table's order of
+size and voxel [M 2026-11-14, same runs]. Before its atomic swap the insertion reads the slot's
+key, and before its exchange the slot's stamp, each by a relaxed atomic load, so that a block a
+frame finds held costs no atomic (`src/fusion/block_hash.cuh`, `src/fusion/sparse_tsdf.cu`). On
+the code before the cap of blocks per ray, whose medians with both loads were 0.3 % to 3.5 %
+below the table's [M 2026-11-14, 14:45 to 14:48], the medians without both loads were 0.942,
+3.758, 2.173 and 8.754 ms at 30 fps and 0.329, 1.428, 0.704 and 3.154 ms back to back [M
+2026-11-14, 14:40 to 14:44]; at 1280x800 back to back the keys' load alone gave 0.900 and 1.888
+ms, the stamps' alone 0.972 and 1.949 ms [M 2026-11-14, 14:50 to 14:54], so both are kept.
+
 ## Connections
 
 The four USB-A ports sit on a Realtek USB 3.2 hub, seen twice by the host controller
