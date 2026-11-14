@@ -18,9 +18,9 @@ CODING_STANDARDS.md, "The rewrite's code".
 
 The user agreed on 2026-11-14 to the choices the spec marks (spec) and to the breakdown into
 tickets. The frontier is `frame-source-with-synthetic-frames` and
-`aligned-frame-distortion-tool` (agent) and `choose-web-libraries` (decision). Done when
-`accept-the-colored-model` is done. `.scratch/cleanup/` can go on the user's word: the
-requirements hold what it recorded of the old loop.
+`aligned-frame-distortion-tool` (agent). Done when `accept-the-colored-model` is done.
+`.scratch/cleanup/` can go on the user's word: the requirements hold what it recorded of the
+old loop.
 
 ## 2. What the first phase needs from the user (hardware, decision)
 
@@ -33,7 +33,7 @@ requirements hold what it recorded of the old loop.
   measurement of the aligned frames' distortion.
 * The license of `data/frag_115.ply` and `frag_116.ply`: unchecked (README.md, "License"),
   while ADR 0002 admits permissive licenses only.
-* The yes to each library the web page adds, and the go for each `ready-for-human` ticket.
+* The go for each `ready-for-human` ticket.
 
 ## Candidates, once measured
 
