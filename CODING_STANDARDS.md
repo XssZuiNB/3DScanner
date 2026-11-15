@@ -78,14 +78,16 @@ deviation. This document adds what the guides leave to the project.
 
 ## The rewrite's code
 
-CUDA_3D's code is the rewrite's prototype: its methods carry over, its code does not. These
-rules hold for every file the rewrite writes; the prototype is replaced, not brought up to
-them.
+CUDA_3D's code was the rewrite's prototype: its methods carry over, its code does not. It was
+replaced, not brought up to these rules, and is deleted; its code stands in git at 74dda68.
+These rules hold for every file of the tree.
 
-- **Method first, prototype as oracle.** A stage's method (its residuals, Jacobians and
-  parameters) is written down before its code. The prototype's implementation stays as the
-  test oracle until the new one agrees with it within a stated tolerance, and is deleted then
-  (AGENTS.md §7 rule 7).
+- **Method first.** A stage's method (its residuals, Jacobians and parameters) is written down
+  in its method document (docs/methods/) before its code. The prototype was the test oracle of
+  the stages it had, the organized points, the normals, the pyramid's intensity and the
+  registration, until each agreed with it within a stated tolerance, and was deleted then
+  (AGENTS.md §7 rule 7); each method document keeps the agreement as measured. A stage's tests
+  compare it with analytic and known values, not with an earlier output.
 - **The per-frame path**, everything that runs for each frame of a scan, fits the frame time:
   33 ms at 30 fps [S: the stream's frame rate]. Its buffers exist before the scan starts.
   Every wait for the GPU is a call written in the code, and only what the next step needs

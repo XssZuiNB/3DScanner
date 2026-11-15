@@ -18,42 +18,40 @@ written for Intel RealSense (its history ends at 5e568d9).
 
 What the rewrite builds: an operator scans a tabletop object or a large object with the
 hand-held camera and works the scan from a web page the Jetson serves (the terms: GLOSSARY.md;
-the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the frame, the frame source
-seam and the sequence on disk (`src/camera/`); the GPU image, the pool that closes and a
-frame's upload (`src/gpu/`); the organized points from a frame's depth
-(`src/geometry/organized_points.*`), their normals (`src/geometry/organized_normals.*`) and the
-frame's pyramid of them with the intensity (`src/geometry/frame_pyramid.*`); the registration of
-a frame against a surface by colored ICP, coarse to fine over the pyramid
-(`src/registration/registration.*`); the sparse TSDF's hash of blocks, its pool, the allocation
-of the blocks near a frame's surface, the integration of a frame, the ray cast of the model's
-surface as a pose sees it, at each level of the pyramid, and the extraction of the surface's
-colored points with normals (`src/fusion/`); refinement's pose graph of keyframes and its
-solve (`src/refinement/pose_graph.*`); separation's proposal of the support plane and the box from
-a full model and its trajectory (`src/separation/`); the files a scan keeps and the parameters of
-each object class (`src/scan/`). The tree began as CUDA_3D cleaned up (dead code, RealSense and
-PCL removed), made to build here and given the Orbbec camera: the rewrite's prototype, whose
+the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the libraries below and three
+programs, each with its offline tests; tracking, the scan interface, the web page and the
+service are not built yet. The tree began as CUDA_3D cleaned up (dead code, RealSense and PCL
+removed), made to build here and given the Orbbec camera: the rewrite's prototype, whose
 methods carry over. Its library was the test oracle of the organized points, the normals, the
 pyramid's intensity and the registration until each agreed with it, and is deleted; each method
 document keeps the agreement as measured (docs/methods/; CODING_STANDARDS.md, "The rewrite's
 code"), and its code stands in git at 74dda68.
 
-The tree today: `src/` is nine static libraries and the header-only `types`, each linking only
-the ones below it: `types`, `camera`, `orbbec_camera`, `gpu`, `geometry`, `registration`,
-`fusion`, `refinement`, `separation`, `scan` (`src/CMakeLists.txt`; `gpu` links `camera` for the
-frame it uploads, `scan` for the POSIX file calls; `fusion` links `geometry` for a frame's organized
-points; `refinement` links `registration` for the SE(3) exponential; `separation` links only
-`types`, so that the scan can call it). There is one
-library per directory, except `src/camera/`, which holds two so that only the Orbbec camera
-links OrbbecSDK: `camera`, the frame, the frame source seam, the sequence on disk and the Orbbec
-camera's rules that need no camera, which the offline tests link without OrbbecSDK; and
-`orbbec_camera`, where `orbbec_device` is the camera as a frame source and delivers depth
-aligned to color, so the GPU code sees one resolution and one set of intrinsics.
-`orbbec_viewer` in `apps/` runs its loop (`apps/viewer_loop.*`) on the camera as a frame source,
-and the offline tests run the same loop on their synthetic source; the loop makes each frame's
-organized points on the GPU, saves a snapshot's points with their normals as a model's PLY and,
-with `--sequence`, writes the frames it takes into a sequence. `distortion_check` reads the
-viewer's snapshots without the camera, and `box_fit`, the acceptance tool, takes a box's edges
-from an object model's PLY without the camera; there is no daemon.
+The tree today: `src/` holds one library per directory, and `src/camera/` two, so that only the
+Orbbec camera links OrbbecSDK. Each library links only libraries above it in this table
+(`src/CMakeLists.txt`; the file of each thing: §7 rule 4):
+
+| library | holds | links, of the tree's |
+|---|---|---|
+| `types` | header only: the plain structs (camera parameters, a frame's description, the camera's pose, a model's point), console colors | none |
+| `camera` | the frame, the frame source seam, the sequence on disk, the POSIX file calls, the Orbbec camera's rules that need no camera; the offline tests link it without OrbbecSDK | `types` |
+| `orbbec_camera` | `orbbec_device`, the camera as a frame source, which delivers depth aligned to color, so the GPU code sees one resolution and one set of intrinsics | `camera` |
+| `gpu` | the GPU array and image, the pool that closes, a frame's upload, a stage kernel's launch | `types`, `camera` for the frame it uploads |
+| `geometry` | a frame's organized points, their normals, the frame's pyramid with the intensity | `gpu` |
+| `registration` | the registration of a frame against a surface by colored ICP, coarse to fine over the pyramid; the SE(3) exponential | `geometry` |
+| `fusion` | the sparse TSDF: its hash of blocks, its pool, the allocation of the blocks near a frame's surface, the integration of a frame, the ray cast of the model's surface at each level of the pyramid, the extraction of its colored points with normals | `geometry` |
+| `refinement` | the pose graph of keyframes and its solve, on the host | `types`, `registration` for the SE(3) exponential |
+| `separation` | the proposal of the support plane and the box from a full model and its trajectory, the least-squares plane, on the host | `types` only, so that the scan can call it |
+| `scan` | the files a scan keeps, the parameters of each object class | `types`, `camera` for the POSIX file calls |
+
+The programs in `apps/` keep their command lines and their work (the viewer's loop, the two
+measurements) in libraries of their own, which the offline tests drive. `orbbec_viewer` runs its
+loop (`apps/viewer_loop.*`) on the camera as a frame source, and the offline tests run the same
+loop on their synthetic source; the loop makes each frame's organized points on the GPU, saves a
+snapshot's points with their normals as a model's PLY and, with `--sequence`, writes the frames
+it takes into a sequence. `distortion_check` measures the viewer's snapshots of a checkerboard,
+and `box_fit`, the acceptance tool, takes a box's edges from an object model's PLY; neither opens
+the camera. There is no daemon.
 
 ## 2. Before you run anything
 
@@ -133,8 +131,17 @@ it say yes again. It covers the tree only: after a toolchain update or a new dow
 **Jobs.** Builds run four parallel compile jobs, not one per core (six): `BUILD_JOBS` in
 `tools/build_common.sh` sets it for `tools/build.sh`, `tools/verify.sh` and, through verify,
 `tools/run_mutant.sh`, and holds the measurements: one compiler process peaks at up to 1.5 GB and
-a -j6 build froze the board on 2026-11-13 [M 2026-11-13]. One heavy build runs at a time.
-While it runs, `~/.local/state/3dscanner/monitor.sh` (outside the tree) logs available
+a -j6 build froze the board on 2026-11-13 [M 2026-11-13].
+
+**The build lock: one heavy job at a time.** Every `tools/build.sh`, `tools/verify.sh` and
+`tools/run_mutant.sh`, and every timing run on the board, runs under one lock, so that no two
+builds overlap and no compiler runs beside a timing run. The tools do not take it themselves
+[S: tools/]; the caller does, and a second caller waits until the first is done:
+
+    flock ~/.local/state/3dscanner/build.lock tools/verify.sh
+
+After a timing run, read the kernel log (§2) and say in the report what it showed. While a heavy
+job runs, `~/.local/state/3dscanner/monitor.sh` (outside the tree) logs available
 memory, free swap, the over-current counters, the input power and the hottest zone every 2 s
 into `monitor.log` beside it, syncing each line so that a hard reset leaves the last state on
 disk [S: the script]; start it in the background and end it with the session.
@@ -143,9 +150,10 @@ disk [S: the script]; start it in the background and end it with the session.
 "Tools"), set in the build directory's compiler launcher, so that the builds of one tree hit
 what another tree's builds wrote (`configure_build` in `tools/build_common.sh`): a verify
 after `tools/build.sh` and the mutant copy's first build each hit 20 of 20 compiles
-[M 2026-11-13: `ccache -s`, ccache's log]; verify takes 196 s with an empty cache and 9.5 s
-with a warm one [M 2026-11-13]. On a hit ccache replays the compile's warnings,
-g++'s and nvcc's [M 2026-11-13], so verify's warning check sees them on a hit too.
+[M 2026-11-13: `ccache -s`, ccache's log]. Verify takes 243 s when every compile runs
+(`CCACHE_RECACHE=1`) and 89 s with a warm cache, 79 s of it the tests [M 2026-11-15: the tree
+of `retire-the-prototype-library`, under the build lock]. On a hit ccache replays the compile's
+warnings, g++'s and nvcc's [M 2026-11-13], so verify's warning check sees them on a hit too.
 
 **Mutants.** In a patched run each test may take 3 × the unpatched copy's run, at least 60 s,
 and the whole run 600 s more for the configure and the build [S: tools/run_mutant.sh]; a run
@@ -164,8 +172,9 @@ From the hardware or a source, changed only with new evidence written above them
   1 mm is the Orbbec default [S: OrbbecSDK].
 * `GCA_CUDA_ARCHITECTURES` 87: the Orin's compute capability 8.7 [S: CUDA documentation].
 
-Free choices: the stream size 640x400 at 30 fps [?: a choice; it exists on USB 2], the depth range 0.15 m to
-3.0 m in `apps/viewer_loop.cpp` [?: a choice].
+Free choices: the viewer's stream size, 640x400 at 30 fps in `apps/viewer_options.hpp`
+[?: a choice; it exists on USB 2], and its depth range, 0.15 m to 3.0 m in
+`apps/viewer_loop.cpp` [?: a choice].
 
 ## 6. Traps
 
@@ -239,6 +248,7 @@ checkers; these are the rules no checker holds.
    | the acceptance tool's box fit: the box's axes from the normals, its faces, their planes and spreads, its edges, its refusals and the lines the hardware acceptance reads | `apps/box_measure.*` |
    | `orbbec_viewer`'s loop on a frame source: the first frame, its GPU path (a stream, the organized points, the snapshot's normals), the report line, the window, the snapshots as a model's PLY, the sequence it writes | `apps/viewer_loop.*` |
    | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, the depth noise from a fixed seed, a point's distance from a known surface, the trajectories it renders along, the Fibonacci lattice the tests sample a sphere on | `tests/synthetic_source.*` |
+   | the tests' checks, counted into the program's summary line and exit status; their files (a temporary directory, a file's bytes, a limit that stands for a full disk); their GPU helpers (a stream, the pool's grant, CUDA's last error, a step's refusal, an image's download); their reader of a model's PLY, apart from the scanner's | `tests/check.hpp`; `tests/test_files.hpp`; `tests/gpu_test_helpers.hpp`; `tests/ply_reader.hpp` |
    | the tests' copy of a frame, to check a source left it as it was | `tests/frame_copy.hpp` |
    | the sparse TSDF tests' lookups of blocks, their readings of the usage, the method's starting truncation, a pose as the sparse TSDF takes it and a frame's buffers on the GPU | `tests/sparse_tsdf_helpers.hpp` |
    | the sparse TSDF tests that fuse frames: a case's budget, an object class's model, the fusion of a frame, walls facing the camera, the scenes of a sphere on a plane with their walks, a point's nearest known surface | `tests/sparse_tsdf_scenes.hpp` |
@@ -266,7 +276,7 @@ checkers; these are the rules no checker holds.
 | `CLAUDE.md` | the one-page entry point: what this is, §3's rules in short, where to go next |
 | `README.md` | what the tree is, its layout, how to build, install and run it |
 | `ROADMAP.md` | what to do next, in order, with a definition of done and who can do each step |
-| `docs/HARDWARE.md` | the board: platform, connections, permissions, kernel log lines |
+| `docs/HARDWARE.md` | the board and the camera: platform, memory, what the camera offers and reports, connections, permissions, kernel log lines, and each stage's time on the board |
 | `CODING_STANDARDS.md` | the style guides, what they leave to this tree, the rules for the rewrite's code, the checkers |
 | `GLOSSARY.md`, `docs/adr/` | the scanner's terms; the decisions in force and why |
 | `docs/SCAN_FILES.md` | the formats of the files a scan keeps: the models (PLY), the trajectory, the parameters |

@@ -660,7 +660,7 @@ voxels, the surface spreads 1.01 mm about the plane, one frame's points 2.19 mm,
 
 ## What the prototype did, and what is not carried
 
-The prototype has no TSDF and no oracle for it: its loop (CUDA_3D's `apps/app.cpp`, deleted in
+The prototype had no TSDF and no oracle for it: its loop (CUDA_3D's `apps/app.cpp`, deleted in
 eabb407) transformed the whole model into the current camera frame each frame, appended the
 frame's points, and downsampled the model on an 8 mm voxel grid every 5 fused frames
 [S: `apps/app.cpp` at eabb407^]. None of that is carried; the TSDF's tests compare it with

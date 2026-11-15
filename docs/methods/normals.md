@@ -227,7 +227,8 @@ On the sphere only the pixels whose window lies on it alone are compared. A wind
 picture's border, at the range's limits, beside a depth edge or a pixel without depth; on the
 planes its fit errs about twice as much as a whole window's. On the box's plane at 0.39 m a
 pixel at the picture's left border, whose window keeps 4 of its 7 columns, is 10.8° off
-[M 2026-11-14: the test printed it, in the oracle's comparison below].
+[M 2026-11-14: `tests/test_organized_normals.cpp` at 74dda68, in the comparison with the oracle,
+"What the prototype did, and what is not carried"].
 
 At 1280x800 the errors are two to three times those at 640x400. A window of radius 3 spans half
 the surface there, R z / fx with fx twice as large, over steps of the same height, so its fit

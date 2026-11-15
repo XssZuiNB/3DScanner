@@ -14,6 +14,8 @@ and shared. The things that cost a reset or a reboot:
   them run only on the user's word (AGENTS.md §3).
 * **Root is the user's**: the one root step, the udev rule, is done; anything else that needs
   `sudo` goes to the user as a command to run (AGENTS.md §2).
+* **One heavy job at a time**: every build, verify, mutant run and timing run goes under the
+  build lock of AGENTS.md §4; a build of six jobs froze the board once.
 
 Then, depending on what you came for:
 
@@ -22,9 +24,11 @@ Then, depending on what you came for:
 | to work on the next thing | [ROADMAP.md](ROADMAP.md), which says who can do each step |
 | what the scanner is to do, in its own words | [GLOSSARY.md](GLOSSARY.md), [docs/adr/](docs/adr/) |
 | to write code for the rewrite | [CODING_STANDARDS.md, "The rewrite's code"](CODING_STANDARDS.md#the-rewrites-code) |
+| how a built stage works: its method, parameters and accuracy | [docs/methods/](docs/methods/), one document per stage |
 | to build and verify | [AGENTS.md §4](AGENTS.md#4-build-and-verify) |
-| a hardware fact about this board | [docs/HARDWARE.md](docs/HARDWARE.md) |
+| a hardware fact about this board, or a stage's time on it | [docs/HARDWARE.md](docs/HARDWARE.md) |
 | whether a kernel log line is harmful | [docs/HARDWARE.md, "Kernel log"](docs/HARDWARE.md#kernel-log) |
+| which document owns a fact | [AGENTS.md §8](AGENTS.md#8-where-things-are-documented) |
 
 Two habits this tree expects:
 
@@ -35,7 +39,7 @@ Two habits this tree expects:
 
 ## Agent skills
 
-The workflow skills in `.claude/skills/` (README there: the flow and what was adapted):
+The workflow skills in `.claude/skills/`:
 
 * **Tracker:** specs and tickets are local markdown in `.scratch/`, not committed;
   [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).

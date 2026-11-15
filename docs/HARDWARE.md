@@ -157,9 +157,10 @@ pixel, without bending a plane [S: the pinhole model].
 ## The per-frame path's stages
 
 Each stage's time on the board (CODING_STANDARDS.md, "Measured stage by stage"), measured on
-synthetic frames by a scratch program, under the build lock with no compiler running, in the
-power mode MAXN_SUPER with the GPU clock under `nvhost_podgov`, 306 to 1020 MHz [M 2026-11-14].
-The replay of sequences taken on the hardware measures the whole path later.
+synthetic frames by a scratch program, under the build lock with no compiler running
+(AGENTS.md §4), in the power mode MAXN_SUPER with the GPU clock under `nvhost_podgov`, 306 to
+1020 MHz [M 2026-11-14 and 2026-11-15, each stage's date with its table]. The replay of sequences
+taken on the hardware measures the whole path later (`per-stage-times-from-replay`).
 
 **The upload** (`src/gpu/gpu_frame.hpp`), staged through pinned memory: medians over 10 s per
 case after 2 s [M 2026-11-14, 09:55 to 09:57; the GPU clock was not recorded]. Behind queued
@@ -339,12 +340,19 @@ B 2026-11-15: `cuobjdump -res-usage`], so it is not kept. How the rest of the ti
 the march through empty blocks, the samples in held blocks and the normal's 48 voxels was not
 measured [?].
 
+Back to back, the stages measured so far add up to 13.7 ms and 16.3 ms a frame at 640x400 and
+41.9 ms and 46.6 ms at 1280x800, at 2 mm and 8 mm voxels: the upload on an idle stream, the
+pyramid, the ray cast, the registration of the tabletop pair (below) and the integration
+[S: computed, the medians of this section; the stages' scenes differ]. At 1280x800 the path built
+so far does not fit a frame's 33 ms even at the full clock.
+
 **The registration of one frame** (docs/methods/registration.md): the host's call of
 `registration::align()` by the full method, both terms coarse to fine with the tabletop object's
-starting values, on the tabletop object's pair of `tests/test_registration.cpp` (a box and a sphere
-on a plane from 0.5 m, moved by 1.5° and 10.8 mm), every run converged; the surface's gradient
-kernel alone on its three levels, a copy of the tree's kernel timed by CUDA events; and the call
-with one iteration on level 0 alone, its gradient kernel included. The medians of 20 s per case
+starting values, on the tabletop object's pair of the registration's tests
+(`tests/registration_cases.hpp`: a box and a sphere on a plane from 0.5 m, moved by 1.5° and
+10.8 mm), every run converged; the surface's gradient kernel alone on its three levels, a copy of
+the tree's kernel timed by CUDA events; and the call with one iteration on level 0 alone, its
+gradient kernel included. The medians of 20 s per case
 after 5 s [M 2026-11-15, 00:01 to 00:06, MAXN_SUPER by `nvpmodel -q`, no compiler running, a
 scratch program; `/sys/class/devfreq/17000000.gpu/cur_freq` sampled every 16 runs]. Paced at 30 fps
 the governor keeps the GPU at 306 MHz throughout; back to back it runs at 1020 MHz throughout.
