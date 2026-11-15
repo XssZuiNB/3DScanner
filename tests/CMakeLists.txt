@@ -29,6 +29,12 @@ add_executable(test_orbbec_rules test_orbbec_rules.cpp)
 target_link_libraries(test_orbbec_rules PRIVATE camera)
 add_test(NAME orbbec_rules COMMAND test_orbbec_rules)
 
+# The Orbbec camera's IMU without the camera: its streams' choice, its refusal, its queue of
+# readings given to the frames, one thread adding while another takes; links no OrbbecSDK.
+add_executable(test_orbbec_imu test_orbbec_imu.cpp)
+target_link_libraries(test_orbbec_imu PRIVATE camera)
+add_test(NAME orbbec_imu COMMAND test_orbbec_imu)
+
 # The viewer's loop on the synthetic source; links no OrbbecSDK. CUDA's runtime lets the test leave
 # CUDA's last error set, as a failed call would, before a frame.
 add_executable(test_viewer_loop test_viewer_loop.cpp)

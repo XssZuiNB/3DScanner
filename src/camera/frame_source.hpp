@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: 0BSD
 /// @file frame_source.hpp
 /// The camera seam: a frame source (GLOSSARY.md) is opened for a stream size, gives one frame
-/// after another and is closed again, and it describes itself. When it has no frame it says
+/// after another, each with the IMU's samples taken since the frame before, and is closed again,
+/// and it describes itself. When it has no frame it says
 /// why, as a value: it refused to open, a timeout, a failure of the device with its message,
 /// the end. No exception leaves it: its implementations catch what their device throws, and
 /// every function of the seam is noexcept. Today the sequence (camera/sequence_reader.hpp), the
@@ -83,7 +84,11 @@ public:
     /// @return frame; or timeout, failure or end, each with its message. The frames of one
     ///         opening have the size the source was opened for and strictly increasing indices
     ///         and timestamps; a gap in the indices stands for frames the source did not
-    ///         deliver.
+    ///         deliver. Each frame carries the IMU's samples not given with an earlier frame whose
+    ///         timestamps are at most its own, for each sensor in strictly increasing time, so
+    ///         that the samples of an opening's frames, in frame order, are each sensor's stream
+    ///         (docs/methods/imu-samples.md, "Which frame carries a sample"); a source without an
+    ///         IMU, or whose IMU did not open, gives none.
     /// @pre The source is open; when it is not, the result is a failure saying so.
     /// @note Allocates for the message of a status other than frame, and for out's buffers when
     ///       they grow (frame::prepare()); beyond that, a delivered frame of the size out already

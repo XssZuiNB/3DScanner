@@ -14,8 +14,9 @@
 /// once around a point, each refused as a value where the view is not defined. This is the one
 /// renderer of the tests' frames: a test whose scene it lacks adds the scene here as one more
 /// option. A test builds the source to deliver its trajectory's frames and then to report the end,
-/// a timeout or a failure, or to refuse its opening, each with the message it is given. No camera
-/// and no OrbbecSDK; host only.
+/// a timeout or a failure, or to refuse its opening, each with the message it is given. It
+/// samples an IMU along the trajectory when a test asks for one. No camera and no OrbbecSDK; host
+/// only.
 
 #pragma once
 
@@ -271,6 +272,26 @@ struct synthetic_depth_gap
     std::uint64_t frame_count; ///< the frames of the run, >= 0
 };
 
+/// The standard acceleration of gravity, in m/s² [S: CGPM 1901], which the synthetic source's
+/// accelerometer reads.
+inline constexpr double standard_gravity_mps2 = 9.80665;
+
+/// The IMU the synthetic source samples along its trajectory, in the camera frame, so that a test
+/// knows the truth (docs/methods/imu-samples.md, "The synthetic source"): between frames i - 1 and
+/// i the camera turns at the constant rate w_i = log(R_{i-1}^T R_i) / (t_i - t_{i-1}), in the
+/// camera frame, R_i the rotation of the trajectory's pose i, t_i frame i's timestamp, and at a
+/// time t of (t_{i-1}, t_i] its rotation is R_{i-1} exp((t - t_{i-1}) w_i). The gyroscope reads
+/// w_i in rad/s, the accelerometer gravity's specific force R(t)^T (0, 0, standard_gravity_mps2)
+/// in m/s², the world's z up, without an acceleration of the hand. At frame 0's time 0 the camera
+/// rests at pose 0. Frame i carries the samples taken in (t_{i-1}, t_i], frame 0 the one at 0,
+/// each value rounded to float.
+struct synthetic_imu
+{
+    /// The time between two samples of each sensor, in µs, > 0: sample k is taken at k period_us,
+    /// from 0 on, the accelerometer's and the gyroscope's at the same times.
+    std::uint64_t period_us;
+};
+
 /// How a test builds the synthetic source.
 struct synthetic_source_options
 {
@@ -284,6 +305,8 @@ struct synthetic_source_options
     synthetic_ending ending = synthetic_ending::end; ///< what next() reports after the frames
     std::string ending_message;                      ///< the message next() reports with it
     std::string open_refusal; ///< when not empty, open() refuses with this reason
+    /// The IMU sampled along the trajectory, or none: then the frames carry no samples.
+    std::optional<synthetic_imu> imu = std::nullopt;
 };
 
 /// A frame source that renders the scene of its options along its trajectory.
@@ -307,8 +330,9 @@ public:
     /// they give one, rounded to the nearest depth value; color is the surface's texture at the
     /// hit, rounded. A pixel whose ray meets no surface in front of the camera, or whose depth
     /// rounds below 1 or above the largest 16-bit value, 65535 [S], has depth 0 and color black.
-    /// A frame of the options' depth gap then has depth 0 at every pixel, its color kept.
-    /// Frames come as fast as they are asked for.
+    /// A frame of the options' depth gap then has depth 0 at every pixel, its color kept. With the
+    /// options' IMU the frame carries its samples (synthetic_imu), else none. Frames come as fast
+    /// as they are asked for.
     /// @param out [out] the frame, filled when the status is frame, else left as it was.
     /// @return frame for the first calls after an opening, one for each pose of the trajectory,
     ///         then the ending with its message at every call; a failure when the source is not

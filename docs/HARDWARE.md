@@ -136,7 +136,9 @@ OrbbecSDK on USB 3 with no stream running and no property set [M 2026-11-13].
   The intrinsics the SDK reports are empty: noise density, random walk and bias 0, the scale
   matrix the identity. The accel-to-color and gyro-to-color extrinsics equal depth-to-color
   to every digit and accel-to-gyro is the identity: where the IMU sits and how its axes lie
-  is unverified [?].
+  is unverified [?]. `orbbec_device` streams both at 200 Hz with the frames, each frame carrying
+  the samples since the frame before; their axes, clock and live checks:
+  docs/methods/imu-samples.md.
 * **Firmware** [M 2026-11-15]: 1.5.02 since 2026-11-15, 16:50, updated on the user's word from
   1.4.38, below OrbbecSDK v2's least firmware for the Gemini 2 L, 1.4.53 (its recommended:
   1.5.2) [S: OrbbecSDK v2's README and release notes, web]. On 1.4.38 every frame's device

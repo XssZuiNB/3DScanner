@@ -2,7 +2,8 @@
 /// @file sequence_reader.hpp
 /// The sequence's reader (GLOSSARY.md, "Sequence"; docs/SEQUENCE_FILE.md): a frame source
 /// (camera/frame_source.hpp) that gives a sequence's frames in the order written, bit for bit,
-/// as fast as they are asked, and with each frame the pose tracking gave it or its mark. A
+/// with their IMU samples, as fast as they are asked, and with each frame the pose tracking gave
+/// it or its mark. A
 /// sequence whose writer was cut off still gives every whole frame it holds, and then says that
 /// it ends early. Every failure is a value with its reason; no exception leaves the reader.
 
@@ -34,8 +35,9 @@ public:
     /// @param size [in] the size of the pictures asked for, in px; the sequence's own.
     /// @return opened; or not, with the reason, naming the file: the reader is open already; the
     ///         file cannot be opened or read, with the system's message; it is no sequence (its
-    ///         first bytes are not the magic); it is of a version other than 1; it ends within
-    ///         its header; its frames are of another size than asked (both sizes named).
+    ///         first bytes are not the magic); it is of a version other than 2, version 1 among
+    ///         them; it ends within its header; its frames are of another size than asked (both
+    ///         sizes named).
     /// @note Allocates the reader's own frame, of the sequence's size, when it opens, unless an
     ///       opening before allocated it; allocates for a refusal's reason. A failed allocation
     ///       ends the program (std::terminate): the function is noexcept.
@@ -44,20 +46,22 @@ public:
     /// Gives the next frame of the sequence. The record is read into a frame of the reader's own,
     /// which is swapped with out once it is whole, so that out is left as it was on every other
     /// status.
-    /// @param out [out] the next frame, its index, timestamp, description and pixels as written;
-    ///            left as it was on every other status. Owned by the caller.
+    /// @param out [out] the next frame, its index, timestamp, description, samples and pixels as
+    ///            written; left as it was on every other status. Owned by the caller.
     /// @return frame; end once the sequence's end is read, at this and every later call; or
     ///         failure with the reason, naming the file and the record (the first after the
     ///         header is record 1), at this and every later call: the reader is not open; the
     ///         file ends early, before the sequence's end, within a record or between two (its
     ///         writer was cut off, and every whole frame before has been given; ended_early()
     ///         says so); a record's kind is unknown; a frame's index or timestamp does not
-    ///         increase; bytes follow the end; the file cannot be read, with the system's message.
-    /// @note Allocates nothing when out already has the sequence's size, as the reader's frame
-    ///       and out change buffers. When out's buffers are smaller, they become the reader's
-    ///       frame, which grows them once, at the next frame. Allocates for the message of a
-    ///       status other than frame. A failed allocation ends the program (std::terminate): the
-    ///       function is noexcept.
+    ///         increase; a sample does not follow its sensor's last or lies after its frame's
+    ///         timestamp (imu_sample_order); bytes follow the end; the file cannot be read, with
+    ///         the system's message.
+    /// @note Allocates nothing when out already has the sequence's size and its lists of samples
+    ///       hold the record's samples, as the reader's frame and out change buffers. When out's
+    ///       buffers are smaller, they become the reader's frame, which grows them once, at the
+    ///       next frame. Allocates for the message of a status other than frame. A failed
+    ///       allocation ends the program (std::terminate): the function is noexcept.
     next_result next(frame &out) noexcept override;
 
     /// Closes the sequence's file. A closed reader stays closed.
@@ -99,6 +103,7 @@ private:
     std::uint64_t m_records = 0;               ///< the frames given since open()
     std::uint64_t m_last_index = 0;            ///< the index of the frame given last
     std::uint64_t m_last_timestamp_us = 0;     ///< its timestamp, in µs
+    imu_sample_order m_sample_order;           ///< each sensor's last sample given
     bool m_finished = false;                   ///< whether the end or a failure was reached
     bool m_ended_early = false;                ///< whether the file ended before the end
     next_result m_ending;                      ///< what every next() gives once finished

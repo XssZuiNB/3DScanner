@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: 0BSD
 /// @file orbbec_rules.cpp
 /// The Orbbec camera's decisions that need no camera: the firmware's rule, an opening's refusal,
-/// a frameset's checks and the rule for its timestamp (see orbbec_rules.hpp).
+/// a frameset's checks and the rule for its timestamp, which also places an IMU reading's time
+/// (see orbbec_rules.hpp).
 
 #include "camera/orbbec_rules.hpp"
 
@@ -24,6 +25,35 @@ constexpr std::int64_t jump_us = std::int64_t{1} << 32;
 /// The bound of a timestamp and a host time, 2^60 µs: below it every sum of the timestamp rule
 /// stays within 64 bits [S: computed in orbbec_frame_gate::take()].
 constexpr std::int64_t time_bound_us = std::int64_t{1} << 60;
+
+/// A step of the camera's clock against the host's, split into OrbbecSDK's jumps and the rest.
+struct clock_split
+{
+    std::int64_t jumps;   ///< k, the nearest whole number of 2^32 µs in the difference
+    std::int64_t rest_us; ///< the difference less k 2^32 µs, within +-2^31 µs
+};
+
+/// Splits the difference of a camera's step and the host's into whole jumps of 2^32 µs and a rest,
+/// the one copy of the split take() and place() share.
+/// @param camera_step_us [in] the camera clock's step, in µs, within +-2^60.
+/// @param host_step_us [in] the host clock's step, in µs, within +-2^60.
+/// @return k and the rest: camera_step_us - host_step_us = k 2^32 + rest.
+clock_split split_steps(std::int64_t camera_step_us, std::int64_t host_step_us)
+{
+    const std::int64_t difference_us = camera_step_us - host_step_us;
+    // The nearest multiple of 2^32 µs; the right shift of a negative number rounds toward minus
+    // infinity in C++20.
+    const std::int64_t jumps = (difference_us + jump_us / 2) >> 32;
+    return {jumps, difference_us - jumps * jump_us};
+}
+
+/// Says whether the rest of a split lies beyond the clocks' tolerance.
+/// @param rest_us [in] the rest, in µs.
+/// @return whether it lies beyond orbbec_clock_tolerance_us either way.
+bool beyond_tolerance(std::int64_t rest_us)
+{
+    return rest_us > orbbec_clock_tolerance_us || rest_us < -orbbec_clock_tolerance_us;
+}
 
 /// Writes a size for a message.
 /// @param size [in] the size, in px.
@@ -255,16 +285,12 @@ std::optional<std::string> orbbec_frame_gate::order_refusal(const orbbec_framese
         const std::int64_t camera_step_us = camera_us - m_last_camera_us;
         const std::int64_t host_step_us =
             static_cast<std::int64_t>(frameset.host_time_us) - m_last_host_us;
-        const std::int64_t difference_us = camera_step_us - host_step_us;
-        // The nearest multiple of 2^32 µs; the right shift of a negative number rounds toward
-        // minus infinity in C++20.
-        const std::int64_t jumps = (difference_us + jump_us / 2) >> 32;
-        const std::int64_t rest_us = difference_us - jumps * jump_us;
-        if (rest_us > orbbec_clock_tolerance_us || rest_us < -orbbec_clock_tolerance_us)
+        const clock_split split = split_steps(camera_step_us, host_step_us);
+        if (beyond_tolerance(split.rest_us))
             return "the camera's clock stepped by " + std::to_string(camera_step_us) +
                    " µs while the host's stepped by " + std::to_string(host_step_us) +
                    " µs, which is no jump of 2^32 µs";
-        offset_us -= jumps * jump_us;
+        offset_us -= split.jumps * jump_us;
     }
     timestamp_us = camera_us + offset_us;
     if (m_has_taken && timestamp_us <= m_last_timestamp_us)
@@ -319,5 +345,51 @@ std::optional<next_result> orbbec_frame_gate::take(const orbbec_wait &wait, fram
 const orbbec_skips &orbbec_frame_gate::skips() const noexcept
 {
     return m_skips;
+}
+
+orbbec_placement orbbec_frame_gate::place(std::uint64_t camera_time_us, std::uint64_t host_time_us,
+                                          std::int64_t &timestamp_us) const noexcept
+{
+    if (!m_has_taken)
+        return orbbec_placement::no_frame_taken;
+    if (camera_time_us == 0 || camera_time_us >= static_cast<std::uint64_t>(time_bound_us))
+        return orbbec_placement::camera_time_out_of_range;
+    if (host_time_us >= static_cast<std::uint64_t>(time_bound_us))
+        return orbbec_placement::host_time_out_of_range;
+    // Every value below 2^60 in magnitude as in order_refusal(); the frame's delivered timestamp
+    // lies in [0, 2^60), so the sum below stays within +-2^62 [S: computed].
+    const std::int64_t camera_step_us =
+        static_cast<std::int64_t>(camera_time_us) - m_last_camera_us;
+    const std::int64_t host_step_us = static_cast<std::int64_t>(host_time_us) - m_last_host_us;
+    const clock_split split = split_steps(camera_step_us, host_step_us);
+    if (beyond_tolerance(split.rest_us))
+        return orbbec_placement::off_clock;
+    timestamp_us = m_last_timestamp_us + camera_step_us - split.jumps * jump_us;
+    return orbbec_placement::placed;
+}
+
+std::string orbbec_frame_gate::placement_refusal(std::uint64_t camera_time_us,
+                                                 std::uint64_t host_time_us) const
+{
+    std::int64_t timestamp_us = 0;
+    switch (place(camera_time_us, host_time_us, timestamp_us))
+    {
+    case orbbec_placement::placed:
+        return {};
+    case orbbec_placement::no_frame_taken:
+        return "no frame of this opening has been taken to place it against";
+    case orbbec_placement::camera_time_out_of_range:
+        return "its time on the camera's clock, " + std::to_string(camera_time_us) +
+               " µs, is 0 or 2^60 µs or more";
+    case orbbec_placement::host_time_out_of_range:
+        return "the host's time, " + std::to_string(host_time_us) + " µs, is 2^60 µs or more";
+    case orbbec_placement::off_clock:
+        break;
+    }
+    return "its time on the camera's clock stepped by " +
+           std::to_string(static_cast<std::int64_t>(camera_time_us) - m_last_camera_us) +
+           " µs from the last taken frame's while the host's stepped by " +
+           std::to_string(static_cast<std::int64_t>(host_time_us) - m_last_host_us) +
+           " µs, which is no jump of 2^32 µs";
 }
 } // namespace gca

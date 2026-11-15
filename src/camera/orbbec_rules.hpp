@@ -8,8 +8,10 @@
 /// index, a timeout, or a failure with its message. The checks of a frame are those of one
 /// opening: its size, its depth format and depth unit, its index and its timestamp, where the jump
 /// of exactly 2^32 µs that OrbbecSDK's timestamps make [M 2026-11-13, docs/HARDWARE.md] is taken
-/// out. camera/orbbec_device.cpp feeds these functions with what OrbbecSDK reports; they build and
-/// link without OrbbecSDK, so the offline tests drive them (tests/test_orbbec_rules.cpp).
+/// out; by the same rule a time of the camera's clock, an IMU reading's, is placed on the clock of
+/// the frames delivered. camera/orbbec_device.cpp feeds these functions with what OrbbecSDK
+/// reports; they build and link without OrbbecSDK, so the offline tests drive them
+/// (tests/test_orbbec_rules.cpp, tests/test_orbbec_imu.cpp).
 
 #pragma once
 
@@ -211,6 +213,16 @@ struct orbbec_wait
     std::string message; ///< what failed, in plain English, with failure; empty otherwise
 };
 
+/// Whether orbbec_frame_gate::place() placed a time on the frames' clock, and why not.
+enum class orbbec_placement
+{
+    placed,                   ///< the time is placed
+    no_frame_taken,           ///< no frame of this opening has been taken to place it against
+    camera_time_out_of_range, ///< its camera time is 0 or 2^60 µs or more, as take() refuses
+    host_time_out_of_range,   ///< its host time is 2^60 µs or more, as take() refuses
+    off_clock, ///< the rest lies beyond orbbec_clock_tolerance_us: not on the frames' clock
+};
+
 /// The frames an opening skipped for their timestamp or index, and why the last one was.
 struct orbbec_skips
 {
@@ -270,6 +282,33 @@ public:
     /// Gives the frames this opening skipped.
     /// @return their count and the last one's reason, valid until the next take() or start().
     const orbbec_skips &skips() const noexcept;
+
+    /// Places a time of the camera's clock, an IMU reading's, on the clock of the frames take()
+    /// delivers, by take()'s rule measured against the last taken frame
+    /// (docs/methods/imu-samples.md, "The clock"): the camera's clock stepped by d from that
+    /// frame's camera time to this one and the host's by h; d - h is split into k 2^32 µs, k the
+    /// nearest whole number, plus a rest within +-2^31 µs, and the time is the frame's delivered
+    /// timestamp plus d less k 2^32 µs. So a jump of OrbbecSDK's timestamps between the frame and
+    /// the reading is taken out either way, whether the frame's or the reading's.
+    /// @param camera_time_us [in] the time on the camera's clock, ob::Frame::getTimeStampUs(), in
+    ///        µs.
+    /// @param host_time_us [in] when the source received it, on the host's steady clock, in µs.
+    /// @param timestamp_us [out] its time on the frames' clock, in µs, which may lie before 0 or
+    ///        after the last taken frame's; set when it is placed.
+    /// @return placed; or why not (orbbec_placement), which placement_refusal() puts into words.
+    /// @note Allocates nothing. One thread at a time, the one that calls take().
+    orbbec_placement place(std::uint64_t camera_time_us, std::uint64_t host_time_us,
+                           std::int64_t &timestamp_us) const noexcept;
+
+    /// Tells why place() does not place a time, while the gate has taken no frame since.
+    /// @param camera_time_us [in] the time on the camera's clock, in µs, as place() took it.
+    /// @param host_time_us [in] the host's time, in µs, as place() took it.
+    /// @return the reason: no frame of this opening has been taken; the camera time is 0 or 2^60
+    ///         µs or more, or the host time 2^60 µs or more; the camera's and the host's steps
+    ///         from the last taken frame, which differ by no jump of 2^32 µs. Empty when place()
+    ///         places the time.
+    /// @note Allocates the reason. One thread at a time, the one that calls take().
+    std::string placement_refusal(std::uint64_t camera_time_us, std::uint64_t host_time_us) const;
 
 private:
     /// Checks a frameset's pictures and depth unit against the opening.

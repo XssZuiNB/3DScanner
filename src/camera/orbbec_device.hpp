@@ -7,13 +7,18 @@
 /// jump of 2^32 µs taken out. A frameset with a bad timestamp or index is skipped and counted; a
 /// timeout, an exception of OrbbecSDK or OpenCV and a frameset of a wrong size, depth format or
 /// depth unit come back as values, and the caller's frame stays as it was. Color is delivered as
-/// RGB8. Besides the seam it tells its caller what an opening read and chose (opening()) and the
-/// frames it skipped (skips()), which orbbec_viewer prints.
+/// RGB8. The IMU's accelerometer and gyroscope stream beside depth and color, each through
+/// OrbbecSDK's sensor of its own into a queue (camera/orbbec_imu.hpp), and each frame taken
+/// carries their samples (docs/methods/imu-samples.md); when they cannot be started the camera
+/// opens without them, and its frames carry none. Besides the seam it tells its caller what an
+/// opening read and chose (opening()), the frames it skipped (skips()) and the IMU's readings it
+/// lost (imu_skips()), which orbbec_viewer prints.
 
 #pragma once
 
 #include "camera/frame.hpp"
 #include "camera/frame_source.hpp"
+#include "camera/orbbec_imu.hpp"
 #include "camera/orbbec_rules.hpp"
 #include "types/frame_description.hpp"
 
@@ -41,6 +46,13 @@ struct orbbec_opening
     /// 640x400@30 RGB | Depth: 640x400@30 Y14 | D2C: hardware" at 640x400 [M 2026-11-13,
     /// docs/HARDWARE.md]; empty when the camera offered no pair of streams for the size.
     std::string streams;
+    /// The IMU's streams started, as "Accel: <rate> <range> | Gyro: <rate> <range>" in OrbbecSDK's
+    /// names of the rate and the full-scale range [S: orbbec_device.cpp, start_imu()]; empty when
+    /// they were not started.
+    std::string imu_streams;
+    /// Why the opening went on without the IMU (camera/orbbec_imu.hpp, imu_refusal()); empty when
+    /// the IMU's streams started, or the opening did not get that far.
+    std::string imu_refusal;
 };
 
 /// The Orbbec camera behind the frame source seam.
@@ -49,6 +61,8 @@ class orbbec_device final : public frame_source
 public:
     /// Prepares a camera; nothing is opened until open().
     /// @param fps [in] the frame rate of both streams, in frames per second, for every opening.
+    /// @note Allocates the IMU's two queues of orbbec_imu_queue_readings readings, 26 KB each
+    ///       [S: computed, 32 bytes a reading]; throws std::bad_alloc when that fails.
     explicit orbbec_device(std::uint32_t fps);
 
     /// Closes the camera when it is open.
@@ -60,7 +74,9 @@ public:
     /// "Orbbec error: <message>".
     static void print_stream_profiles();
 
-    /// Opens the first connected camera and starts its color and aligned depth streams.
+    /// Opens the first connected camera and starts its color and aligned depth streams, then its
+    /// accelerometer and gyroscope at orbbec_imu_rate_hz (start_imu()), or none of them, which
+    /// refuses nothing: opening() says why, and the frames then carry no samples.
     /// @param size [in] the stream size, in px: a color profile of that size and the
     ///        constructor's frame rate, then a depth profile aligned to it, as
     ///        camera/orbbec_rules.hpp's choose_color_profile() and choose_depth_profile() choose.
@@ -76,9 +92,10 @@ public:
 
     /// Waits up to orbbec_frame_time_limit_ms for the next frame and gives it. A frameset the
     /// gate skips for its timestamp or index is not delivered; the wait goes on within the same
-    /// time limit, and skips() counts it.
-    /// @param out [out] filled with the frame when the result is a frame; left as it was on every
-    ///            other result. Owned by the caller.
+    /// time limit, and skips() counts it. A frame taken carries the IMU's samples the queues give
+    /// it (orbbec_imu_queue::deliver()); next() waits for no sample.
+    /// @param out [out] filled with the frame and its samples when the result is a frame; left as
+    ///            it was on every other result. Owned by the caller.
     /// @return frame; timeout; failure with OrbbecSDK's or OpenCV's message, or with the reason
     ///         camera/orbbec_rules.hpp's orbbec_frame_gate refused the frameset; failure when the
     ///         camera is not open. A failure ends nothing: the camera stays open.
@@ -92,24 +109,31 @@ public:
     /// @note Allocates, unlike the seam's note: OrbbecSDK's wrapper objects of each frameset
     ///       (make_shared in Pipeline.hpp, waitForFrameset, and Frame.hpp, getColorFrame and
     ///       getDepthFrame [S: OrbbecSDK v2.10.6]), the message of a result other than a frame,
-    ///       the reason of a skip, out's buffers when they grow, and the decoder's buffer for a
-    ///       color format other than RGB when it grows. Every exception thrown while waiting and
-    ///       decoding becomes a failure; a failed allocation of out's buffers ends the program
-    ///       (std::terminate). One thread at a time.
+    ///       the reason of a skip, out's buffers when they grow, its lists of samples beyond
+    ///       frame_imu_samples_reserved, and the decoder's buffer for a color format other than
+    ///       RGB when it grows. Every exception thrown while waiting and decoding becomes a
+    ///       failure; a failed allocation of out's buffers ends the program (std::terminate).
+    ///       Takes each IMU queue's lock for its walk, after the wait. One thread at a time.
     next_result next(frame &out) noexcept override;
 
-    /// Stops the streams and releases the camera. A closed camera stays closed; an exception of
-    /// OrbbecSDK while stopping is dropped, as close() has no result, and the camera is released
-    /// either way.
+    /// Stops the streams, the IMU's first, and releases the camera. A closed camera stays closed;
+    /// an exception of OrbbecSDK while stopping is dropped, as close() has no result, and the
+    /// camera is released either way.
     void close() noexcept override;
 
     /// Gives the frames the current or the last opening skipped for their timestamp or index.
     /// @return their count and the last one's reason, valid until the next next() or open().
     const orbbec_skips &skips() const noexcept;
 
+    /// Gives the IMU's readings the current or the last opening lost: dropped from a full queue,
+    /// unreadable, not placed on the frames' clock, out of order (orbbec_imu_queue::deliver()).
+    /// @return their count and the last one's reason, valid until the next next() or open().
+    const orbbec_skips &imu_skips() const noexcept;
+
     /// Tells what the last opening read from the camera and chose, whether it opened or not.
-    /// @return the camera's serial number, its link and the streams chosen, each empty where the
-    ///         opening did not get that far; valid until the next open().
+    /// @return the camera's serial number, its link, the streams chosen and the IMU's streams or
+    ///         why it went on without them, each empty where the opening did not get that far;
+    ///         valid until the next open().
     const orbbec_opening &opening() const noexcept;
 
     /// Describes the camera.
@@ -152,6 +176,23 @@ private:
     std::optional<std::string> decode_color(const std::shared_ptr<ob::ColorFrame> &color,
                                             orbbec_frameset &frameset);
 
+    /// Starts the accelerometer and the gyroscope at orbbec_imu_rate_hz, each through OrbbecSDK's
+    /// sensor of its own, whose callback puts every reading into the sensor's queue, which it
+    /// empties first. Both start or neither: when the camera does not offer both at the rate, or
+    /// OrbbecSDK throws, the one started is stopped. Records in m_opening the streams started, or
+    /// imu_refusal()'s reason.
+    /// @pre The pipeline runs (start_pipeline()); the IMU is not started.
+    /// @note Allocates the sensors, their profile lists and callbacks, and the opening's strings.
+    ///       Every exception of OrbbecSDK becomes the IMU's refusal; none leaves. The callbacks run
+    ///       on OrbbecSDK's threads until stop_imu().
+    void start_imu() noexcept;
+
+    /// Stops the IMU's sensors that run and releases them, so that no callback runs after it
+    /// returns [?: OrbbecSDK's stop is taken to wait for its callback], then stops both queues,
+    /// which empties them and makes them take no reading until start_imu() starts them again. An
+    /// exception of OrbbecSDK is dropped, and the sensor released either way.
+    void stop_imu() noexcept;
+
     /// Drops the frames the last frameset left referenced.
     void release_frames() noexcept;
 
@@ -180,5 +221,15 @@ private:
     std::string m_depth_format;            ///< the name of a depth format the gate refuses
     std::vector<std::uint8_t> m_color_rgb; ///< decoded color of a format other than RGB
     cv::Mat m_decoded_bgr;                 ///< OpenCV's decoded picture of an MJPG frame
+
+    // The IMU: its two sensors, alive while they stream, since OrbbecSDK's callback calls into
+    // the sensor object, and their queues, which OrbbecSDK's threads fill and next() empties.
+    std::shared_ptr<ob::Sensor> m_accel_sensor; ///< set while start_imu() runs or it streams
+    std::shared_ptr<ob::Sensor> m_gyro_sensor;  ///< set while start_imu() runs or it streams
+    bool m_accel_started = false;               ///< whether the accelerometer streams
+    bool m_gyro_started = false;                ///< whether the gyroscope streams
+    orbbec_imu_queue m_accel_queue{"accelerometer", orbbec_imu_queue_readings};
+    orbbec_imu_queue m_gyro_queue{"gyroscope", orbbec_imu_queue_readings};
+    orbbec_skips m_imu_skips; ///< the IMU's readings this opening lost
 };
 } // namespace gca

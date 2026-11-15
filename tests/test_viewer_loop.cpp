@@ -36,9 +36,10 @@
 /// Without a sequence every report line is in today's form, with nothing after the points. With
 /// one, written into a second temporary directory:
 /// - three frames and a timeout: the sequence read back holds the first frame and the three
-///   after it, bit for bit, each marked as tracked by nothing; the report lines end in
-///   " | queue full 0", the snapshot is as without a sequence, and "Wrote 4 frames to <file>, 0
-///   not written because the writer's queue was full" closes the run; each frame is pushed once;
+///   after it, bit for bit with their IMU samples, each marked as tracked by nothing; the report
+///   lines end in " | queue full 0", the snapshot is as without a sequence, and "Wrote 4 frames
+///   to <file>, 0 not written because the writer's queue was full" closes the run; each frame is
+///   pushed once;
 /// - the exit flag (Ctrl-C) after a timeout: the last frame taken is still written, and the
 ///   closing line follows;
 /// - pushes answered by a full queue (a scripted sink: a real writer is not full at this pace):
@@ -132,11 +133,16 @@ constexpr float viewer_far_m = 3.0f;
 /// step 6e-8], far below the whole pixel a vertex of another pixel lies off [?: a choice].
 constexpr double vertex_pixel_tolerance_px = 1e-3;
 
-/// The bytes of one record of a frame without a pose in the sequence: its kind, index and
-/// timestamp, then two bytes of depth and three of color for each pixel
-/// [S: docs/SEQUENCE_FILE.md, "Layout"].
-constexpr std::size_t sequence_record_bytes =
-    1 + 8 + 8 + 5 * static_cast<std::size_t>(test_size.width) * test_size.height;
+/// Gives the bytes of a frame's record without a pose in the sequence: its kind, index,
+/// timestamp and the counts of its samples, 20 bytes for each sample, then two bytes of depth and
+/// three of color for each pixel [S: docs/SEQUENCE_FILE.md, "Layout"].
+/// @param one [in] the frame, of the test's size.
+/// @return the bytes.
+std::size_t sequence_record_bytes(const gca::frame &one)
+{
+    return 1 + 8 + 8 + 4 + 20 * (one.accel().size() + one.gyro().size()) +
+           5 * static_cast<std::size_t>(test_size.width) * test_size.height;
+}
 
 /// The report line in today's form, the points captured: "fps <number> | grab+decode <number> ms
 /// | gpu point cloud <number> ms | points <count>".
@@ -401,6 +407,9 @@ std::optional<gca_test::synthetic_source_options> scene_options(std::size_t pose
     options.scene = {.plane = test_plane, .box = test_box, .trajectory = *trajectory};
     options.ending = ending;
     options.ending_message = message;
+    // The IMU at the camera's 200 Hz, so that a sequence holds its samples
+    // (docs/methods/imu-samples.md).
+    options.imu = gca_test::synthetic_imu{5000};
     return options;
 }
 
@@ -1346,11 +1355,16 @@ void check_disk_refuses()
     const snapshot_directory directory;
     const gca_test::temporary_directory sequence_directory("test_viewer_loop");
     scripted_sink sink(sequence_directory.path(), {}, 0);
+    gca::frame first;
+    gca::frame second;
+    check(render_frame(*options, 0, first) && render_frame(*options, 1, second),
+          "disk: the first two frames rendered again");
     run_output output;
     {
         // Room for the header, two records and part of the third [S: docs/SEQUENCE_FILE.md].
         const gca_test::file_size_limit limit(gca::sequence_header_bytes +
-                                              2 * sequence_record_bytes + 100);
+                                              sequence_record_bytes(first) +
+                                              sequence_record_bytes(second) + 100);
         output = run(*options,
                      {.max_frames = -1, .timeout_calls = {}, .stop_after = 0, .sequence = &sink});
     }

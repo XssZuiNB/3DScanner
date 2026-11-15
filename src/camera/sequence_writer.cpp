@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: 0BSD
 /// @file sequence_writer.cpp
 /// The sequence's writer: a ring of frames filled by swaps under one lock, and a thread that
-/// writes each frame's record with POSIX calls (see sequence_writer.hpp).
+/// writes each frame's record, its samples encoded a block at a time, with POSIX calls (see
+/// sequence_writer.hpp).
 
 #include "camera/sequence_writer.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cerrno>
+#include <cstddef>
+#include <span>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -24,6 +29,30 @@ namespace
 template <typename T> std::string_view bytes_of(std::span<const T> picture)
 {
     return {reinterpret_cast<const char *>(picture.data()), picture.size_bytes()};
+}
+
+/// Writes a frame's samples of one sensor, in order, as docs/SEQUENCE_FILE.md lays them out.
+/// @param fd [in] the file, open for writing.
+/// @param samples [in] the samples.
+/// @return whether every byte was written; on false errno holds the reason.
+/// @note Allocates nothing.
+bool write_samples(int fd, std::span<const imu_sample> samples)
+{
+    std::array<std::uint8_t, imu_samples_per_block * imu_sample_bytes> block;
+    while (!samples.empty())
+    {
+        const std::size_t count = std::min(samples.size(), imu_samples_per_block);
+        for (std::size_t k = 0; k < count; k++)
+        {
+            const std::array<std::uint8_t, imu_sample_bytes> one = encode_imu_sample(samples[k]);
+            std::copy(one.begin(), one.end(), block.begin() + k * imu_sample_bytes);
+        }
+        if (!write_all(fd,
+                       {reinterpret_cast<const char *>(block.data()), count * imu_sample_bytes}))
+            return false;
+        samples = samples.subspan(count);
+    }
+    return true;
 }
 
 } // namespace
@@ -74,6 +103,7 @@ open_result sequence_writer::open(const std::filesystem::path &path,
     m_failure.clear();
     m_written = 0;
     m_accepted_any = false;
+    m_sample_order = {};
     try
     {
         m_thread = std::thread(&sequence_writer::write_queue, this);
@@ -105,6 +135,23 @@ push_result sequence_writer::push(frame &in_out, const frame_tracking &tracking)
         if (!out_of_order.empty())
             return {push_status::failure, m_path.string() + ": " + out_of_order};
     }
+    const std::span<const imu_sample> accel = std::as_const(in_out).accel();
+    const std::span<const imu_sample> gyro = std::as_const(in_out).gyro();
+    const auto too_many = [&](std::size_t count, const char *sensor) {
+        return push_result{push_status::failure, m_path.string() + ": frame index " +
+                                                     std::to_string(in_out.index()) + " holds " +
+                                                     std::to_string(count) + " " + sensor +
+                                                     " samples; a record holds at most " +
+                                                     std::to_string(imu_samples_per_record_max)};
+    };
+    if (accel.size() > imu_samples_per_record_max)
+        return too_many(accel.size(), "accelerometer");
+    if (gyro.size() > imu_samples_per_record_max)
+        return too_many(gyro.size(), "gyroscope");
+    const std::string samples_refusal = m_sample_order.refusal(accel, gyro, in_out.timestamp_us());
+    if (!samples_refusal.empty())
+        return {push_status::failure, m_path.string() + ": frame index " +
+                                          std::to_string(in_out.index()) + ": " + samples_refusal};
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         if (!m_failure.empty())
@@ -115,6 +162,7 @@ push_result sequence_writer::push(frame &in_out, const frame_tracking &tracking)
         m_last_index = in_out.index();
         m_last_timestamp_us = in_out.timestamp_us();
         m_accepted_any = true;
+        m_sample_order.advance(accel, gyro);
         std::swap(place.queued_frame, in_out);
         place.tracking = tracking;
         m_count++;
@@ -200,9 +248,13 @@ void sequence_writer::write_queue() noexcept
 bool sequence_writer::write_record(const slot &queued) const noexcept
 {
     const frame &held = queued.queued_frame;
+    // push() took only frames whose counts fit 16 bits.
     const frame_lead_bytes lead =
-        encode_frame_lead({held.index(), held.timestamp_us(), queued.tracking});
+        encode_frame_lead({held.index(), held.timestamp_us(), queued.tracking,
+                           static_cast<std::uint16_t>(held.accel().size()),
+                           static_cast<std::uint16_t>(held.gyro().size())});
     return write_all(m_fd, {reinterpret_cast<const char *>(lead.bytes.data()), lead.size}) &&
+           write_samples(m_fd, held.accel()) && write_samples(m_fd, held.gyro()) &&
            write_all(m_fd, bytes_of(held.depth())) && write_all(m_fd, bytes_of(held.color()));
 }
 } // namespace gca

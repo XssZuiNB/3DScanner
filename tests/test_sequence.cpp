@@ -3,26 +3,31 @@
 /// The sequence (docs/SEQUENCE_FILE.md) through the camera module's public API: frames written
 /// by the sequence's writer into a temporary directory, which the test removes, and read back by
 /// its reader as a frame source.
-/// - Frames of the synthetic source, the walk around the tabletop box, with poses, both marks and
-///   gaps in the indices, are read back bit for bit: depth, color, index, timestamp, the pose or
-///   the mark, and the header's description; then the end, at every later call. A reader opened
-///   again, in the middle or after the end, starts at the first frame.
-/// - The writer writes the bytes the document lays out, built here from its tables.
+/// - Frames of the synthetic source, the walk around the tabletop box with its IMU at 200 Hz, with
+///   poses, both marks and gaps in the indices, are read back bit for bit: depth, color, index,
+///   timestamp, the IMU's samples, the pose or the mark, and the header's description; then the
+///   end, at every later call. A reader opened again, in the middle or after the end, starts at
+///   the first frame.
+/// - The writer writes the bytes the document lays out, built here from its tables, samples with
+///   a negative zero and a NaN's payload among them, and a frame without samples.
 /// - A queue of 2 frames reports full to the caller, through has_room() and push(); a push after
 ///   has_room() said yes is accepted; after close() every accepted frame is on disk, in order,
 ///   and no other, and frames_written() counts them.
 /// - The writer refuses, as a value with the reason: not open, a queue of 0, a file that cannot
 ///   be created (it exists, no directory, a directory it cannot write), a header the disk
 ///   refuses (no file is left), a second open, a frame of other intrinsics or another depth
-///   unit, an index or a timestamp that does not increase; a frame refused or not taken is left
-///   as it was. A disk that refuses a write (a file size limit) reaches push() and close() as the
-///   reason, also when it refuses the end alone, and the frames written before it are read back
-///   and counted by frames_written().
+///   unit, an index or a timestamp that does not increase, a sample that does not follow its
+///   sensor's last or lies after its frame's timestamp, more samples of a sensor than a record
+///   holds; a frame refused or not taken is left as it was. A disk that refuses a write (a file
+///   size limit) reaches push() and close() as the reason, also when it refuses the end alone, and
+///   the frames written before it are read back and counted by frames_written().
 /// - The reader refuses, as a value with the reason: a missing file, a file that is no sequence,
-///   another version, a header cut short, another size; a file cut at every byte gives every
-///   whole frame before the cut, then the early end with the record's number, which
-///   ended_early() tells apart, the frame given left as it was; an unknown kind, an index or a
-///   timestamp that does not increase, bytes after the end, none of them an early end.
+///   another version, version 1 among them, a header cut short, another size; a file cut at every
+///   byte, within the samples too, gives every whole frame before the cut, then the early end with
+///   the record's number, which ended_early() tells apart, the frame given left as it was; an
+///   unknown kind, an index or a timestamp that does not increase, a sample that does not follow
+///   its sensor's last or lies after its frame's timestamp, bytes after the end, none of them an
+///   early end.
 /// Every writer's thread ends within its test. Needs no GPU and no camera.
 
 #include "camera/frame.hpp"
@@ -31,10 +36,12 @@
 #include "camera/sequence_reader.hpp"
 #include "camera/sequence_writer.hpp"
 #include "check.hpp"
+#include "frame_copy.hpp"
 #include "synthetic_source.hpp"
 #include "test_files.hpp"
 #include "types/camera_pose.hpp"
 #include "types/frame_description.hpp"
+#include "types/imu_sample.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -57,6 +64,7 @@ using gca_test::bytes_of;
 using gca_test::check;
 using gca_test::check_refusal;
 using gca_test::same_bits;
+using gca_test::same_samples;
 using gca_test::temporary_directory;
 using gca_test::write_bytes;
 
@@ -69,14 +77,19 @@ constexpr gca::intrinsics walk_intrinsics = {150.3f, 140.7f, 83.3f, 56.6f};
 /// The walk's depth unit, 0.1 mm [?: a choice].
 constexpr float walk_depth_unit_m = 0.0001f;
 
+/// The walk's IMU period, 200 Hz [?: a choice, the camera's rate, docs/methods/imu-samples.md].
+constexpr std::uint64_t walk_imu_period_us = 5000;
+
 /// One frame as the test pushed it, kept for the comparison after reading.
 struct pushed_frame
 {
-    std::uint64_t index;              ///< its index
-    std::uint64_t timestamp_us;       ///< its timestamp, in µs
-    std::vector<std::uint16_t> depth; ///< its depth values
-    std::vector<std::uint8_t> color;  ///< its color bytes
-    gca::frame_tracking tracking;     ///< its pose or mark
+    std::uint64_t index;                ///< its index
+    std::uint64_t timestamp_us;         ///< its timestamp, in µs
+    std::vector<std::uint16_t> depth;   ///< its depth values
+    std::vector<std::uint8_t> color;    ///< its color bytes
+    std::vector<gca::imu_sample> accel; ///< its accelerometer's samples
+    std::vector<gca::imu_sample> gyro;  ///< its gyroscope's samples
+    gca::frame_tracking tracking;       ///< its pose or mark
 };
 
 /// Keeps a copy of a frame before the push swaps its buffers away.
@@ -89,6 +102,8 @@ pushed_frame copy_of(const gca::frame &one_frame, const gca::frame_tracking &tra
             one_frame.timestamp_us(),
             {one_frame.depth().begin(), one_frame.depth().end()},
             {one_frame.color().begin(), one_frame.color().end()},
+            {one_frame.accel().begin(), one_frame.accel().end()},
+            {one_frame.gyro().begin(), one_frame.gyro().end()},
             tracking};
 }
 
@@ -121,8 +136,8 @@ bool same_tracking(const gca::frame_tracking &a, const gca::frame_tracking &b)
 /// @param read [in] the frame the reader gave.
 /// @param tracking [in] the tracking the reader gave with it.
 /// @param pushed [in] the frame the test pushed.
-/// @return whether index, timestamp, every depth value and color byte and the tracking are
-///         equal.
+/// @return whether index, timestamp, every depth value and color byte, every sample bit for bit
+///         and the tracking are equal.
 bool same_frame(const gca::frame &read, const gca::frame_tracking &tracking,
                 const pushed_frame &pushed)
 {
@@ -131,6 +146,7 @@ bool same_frame(const gca::frame &read, const gca::frame_tracking &tracking,
                       pushed.depth.end()) &&
            std::equal(read.color().begin(), read.color().end(), pushed.color.begin(),
                       pushed.color.end()) &&
+           same_samples(read.accel(), pushed.accel) && same_samples(read.gyro(), pushed.gyro) &&
            same_tracking(tracking, pushed.tracking);
 }
 
@@ -143,7 +159,7 @@ gca::camera_pose pose_of(const Eigen::Isometry3d &camera_to_world)
 }
 
 /// Renders the walk once around the tabletop box (tests/synthetic_source.hpp): 12 frames of the
-/// synthetic source.
+/// synthetic source, with its IMU's samples at 200 Hz.
 /// @param trajectory [out] the walk's trajectory, camera frame to the scene's frame.
 /// @return the frames, index 0 to 11; empty when the walk could not be built.
 std::vector<gca::frame> render_walk(std::vector<Eigen::Isometry3d> &trajectory)
@@ -158,6 +174,7 @@ std::vector<gca::frame> render_walk(std::vector<Eigen::Isometry3d> &trajectory)
     options.description = {walk_size, walk_intrinsics, walk_depth_unit_m};
     options.scene = {
         .plane = gca_test::tabletop_plane, .box = gca_test::tabletop_box, .trajectory = trajectory};
+    options.imu = gca_test::synthetic_imu{walk_imu_period_us};
     gca_test::synthetic_source source(options);
     check(source.open(walk_size).opened, "test setup: the synthetic source opened");
     std::vector<gca::frame> frames(trajectory.size());
@@ -306,8 +323,8 @@ void append_little_endian(std::string &bytes, std::uint64_t value, int count)
 }
 
 /// The writer writes the bytes docs/SEQUENCE_FILE.md lays out, built here from the document's
-/// tables apart from the writer's code: a header, a frame with a pose, one in tracking loss,
-/// one not tracked, the end.
+/// tables apart from the writer's code: a header, a frame with a pose and samples of both sensors,
+/// one in tracking loss with a gyroscope's sample alone, one not tracked without samples, the end.
 /// @param directory [in] the test's directory.
 void test_bytes_as_documented(const temporary_directory &directory)
 {
@@ -317,6 +334,13 @@ void test_bytes_as_documented(const temporary_directory &directory)
     const std::uint64_t indices[3] = {5, 0x0102030405060708, 0x0102030405060709};
     const std::uint64_t timestamps[3] = {1000, 0x1112131415161718, 0x1112131415161719};
     const gca::frame_tracking trackings[3] = {pose, gca::tracking_loss{}, gca::not_tracked{}};
+    // Values whose bits a careless copy would change: a negative zero, a NaN's payload, a
+    // subnormal.
+    const float nan_with_payload = std::bit_cast<float>(std::uint32_t{0x7fc12345});
+    const std::vector<gca::imu_sample> accels[3] = {
+        {{990, 1.5f, -0.0f, nan_with_payload}, {1000, -9.80665f, 0.25f, 3e-39f}}, {}, {}};
+    const std::vector<gca::imu_sample> gyros[3] = {
+        {{995, 0.125f, -2.5f, 1e10f}}, {{0x1112131415161700, 7.0f, 8.0f, 9.0f}}, {}};
 
     const std::filesystem::path path = directory / "documented.sequence";
     {
@@ -326,6 +350,8 @@ void test_bytes_as_documented(const temporary_directory &directory)
         {
             gca::frame one_frame;
             one_frame.prepare(description, indices[k], timestamps[k]);
+            one_frame.accel().assign(accels[k].begin(), accels[k].end());
+            one_frame.gyro().assign(gyros[k].begin(), gyros[k].end());
             one_frame.depth()[0] = static_cast<std::uint16_t>(0x1234 + k);
             one_frame.depth()[1] = 0xabcd;
             for (std::size_t c = 0; c < 6; c++)
@@ -338,7 +364,7 @@ void test_bytes_as_documented(const temporary_directory &directory)
     }
 
     std::string expected = "3dscanner sequence";
-    append_little_endian(expected, 1, 4);
+    append_little_endian(expected, 2, 4);
     append_little_endian(expected, 2, 4);
     append_little_endian(expected, 1, 4);
     for (const float value : {1.5f, -2.25f, 0.5f, -0.0f, 0.001f})
@@ -353,6 +379,17 @@ void test_bytes_as_documented(const temporary_directory &directory)
         {
             for (const double value : {0.5, -1.25, 2.0, 0.2, 0.4, 0.16, 0.88})
                 append_little_endian(expected, std::bit_cast<std::uint64_t>(value), 8);
+        }
+        append_little_endian(expected, accels[k].size(), 2);
+        append_little_endian(expected, gyros[k].size(), 2);
+        for (const std::vector<gca::imu_sample> *samples : {&accels[k], &gyros[k]})
+        {
+            for (const gca::imu_sample &sample : *samples)
+            {
+                append_little_endian(expected, sample.timestamp_us, 8);
+                for (const float value : {sample.x, sample.y, sample.z})
+                    append_little_endian(expected, std::bit_cast<std::uint32_t>(value), 4);
+            }
         }
         append_little_endian(expected, 0x1234 + k, 2);
         append_little_endian(expected, 0xabcd, 2);
@@ -472,14 +509,21 @@ void test_full_queue(const temporary_directory &directory)
     check(result.status == gca::next_status::end, "full queue: then the end");
 }
 
-/// Gives a small frame of a description, its pixels made from its index.
+/// Gives a small frame of a description, its pixels made from its index, with one sample of the
+/// accelerometer, 10 µs before its timestamp, and two of the gyroscope, 20 µs and 5 µs before it,
+/// 60 bytes of samples in its record [S: docs/SEQUENCE_FILE.md, 20 bytes a sample].
 /// @param description [in] its description.
 /// @param index [in] its index; its timestamp is 1000 + 33333 index µs.
 /// @return the frame.
 gca::frame small_frame(const gca::frame_description &description, std::uint64_t index)
 {
     gca::frame one_frame;
-    one_frame.prepare(description, index, 1000 + 33333 * index);
+    const std::uint64_t timestamp_us = 1000 + 33333 * index;
+    one_frame.prepare(description, index, timestamp_us);
+    const float value = static_cast<float>(index);
+    one_frame.accel().push_back({timestamp_us - 10, value, 0.5f, -9.75f});
+    one_frame.gyro().push_back({timestamp_us - 20, -value, 0.125f, 0.0f});
+    one_frame.gyro().push_back({timestamp_us - 5, value, -0.125f, 1.0f});
     for (std::size_t k = 0; k < one_frame.depth().size(); k++)
         one_frame.depth()[k] = static_cast<std::uint16_t>(1000 * index + k);
     for (std::size_t k = 0; k < one_frame.color().size(); k++)
@@ -595,6 +639,28 @@ void test_writer_refusals(const temporary_directory &directory)
     check_push_refused("writer, a timestamp that does not increase", writer, earlier,
                        ": timestamp 167665 µs does not increase; the frame before was taken at "
                        "167665 µs");
+    // Frame 5's accelerometer sample was taken at 167655 µs; frame 7's timestamp is 234331 µs.
+    gca::frame repeated = small_frame(small, 7);
+    repeated.accel()[0].timestamp_us = 167655;
+    check_push_refused(
+        "writer, an accelerometer sample that does not follow the last", writer, repeated,
+        ": frame index 7: accelerometer sample 0 at 167655 µs does not increase; the "
+        "sample before was taken at 167655 µs");
+    gca::frame swapped = small_frame(small, 7);
+    std::swap(swapped.gyro()[0], swapped.gyro()[1]);
+    check_push_refused("writer, a frame's gyroscope samples out of order", writer, swapped,
+                       ": frame index 7: gyroscope sample 1 at 234311 µs does not increase; the "
+                       "sample before was taken at 234326 µs");
+    gca::frame ahead = small_frame(small, 7);
+    ahead.gyro()[1].timestamp_us = 234332;
+    check_push_refused("writer, a gyroscope sample after its frame's timestamp", writer, ahead,
+                       ": frame index 7: gyroscope sample 1 at 234332 µs lies after its frame's "
+                       "timestamp, 234331 µs");
+    gca::frame crowded = small_frame(small, 7);
+    crowded.accel().assign(gca::imu_samples_per_record_max + 1, crowded.accel()[0]);
+    check_push_refused("writer, more accelerometer samples than a record holds", writer, crowded,
+                       ": frame index 7 holds 65536 accelerometer samples; a record holds at "
+                       "most 65535");
     gca::frame later = small_frame(small, 9);
     pushed.push_back(copy_of(later, gca::tracking_loss{}));
     while (writer.push(later, gca::tracking_loss{}).status == gca::push_status::full)
@@ -611,9 +677,9 @@ void test_writer_refusals(const temporary_directory &directory)
 void test_disk_refuses(const temporary_directory &directory)
 {
     const std::filesystem::path path = directory / "cut.sequence";
-    // The header, 50 bytes, and a frame in tracking loss, 17 + 5 * 12 bytes; then half of the
-    // next [S: docs/SEQUENCE_FILE.md].
-    const std::size_t record_bytes = 17 + 5 * 12;
+    // The header, 50 bytes, and a frame in tracking loss, 21 + 3 * 20 + 5 * 12 bytes with its
+    // three samples; then half of the next [S: docs/SEQUENCE_FILE.md].
+    const std::size_t record_bytes = 21 + 3 * 20 + 5 * 12;
     const std::size_t limit_bytes = 50 + record_bytes + record_bytes / 2;
     std::vector<pushed_frame> pushed;
     gca::push_result refused;
@@ -754,8 +820,8 @@ void check_every_cut(const temporary_directory &directory, const std::string &by
                      const std::vector<pushed_frame> &pushed)
 {
     // Where each record ends [S: docs/SEQUENCE_FILE.md]: the header's 50 bytes, a frame with a
-    // pose 73 + 5 * 12, the others 17 + 5 * 12, the end 1.
-    const std::size_t ends[3] = {50 + 133, 50 + 133 + 77, 50 + 133 + 77 + 77};
+    // pose 77 + 3 * 20 + 5 * 12, the others 21 + 3 * 20 + 5 * 12, the end 1.
+    const std::size_t ends[3] = {50 + 197, 50 + 197 + 141, 50 + 197 + 141 + 141};
     const std::filesystem::path path = directory / "cut_short.sequence";
     int wrong = 0;
     for (std::size_t cut = 50; cut < bytes.size(); cut++)
@@ -843,15 +909,22 @@ void test_reader_refusals(const temporary_directory &directory)
     write_bytes(path, "3dscanner");
     check_reader_refuses("reader, the magic's start only", path, small.size,
                          " ends early: within its header, after 9 of its 50 bytes");
-    std::string version_2 = bytes;
-    version_2[18] = 2;
-    write_bytes(path, version_2);
-    check_reader_refuses("reader, version 2", path, small.size,
-                         " is of the sequence format's version 2; this reader knows version 1 "
+    // Version 1, the format before the IMU's samples, is not read (AGENTS.md §7 rule 6).
+    std::string version_1 = bytes;
+    version_1[18] = 1;
+    write_bytes(path, version_1);
+    check_reader_refuses("reader, version 1", path, small.size,
+                         " is of the sequence format's version 1; this reader knows version 2 "
                          "only");
-    write_bytes(path, version_2.substr(0, 22));
-    check_reader_refuses("reader, version 2 with a header of 22 bytes", path, small.size,
-                         " is of the sequence format's version 2; this reader knows version 1 "
+    write_bytes(path, version_1.substr(0, 22));
+    check_reader_refuses("reader, version 1 with a header of 22 bytes", path, small.size,
+                         " is of the sequence format's version 1; this reader knows version 2 "
+                         "only");
+    std::string version_3 = bytes;
+    version_3[18] = 3;
+    write_bytes(path, version_3);
+    check_reader_refuses("reader, version 3", path, small.size,
+                         " is of the sequence format's version 3; this reader knows version 2 "
                          "only");
     write_bytes(path, bytes.substr(0, 30));
     check_reader_refuses("reader, a header cut short", path, small.size,
@@ -877,8 +950,13 @@ void test_reader_refusals(const temporary_directory &directory)
 
     check_every_cut(directory, bytes, pushed);
 
-    // Record 2 starts after the header and the frame with a pose.
-    const std::size_t second = 50 + 133;
+    // Record 2 starts after the header and the frame with a pose; its accelerometer's sample
+    // after its lead of 21 bytes, its gyroscope's two after that. Record 1's accelerometer sample
+    // starts after its lead of 77 bytes.
+    const std::size_t second = 50 + 197;
+    const std::size_t second_accel = second + 21;
+    const std::size_t second_gyro = second_accel + 20;
+    const std::size_t first_accel = 50 + 77;
     std::string unknown = bytes;
     unknown[second] = 'X';
     check_fails_after("reader, an unknown kind", directory, unknown, pushed, 1,
@@ -892,6 +970,21 @@ void test_reader_refusals(const temporary_directory &directory)
     check_fails_after("reader, a timestamp that does not increase", directory, same_time, pushed, 1,
                       "record 2: timestamp 34333 µs does not increase; the frame before was "
                       "taken at 34333 µs");
+    std::string repeated_sample = bytes;
+    repeated_sample.replace(second_accel, 8, bytes.substr(first_accel, 8));
+    check_fails_after("reader, an accelerometer sample that does not follow the last", directory,
+                      repeated_sample, pushed, 1,
+                      "record 2: accelerometer sample 0 at 34323 µs does not increase; the sample "
+                      "before was taken at 34323 µs");
+    // Record 2's frame was taken at 67666 µs; its second gyroscope sample one µs after it.
+    std::string ahead = bytes;
+    std::string later_time;
+    append_little_endian(later_time, 67667, 8);
+    ahead.replace(second_gyro + 20, 8, later_time);
+    check_fails_after("reader, a gyroscope sample after its frame's timestamp", directory, ahead,
+                      pushed, 1,
+                      "record 2: gyroscope sample 1 at 67667 µs lies after its frame's timestamp, "
+                      "67666 µs");
     check_fails_after("reader, a byte after the end", directory, bytes + "E", pushed, 3,
                       "bytes follow the sequence's end, record 4; the end is the file's last "
                       "byte");

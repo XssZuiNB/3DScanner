@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: 0BSD
 /// @file sequence_reader.cpp
-/// The sequence's reader: the header checked at open(), then one record after another read with
-/// POSIX calls into a spare frame, which changes places with the caller's (see
-/// sequence_reader.hpp).
+/// The sequence's reader: the header checked at open(), then one record after another, its samples
+/// a block at a time, read with POSIX calls into a spare frame, which changes places with the
+/// caller's (see sequence_reader.hpp).
 
 #include "camera/sequence_reader.hpp"
 
 #include "camera/posix_file.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdio>
 #include <optional>
 #include <span>
 #include <utility>
+#include <vector>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -28,6 +30,40 @@ namespace
 std::string size_name(const frame_size &size)
 {
     return std::to_string(size.width) + "x" + std::to_string(size.height) + " px";
+}
+
+/// What read_samples() found.
+enum class samples_read
+{
+    whole,   ///< every sample was read
+    ended,   ///< the file ended within them
+    failure, ///< a read failed; errno holds the reason
+};
+
+/// Reads a record's samples of one sensor into a list sized for them.
+/// @param fd [in] the file, at the samples.
+/// @param samples [out] the list, its size the record's count; every sample is written when the
+///        result is whole.
+/// @return whole, ended or failure.
+/// @note Allocates nothing.
+samples_read read_samples(int fd, std::span<imu_sample> samples)
+{
+    std::array<std::uint8_t, imu_samples_per_block * imu_sample_bytes> block;
+    while (!samples.empty())
+    {
+        const std::size_t count = std::min(samples.size(), imu_samples_per_block);
+        const std::optional<std::size_t> read =
+            read_up_to(fd, block.data(), count * imu_sample_bytes);
+        if (!read)
+            return samples_read::failure;
+        if (*read < count * imu_sample_bytes)
+            return samples_read::ended;
+        for (std::size_t k = 0; k < count; k++)
+            samples[k] = decode_imu_sample(std::span<const std::uint8_t, imu_sample_bytes>(
+                &block[k * imu_sample_bytes], imu_sample_bytes));
+        samples = samples.subspan(count);
+    }
+    return samples_read::whole;
 }
 } // namespace
 
@@ -73,6 +109,7 @@ open_result sequence_reader::open(const frame_size &size) noexcept
     m_spare.prepare(m_description, 0, 0);
     m_tracking = not_tracked{};
     m_records = 0;
+    m_sample_order = {};
     m_finished = false;
     m_ended_early = false;
     m_ending = {};
@@ -142,6 +179,25 @@ next_result sequence_reader::next(frame &out) noexcept
     }
 
     m_spare.prepare(m_description, lead->index, lead->timestamp_us);
+    // The lists are sized for the record's counts; they allocate only beyond their capacity.
+    m_spare.accel().resize(lead->accel_count);
+    m_spare.gyro().resize(lead->gyro_count);
+    for (std::vector<imu_sample> *samples : {&m_spare.accel(), &m_spare.gyro()})
+    {
+        switch (read_samples(m_fd, *samples))
+        {
+        case samples_read::whole:
+            break;
+        case samples_read::ended:
+            return early("within " + record() + ", before the sequence's end");
+        case samples_read::failure:
+            return unreadable();
+        }
+    }
+    const std::string samples_refusal =
+        m_sample_order.refusal(m_spare.accel(), m_spare.gyro(), lead->timestamp_us);
+    if (!samples_refusal.empty())
+        return finish(next_status::failure, record() + ": " + samples_refusal);
     const std::span<std::uint16_t> depth = m_spare.depth();
     const std::span<std::uint8_t> color = m_spare.color();
     for (const std::span<std::uint8_t> picture :
@@ -155,6 +211,7 @@ next_result sequence_reader::next(frame &out) noexcept
         if (*read < picture.size())
             return early("within " + record() + ", before the sequence's end");
     }
+    m_sample_order.advance(m_spare.accel(), m_spare.gyro());
     std::swap(out, m_spare);
     m_tracking = lead->tracking;
     m_records++;

@@ -33,7 +33,8 @@ _Avoid_: session, capture, run
 
 **Frame**:
 One color picture and the depth picture aligned to it, taken at one time, with its index, its
-timestamp, the camera's intrinsics and the depth unit.
+timestamp, the camera's intrinsics and the depth unit, and with the IMU's samples taken since the
+frame before.
 _Avoid_: frameset, image pair, snapshot
 
 **Frame source**:
@@ -98,6 +99,6 @@ keyframes, and relocalization tries them as candidates.
 _Avoid_: key image, anchor frame, reference frame
 
 **Sequence**:
-The color and depth frames of a scan as the camera delivered them, kept so that the scan can
-be run again without the camera.
+The color and depth frames of a scan as the camera delivered them, with the IMU's samples taken
+since the frame before, kept so that the scan can be run again without the camera.
 _Avoid_: recording, bag, dataset

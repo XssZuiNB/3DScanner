@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: 0BSD
 /// @file synthetic_source.cpp
 /// The tests' synthetic source: the scene's textures and known surfaces, the trajectories, the
-/// renderer of the surfaces and the sphere with its depth noise, and the source's states
-/// (see synthetic_source.hpp).
+/// renderer of the surfaces and the sphere with its depth noise, the IMU's samples along the
+/// trajectory, and the source's states (see synthetic_source.hpp).
 
 #include "synthetic_source.hpp"
 
@@ -241,6 +241,55 @@ void render(const std::vector<synthetic_surface> &surfaces,
         }
     }
 }
+/// Returns the rotation of a rotation vector, the exponential of SO(3).
+/// @param rotation_rad [in] the rotation vector: its direction the axis, its length the angle, in
+///        rad.
+/// @return the rotation; the identity for the zero vector.
+Eigen::Matrix3d rotation_of(const Eigen::Vector3d &rotation_rad)
+{
+    const double angle_rad = rotation_rad.norm();
+    if (angle_rad == 0.0)
+        return Eigen::Matrix3d::Identity();
+    return Eigen::AngleAxisd(angle_rad, rotation_rad / angle_rad).toRotationMatrix();
+}
+
+/// Appends a frame's IMU samples (synthetic_imu): those taken in (t_{i-1}, t_i], frame 0's at 0.
+/// @param trajectory [in] the trajectory, camera frame to world frame; holds pose index.
+/// @param index [in] the frame's index in its opening, its timestamp index *
+/// synthetic_frame_period_us.
+/// @param imu [in] the IMU, its period > 0.
+/// @param out [in,out] the frame, prepared (its lists empty); gains the samples.
+void sample_imu(const std::vector<Eigen::Isometry3d> &trajectory, std::uint64_t index,
+                const synthetic_imu &imu, gca::frame &out)
+{
+    const std::uint64_t end_us = index * synthetic_frame_period_us;
+    const std::uint64_t start_us = index == 0 ? 0 : end_us - synthetic_frame_period_us;
+    const Eigen::Matrix3d before = trajectory[index == 0 ? 0 : index - 1].linear();
+    // The turn rate in the camera frame, log(R_{i-1}^T R_i) over the time between the frames.
+    Eigen::Vector3d rate_rad_s = Eigen::Vector3d::Zero();
+    if (index > 0)
+    {
+        const Eigen::AngleAxisd turn(before.transpose() * trajectory[index].linear());
+        rate_rad_s =
+            turn.angle() * turn.axis() / (1e-6 * static_cast<double>(synthetic_frame_period_us));
+    }
+    const Eigen::Vector3d up_world(0.0, 0.0, standard_gravity_mps2);
+    // The first sample after the frame before; frame 0 takes the one at 0.
+    std::uint64_t k = index == 0 ? 0 : start_us / imu.period_us + 1;
+    for (; k * imu.period_us <= end_us; k++)
+    {
+        const std::uint64_t t_us = k * imu.period_us;
+        const double elapsed_s = 1e-6 * static_cast<double>(t_us - start_us);
+        const Eigen::Matrix3d rotation = before * rotation_of(elapsed_s * rate_rad_s);
+        const Eigen::Vector3d specific_force = rotation.transpose() * up_world;
+        out.accel().push_back({t_us, static_cast<float>(specific_force.x()),
+                               static_cast<float>(specific_force.y()),
+                               static_cast<float>(specific_force.z())});
+        out.gyro().push_back({t_us, static_cast<float>(rate_rad_s.x()),
+                              static_cast<float>(rate_rad_s.y()),
+                              static_cast<float>(rate_rad_s.z())});
+    }
+}
 } // namespace
 
 std::array<double, 3> texture_color(synthetic_texture texture, const Eigen::Vector3d &point_m)
@@ -422,6 +471,8 @@ gca::next_result synthetic_source::next(gca::frame &out) noexcept
     if (gap && m_next_index >= gap->first_frame &&
         m_next_index - gap->first_frame < gap->frame_count)
         std::ranges::fill(out.depth(), std::uint16_t{0});
+    if (m_options.imu)
+        sample_imu(m_options.scene.trajectory, m_next_index, *m_options.imu, out);
     m_next_index++;
     return {gca::next_status::frame, {}};
 }

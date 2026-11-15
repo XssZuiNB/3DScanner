@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: 0BSD
 /// @file orbbec_device.cpp
 /// The Orbbec camera as a frame source: profile selection, depth-to-color alignment, color
-/// decoding to RGB8, and OrbbecSDK's report turned into plain data for camera/orbbec_rules.hpp
-/// (see orbbec_device.hpp).
+/// decoding to RGB8, the IMU's sensors feeding their queues, and OrbbecSDK's report turned into
+/// plain data for camera/orbbec_rules.hpp and camera/orbbec_imu.hpp (see orbbec_device.hpp).
 
 #include "orbbec_device.hpp"
 
@@ -130,6 +130,61 @@ orbbec_wait failed_wait(std::string message)
     wait.message = std::move(message);
     return wait;
 }
+
+/// Picks an IMU sensor's stream at orbbec_imu_rate_hz with choose_imu_profile().
+/// @param list [in] the sensor's profiles.
+/// @param sensor [in] OB_SENSOR_ACCEL or OB_SENSOR_GYRO, whose profile class the list holds.
+/// @return the chosen profile; nullptr when none has the rate. OrbbecSDK's exceptions pass
+///         through.
+/// @note Allocates the rates and OrbbecSDK's profile objects.
+std::shared_ptr<ob::StreamProfile> imu_profile(const std::shared_ptr<ob::StreamProfileList> &list,
+                                               OBSensorType sensor)
+{
+    std::vector<double> rates_hz;
+    for (std::uint32_t i = 0; i < list->getCount(); i++)
+    {
+        const std::shared_ptr<ob::StreamProfile> profile = list->getProfile(i);
+        const OBIMUSampleRate rate = sensor == OB_SENSOR_ACCEL
+                                         ? profile->as<ob::AccelStreamProfile>()->getSampleRate()
+                                         : profile->as<ob::GyroStreamProfile>()->getSampleRate();
+        rates_hz.push_back(ob::TypeHelper::convertOBIMUSampleRateTypeToValue(rate));
+    }
+    const std::optional<std::size_t> chosen = choose_imu_profile(rates_hz);
+    if (!chosen)
+        return nullptr;
+    return list->getProfile(static_cast<std::uint32_t>(*chosen));
+}
+
+/// Puts an IMU reading OrbbecSDK hands its sensor's callback into the sensor's queue, with the
+/// host's time it came at; counts it as unreadable when it is of another kind or OrbbecSDK
+/// throws while it is read. Runs on OrbbecSDK's thread; no exception leaves it, as none may leave
+/// a callback into OrbbecSDK's C code.
+/// @param frame [in] the reading, an AccelFrame or a GyroFrame.
+/// @param kind [in] OB_FRAME_ACCEL or OB_FRAME_GYRO, the sensor's.
+/// @param queue [in,out] the sensor's queue; gains the reading.
+/// @note Allocates OrbbecSDK's wrapper object of the reading (Frame.hpp, as()) and an exception's
+///       message. Takes the queue's lock for the copy, after every OrbbecSDK call.
+void queue_imu_reading(const std::shared_ptr<ob::Frame> &frame, OBFrameType kind,
+                       orbbec_imu_queue &queue) noexcept
+{
+    const std::uint64_t received_us = host_time_us();
+    try
+    {
+        if (!frame || frame->getType() != kind)
+        {
+            queue.add_unreadable();
+            return;
+        }
+        const OBFloat3D value = kind == OB_FRAME_ACCEL ? frame->as<ob::AccelFrame>()->getValue()
+                                                       : frame->as<ob::GyroFrame>()->getValue();
+        queue.add({frame->getTimeStampUs(), received_us, value.x, value.y, value.z});
+    }
+    catch (const std::exception &)
+    {
+        // ob::Error and the std::runtime_error of as(), which derive from std::exception.
+        queue.add_unreadable();
+    }
+}
 } // namespace
 
 orbbec_device::orbbec_device(std::uint32_t fps)
@@ -216,6 +271,7 @@ open_result orbbec_device::open(const frame_size &size) noexcept
                 const OBCameraIntrinsic in = m_color_profile->getIntrinsic();
                 color_intrinsics = {in.fx, in.fy, in.cx, in.cy};
                 start_pipeline();
+                start_imu();
             }
         }
     }
@@ -322,6 +378,12 @@ next_result orbbec_device::next(frame &out) noexcept
         }
         const std::optional<next_result> result = m_gate.take(wait, out);
         release_frames();
+        if (result && result->status == next_status::frame)
+        {
+            // The frame just taken is the gate's last: the queues place their readings against it.
+            m_accel_queue.deliver(m_gate, out.timestamp_us(), out.accel(), m_imu_skips);
+            m_gyro_queue.deliver(m_gate, out.timestamp_us(), out.gyro(), m_imu_skips);
+        }
         if (result)
             return *result;
     }
@@ -330,6 +392,11 @@ next_result orbbec_device::next(frame &out) noexcept
 const orbbec_skips &orbbec_device::skips() const noexcept
 {
     return m_gate.skips();
+}
+
+const orbbec_skips &orbbec_device::imu_skips() const noexcept
+{
+    return m_imu_skips;
 }
 
 const orbbec_opening &orbbec_device::opening() const noexcept
@@ -445,6 +512,105 @@ std::optional<std::string> orbbec_device::decode_color(const std::shared_ptr<ob:
     }
 }
 
+void orbbec_device::start_imu() noexcept
+{
+    m_imu_skips = {};
+    orbbec_imu_report report;
+    std::string streams;
+    try
+    {
+        const std::shared_ptr<ob::SensorList> sensors = m_device->getSensorList();
+        bool has_accel = false;
+        bool has_gyro = false;
+        for (std::uint32_t i = 0; i < sensors->getCount(); i++)
+        {
+            has_accel = has_accel || sensors->getSensorType(i) == OB_SENSOR_ACCEL;
+            has_gyro = has_gyro || sensors->getSensorType(i) == OB_SENSOR_GYRO;
+        }
+        std::shared_ptr<ob::StreamProfile> accel_profile;
+        std::shared_ptr<ob::StreamProfile> gyro_profile;
+        if (has_accel)
+        {
+            m_accel_sensor = m_device->getSensor(OB_SENSOR_ACCEL);
+            accel_profile = imu_profile(m_accel_sensor->getStreamProfileList(), OB_SENSOR_ACCEL);
+            report.accel_offered = accel_profile != nullptr;
+        }
+        if (has_gyro)
+        {
+            m_gyro_sensor = m_device->getSensor(OB_SENSOR_GYRO);
+            gyro_profile = imu_profile(m_gyro_sensor->getStreamProfileList(), OB_SENSOR_GYRO);
+            report.gyro_offered = gyro_profile != nullptr;
+        }
+        if (report.accel_offered && report.gyro_offered)
+        {
+            m_accel_queue.start();
+            m_gyro_queue.start();
+            // Each callback runs on OrbbecSDK's thread and touches only its own queue.
+            orbbec_imu_queue *const accel_queue = &m_accel_queue;
+            orbbec_imu_queue *const gyro_queue = &m_gyro_queue;
+            m_accel_sensor->start(accel_profile, [accel_queue](std::shared_ptr<ob::Frame> frame) {
+                queue_imu_reading(frame, OB_FRAME_ACCEL, *accel_queue);
+            });
+            m_accel_started = true;
+            m_gyro_sensor->start(gyro_profile, [gyro_queue](std::shared_ptr<ob::Frame> frame) {
+                queue_imu_reading(frame, OB_FRAME_GYRO, *gyro_queue);
+            });
+            m_gyro_started = true;
+            const auto accel = accel_profile->as<ob::AccelStreamProfile>();
+            const auto gyro = gyro_profile->as<ob::GyroStreamProfile>();
+            streams =
+                "Accel: " +
+                ob::TypeHelper::convertOBIMUSampleRateTypeToString(accel->getSampleRate()) + " " +
+                ob::TypeHelper::convertOBAccelFullScaleRangeTypeToString(
+                    accel->getFullScaleRange()) +
+                " | Gyro: " +
+                ob::TypeHelper::convertOBIMUSampleRateTypeToString(gyro->getSampleRate()) + " " +
+                ob::TypeHelper::convertOBGyroFullScaleRangeTypeToString(gyro->getFullScaleRange());
+        }
+    }
+    catch (const ob::Error &e)
+    {
+        report.error = orbbec_error{exception_kind(e.getExceptionType()), e.what()};
+    }
+    catch (const std::exception &e)
+    {
+        // The std::runtime_error of OrbbecSDK's as() (Frame.hpp), and std::bad_alloc.
+        report.error = orbbec_error{orbbec_exception::other, e.what()};
+    }
+    if (const std::optional<std::string> refusal = imu_refusal(report))
+    {
+        stop_imu();
+        m_opening.imu_refusal = *refusal;
+        return;
+    }
+    m_opening.imu_streams = streams;
+}
+
+void orbbec_device::stop_imu() noexcept
+{
+    for (const auto &[sensor, started] :
+         {std::pair{&m_accel_sensor, &m_accel_started}, std::pair{&m_gyro_sensor, &m_gyro_started}})
+    {
+        if (*started)
+        {
+            try
+            {
+                (*sensor)->stop();
+            }
+            catch (const ob::Error &)
+            {
+                // stop_imu() has no result: the sensor is released below either way.
+            }
+            *started = false;
+        }
+        *sensor = nullptr;
+    }
+    // After the sensors stopped: the next opening is given none of this opening's readings, and
+    // one whose IMU does not start none at all.
+    m_accel_queue.stop();
+    m_gyro_queue.stop();
+}
+
 void orbbec_device::release_frames() noexcept
 {
     m_color_frame = nullptr;
@@ -460,6 +626,7 @@ void orbbec_device::close() noexcept
 void orbbec_device::release() noexcept
 {
     release_frames();
+    stop_imu();
     if (m_pipeline_started)
     {
         try

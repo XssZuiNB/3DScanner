@@ -6,9 +6,10 @@
 /// frame rate and the timings, shows color | depth | overlay and saves snapshots, the points with
 /// their normals (geometry/organized_normals.hpp) as a model's PLY (scan/model_file.hpp), until
 /// quit, the exit flag, the frame limit, the source's end or a failure of the GPU. With --sequence
-/// it writes every frame it takes into a sequence (docs/SEQUENCE_FILE.md), each marked as tracked
-/// by nothing, and counts the frames the writer's queue had no room for. The viewer runs it on the
-/// Orbbec camera, the offline tests on their synthetic source; it links no OrbbecSDK.
+/// it writes every frame it takes, with its IMU samples, into a sequence (docs/SEQUENCE_FILE.md),
+/// each marked as tracked by nothing, and counts the frames the writer's queue had no room for. The
+/// viewer runs it on the Orbbec camera, the offline tests on their synthetic source; it links no
+/// OrbbecSDK.
 ///
 /// The frame is RGB8 (camera/frame.hpp), as the GPU frame uploads it; OpenCV's window and its PNG
 /// files take BGR8, so the loop converts each frame's color once, into one picture both read.

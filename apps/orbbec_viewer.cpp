@@ -10,8 +10,9 @@
 /// --sequence DIR writes every frame taken into a sequence in DIR (viewer_loop.hpp). A command
 /// line with an argument the viewer does not know, or a directory for the sequence it cannot
 /// use, is refused with the usage line before anything touches the camera, the GPU or a signal
-/// handler. The camera's own lines, its name and link, the streams chosen, a refusal and the
-/// frames it skipped, come from console_camera here; the loop's lines from viewer_loop.cpp.
+/// handler. The camera's own lines, its name and link, the streams chosen, the IMU's streams or
+/// why it opened without them, a refusal, and the frames and IMU readings it skipped, come from
+/// console_camera here; the loop's lines from viewer_loop.cpp.
 
 #include "camera/frame.hpp"
 #include "camera/frame_source.hpp"
@@ -72,7 +73,8 @@ public:
     /// Opens the camera and prints what the opening found: "Warning: camera is not connected via
     /// USB3 (<link>). ..." on a slower link, opened or not; then, refused, the refusal and
     /// "Didn't find the camera!"; opened, "Found camera! Name: <name> (SN <serial>, <link>,
-    /// firmware <version>, OrbbecSDK <version>)" and the streams chosen.
+    /// firmware <version>, OrbbecSDK <version>)", the streams chosen, and the IMU's streams or
+    /// "No IMU: <reason>; the frames come without its samples".
     /// @param size [in] the stream size, in px.
     /// @return the camera's result.
     gca::open_result open(const gca::frame_size &size) noexcept override
@@ -93,30 +95,31 @@ public:
             return opened;
         }
         m_skips_shown = 0;
+        m_imu_skips_shown = 0;
         const gca::source_description described = m_camera.describe();
         std::cout << D_GREEN << "Found camera! Name: " << described.camera << " (SN "
                   << opening.serial_number << ", " << opening.connection_type << ", firmware "
                   << described.firmware_version << ", OrbbecSDK " << described.sdk_version << ")"
                   << RESET << std::endl;
         std::cout << D_GREEN << opening.streams << RESET << std::endl;
+        if (opening.imu_refusal.empty())
+            std::cout << D_GREEN << opening.imu_streams << RESET << std::endl;
+        else
+            std::cout << YELLOW << "No IMU: " << opening.imu_refusal
+                      << "; the frames come without its samples" << RESET << std::endl;
         return opened;
     }
 
-    /// Takes the camera's next frame and prints the frames it skipped since the last such line:
-    /// "Skipped <count> frame(s), the last because <reason>".
+    /// Takes the camera's next frame and prints the frames it skipped since the last such line,
+    /// "Skipped <count> frame(s), the last because <reason>", and the IMU's readings it lost,
+    /// "Skipped <count> IMU reading(s), the last because <reason>".
     /// @param out [out] as the camera's next() fills it.
     /// @return the camera's result.
     gca::next_result next(gca::frame &out) noexcept override
     {
         const gca::next_result result = m_camera.next(out);
-        const gca::orbbec_skips &skipped = m_camera.skips();
-        if (skipped.count != m_skips_shown)
-        {
-            std::cout << YELLOW << "Skipped " << skipped.count - m_skips_shown
-                      << " frame(s), the last because " << skipped.last_reason << RESET
-                      << std::endl;
-            m_skips_shown = skipped.count;
-        }
+        print_skips("frame(s)", m_camera.skips(), m_skips_shown);
+        print_skips("IMU reading(s)", m_camera.imu_skips(), m_imu_skips_shown);
         return result;
     }
 
@@ -134,8 +137,24 @@ public:
     }
 
 private:
+    /// Prints what the camera skipped since the last such line, when there is more: "Skipped
+    /// <count> <what>, the last because <reason>".
+    /// @param what [in] what was skipped, "frame(s)" or "IMU reading(s)".
+    /// @param skipped [in] the opening's count and the last one's reason.
+    /// @param shown [in,out] the count printed so far; set to skipped's count.
+    static void print_skips(const char *what, const gca::orbbec_skips &skipped,
+                            std::uint64_t &shown)
+    {
+        if (skipped.count == shown)
+            return;
+        std::cout << YELLOW << "Skipped " << skipped.count - shown << " " << what
+                  << ", the last because " << skipped.last_reason << RESET << std::endl;
+        shown = skipped.count;
+    }
+
     gca::orbbec_device m_camera;
-    std::uint64_t m_skips_shown = 0; ///< the skipped frames printed since the opening
+    std::uint64_t m_skips_shown = 0;     ///< the skipped frames printed since the opening
+    std::uint64_t m_imu_skips_shown = 0; ///< the IMU's lost readings printed since the opening
 };
 
 /// Names the sequence --sequence asks for; nothing is created until the loop opens it.

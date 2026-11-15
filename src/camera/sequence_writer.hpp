@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: 0BSD
 /// @file sequence_writer.hpp
-/// The sequence's writer (GLOSSARY.md, "Sequence"; docs/SEQUENCE_FILE.md): it takes frames with
-/// what tracking said about each from a bounded queue and writes them, uncompressed, on a thread
-/// of its own, so that the per-frame path does not wait for the disk. A frame enters the queue
-/// by a swap of buffers, so a push neither copies nor allocates. Whether the queue has room is
+/// The sequence's writer (GLOSSARY.md, "Sequence"; docs/SEQUENCE_FILE.md): it takes frames, each
+/// with its IMU samples, with what tracking said about each from a bounded queue and writes them,
+/// uncompressed, on a thread of its own, so that the per-frame path does not wait for the disk. A
+/// frame enters the queue by a swap of buffers, samples included, so a push neither copies nor
+/// allocates. Whether the queue has room is
 /// told before a frame's stages run (has_room()); when the queue is full the push says so too,
 /// and the writer loses no frame it accepted: close() writes every one of them, in the order
 /// accepted, before the end. A failure is a value with its reason (CODING_STANDARDS.md,
@@ -105,12 +106,16 @@ public:
     /// description, its index, timestamp and pixels unspecified. A push after has_room() said
     /// true is accepted or fails; it never finds the queue full.
     /// @param in_out [in,out] the frame, of the sequence's description, its index and its
-    ///        timestamp greater than those of the frame accepted before; owned by the caller.
-    ///        Swapped when accepted, as it was otherwise.
+    ///        timestamp greater than those of the frame accepted before, at most
+    ///        imu_samples_per_record_max samples of each sensor, each after the sensor's sample
+    ///        before and none after the frame's timestamp; owned by the caller. Swapped when
+    ///        accepted, as it was otherwise.
     /// @param tracking [in] the frame's pose, bit for bit, or its mark; copied.
     /// @return accepted; full, with no reason; or failure with the reason: the writer is not
     ///         open, it failed to write (the same reason at every later call), the frame's
-    ///         description is not the sequence's, its index or timestamp does not increase.
+    ///         description is not the sequence's, its index or timestamp does not increase, it
+    ///         holds more samples of a sensor than a record holds, a sample does not follow its
+    ///         sensor's last or lies after the frame's timestamp (imu_sample_order).
     /// @note Allocates nothing when the frame is accepted or the queue is full; allocates for a
     ///       failure's reason. A failed allocation ends the program (std::terminate): the
     ///       function is noexcept. Takes the queue's lock for the swap; waits for nothing else.
@@ -146,7 +151,7 @@ private:
     /// and the queue is empty, or a write fails.
     void write_queue() noexcept;
 
-    /// Writes one frame's record: its lead, its depth, its color.
+    /// Writes one frame's record: its lead, its samples, its depth, its color.
     /// @param queued [in] the frame and its tracking; the writer's thread owns it during the call.
     /// @return whether every byte was written; on false errno holds the reason.
     bool write_record(const slot &queued) const noexcept;
@@ -163,6 +168,7 @@ private:
     bool m_accepted_any = false;           ///< whether a frame was accepted since open()
     std::uint64_t m_last_index = 0;        ///< the index of the frame accepted last
     std::uint64_t m_last_timestamp_us = 0; ///< its timestamp, in µs
+    imu_sample_order m_sample_order;       ///< each sensor's last sample accepted
 
     // The lock guards the ring's state, the request to close, the failure and the count written,
     // and with them the hand-over of a slot: the caller fills only a slot outside

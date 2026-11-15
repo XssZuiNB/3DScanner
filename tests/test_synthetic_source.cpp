@@ -24,12 +24,19 @@
 ///   and the same frames from the same seed, other frames from another;
 /// - a run of frames without depth: depth 0 at every pixel of the run's frames, their color and
 ///   every other frame as without the run; and the grey plane: 128 in each channel at every
-///   pixel, its depth the textured plane's.
+///   pixel, its depth the textured plane's;
+/// - the IMU's samples along the walk around the box: each frame carries the samples of its
+///   interval (t_{i-1}, t_i] at the period's times, those of all frames each sensor's whole
+///   stream; the accelerometer reads gravity's specific force, of length g, and at the frame's own
+///   time the pose's up in the camera frame; the gyroscope's samples of a frame, integrated, give
+///   the turn from the pose before to the frame's, both against the trajectory; without the
+///   option the frames carry none.
 
 #include "camera/frame.hpp"
 #include "check.hpp"
 #include "synthetic_source.hpp"
 #include "types/frame_description.hpp"
+#include "types/imu_sample.hpp"
 
 #include <algorithm>
 #include <array>
@@ -39,6 +46,7 @@
 #include <cstdio>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -1324,6 +1332,146 @@ void check_depth_gap_and_grey()
               (name + ": every pixel seen at the textured plane's depth").c_str());
     }
 }
+
+/// The IMU's sample period that divides the frames' period, synthetic_frame_period_us, into
+/// three, so that a frame's last sample is taken at the frame's own time and its samples'
+/// intervals tile the frame's [?: a choice].
+constexpr std::uint64_t imu_third_period_us = gca_test::synthetic_frame_period_us / 3;
+static_assert(3 * imu_third_period_us == gca_test::synthetic_frame_period_us);
+
+/// The IMU's sample period that does not divide the frames' period, 200 Hz [?: a choice, the
+/// camera's rate, docs/methods/imu-samples.md].
+constexpr std::uint64_t imu_camera_period_us = 5000;
+
+/// The tolerance of the accelerometer's samples against gravity's specific force from the poses,
+/// in m/s² [M 2026-11-15: test_synthetic_source, see check_imu_samples()'s printed values].
+constexpr double imu_accel_tolerance_mps2 = 1e-5;
+
+/// The tolerance of the turn integrated from a frame's gyroscope samples against the turn between
+/// the poses, in rad [M 2026-11-15: test_synthetic_source, see check_imu_samples()'s printed
+/// values].
+constexpr double imu_turn_tolerance_rad = 1e-5;
+
+/// Renders a source's frames with the IMU of a period along the walk around the box, on frames of
+/// 8x6 px, no surface: the samples do not depend on the pictures.
+/// @param trajectory [in] the walk.
+/// @param period_us [in] the IMU's period, in µs; 0 for no IMU.
+/// @return the frames, one for each pose.
+std::vector<gca::frame> imu_frames(const std::vector<Eigen::Isometry3d> &trajectory,
+                                   std::uint64_t period_us)
+{
+    gca_test::synthetic_source_options options;
+    options.description = {{8, 6}, test_intrinsics, 0.001f};
+    options.scene = {.trajectory = trajectory};
+    if (period_us > 0)
+        options.imu = gca_test::synthetic_imu{period_us};
+    gca_test::synthetic_source source(options);
+    check(source.open(options.description.size).opened, "imu: opened");
+    std::vector<gca::frame> frames(trajectory.size());
+    for (gca::frame &frame : frames)
+        check(source.next(frame).status == gca::next_status::frame, "imu: a frame rendered");
+    return frames;
+}
+
+/// The IMU's samples of the synthetic source along the walk around the box, against the
+/// trajectory: the samples' times, gravity at the frame's time and the turn between two frames.
+void check_imu_samples()
+{
+    const std::optional<std::vector<Eigen::Isometry3d>> walk =
+        gca_test::walk_around(gca_test::tabletop_walk());
+    check(walk.has_value(), "imu: the walk around the box");
+    if (!walk)
+        return;
+    const std::vector<Eigen::Isometry3d> &trajectory = *walk;
+
+    // Three samples a frame: the frame's own time is a sample's.
+    const std::vector<gca::frame> thirds = imu_frames(trajectory, imu_third_period_us);
+    bool times_right = true;
+    max_error gravity;
+    max_error length;
+    max_error turn;
+    for (std::size_t i = 0; i < thirds.size(); i++)
+    {
+        const gca::frame &frame = thirds[i];
+        const std::span<const gca::imu_sample> accel = frame.accel();
+        const std::span<const gca::imu_sample> gyro = frame.gyro();
+        // Frame 0 at 0 carries the sample at 0; frame i the samples at 3i - 2, 3i - 1 and 3i
+        // periods, the last at its own time, i frame periods.
+        const std::size_t count = i == 0 ? 1 : 3;
+        bool right = accel.size() == count && gyro.size() == count;
+        for (std::size_t k = 0; right && k < count; k++)
+        {
+            const std::uint64_t expected_us = imu_third_period_us * (i == 0 ? 0 : 3 * i - 2 + k);
+            right = accel[k].timestamp_us == expected_us && gyro[k].timestamp_us == expected_us;
+        }
+        times_right =
+            times_right && right && frame.timestamp_us() == gca_test::synthetic_frame_period_us * i;
+        if (!right)
+            continue;
+        const Eigen::Vector3d up = trajectory[i].linear().transpose() *
+                                   Eigen::Vector3d(0.0, 0.0, gca_test::standard_gravity_mps2);
+        const gca::imu_sample &last = accel[count - 1];
+        gravity.add((Eigen::Vector3d(last.x, last.y, last.z) - up).norm());
+        for (const gca::imu_sample &sample : accel)
+            length.add(std::abs(Eigen::Vector3d(sample.x, sample.y, sample.z).norm() -
+                                gca_test::standard_gravity_mps2));
+        if (i == 0)
+            continue;
+        // The turn the gyroscope's samples give over the frame's three intervals, each sample's
+        // rate held over the interval that ends at it.
+        Eigen::Matrix3d integrated = Eigen::Matrix3d::Identity();
+        for (const gca::imu_sample &sample : gyro)
+        {
+            const Eigen::Vector3d step = 1e-6 * static_cast<double>(imu_third_period_us) *
+                                         Eigen::Vector3d(sample.x, sample.y, sample.z);
+            integrated = integrated * Eigen::AngleAxisd(step.norm(), step.normalized());
+        }
+        const Eigen::Matrix3d between =
+            trajectory[i - 1].linear().transpose() * trajectory[i].linear();
+        turn.add(Eigen::AngleAxisd(integrated.transpose() * between).angle());
+    }
+    check(times_right, "imu, 3 samples a frame: each frame's samples at the period's times of "
+                       "(t_{i-1}, t_i], the accelerometer's and the gyroscope's alike");
+    check_max_error("imu: the accelerometer at the frame's time against the pose's up, m/s^2",
+                    gravity, imu_accel_tolerance_mps2);
+    check_max_error("imu: each accelerometer sample's length against g, m/s^2", length,
+                    imu_accel_tolerance_mps2);
+    check_max_error("imu: the frame's gyroscope samples integrated against the turn between "
+                    "the poses, rad",
+                    turn, imu_turn_tolerance_rad);
+
+    // 200 Hz: every multiple of 5 ms up to the last frame's time, once, in the frame of its
+    // interval.
+    const std::vector<gca::frame> camera_rate = imu_frames(trajectory, imu_camera_period_us);
+    std::vector<std::uint64_t> stream;
+    bool in_interval = true;
+    for (std::size_t i = 0; i < camera_rate.size(); i++)
+    {
+        const gca::frame &frame = camera_rate[i];
+        for (const gca::imu_sample &sample : frame.accel())
+        {
+            stream.push_back(sample.timestamp_us);
+            in_interval = in_interval && sample.timestamp_us <= frame.timestamp_us() &&
+                          (i == 0 || sample.timestamp_us > camera_rate[i - 1].timestamp_us());
+        }
+        in_interval = in_interval && frame.gyro().size() == frame.accel().size();
+    }
+    std::vector<std::uint64_t> expected;
+    for (std::uint64_t t_us = 0;
+         t_us <= gca_test::synthetic_frame_period_us * (camera_rate.size() - 1);
+         t_us += imu_camera_period_us)
+        expected.push_back(t_us);
+    std::printf("imu at 200 Hz: %zu samples of the accelerometer over %zu frames\n", stream.size(),
+                camera_rate.size());
+    check(in_interval && stream == expected,
+          "imu at 200 Hz: every 5 ms from 0 to the last frame's time, once, in the frame of its "
+          "interval, as many of the gyroscope's");
+
+    bool none = true;
+    for (const gca::frame &frame : imu_frames(trajectory, 0))
+        none = none && frame.accel().empty() && frame.gyro().empty();
+    check(none, "imu: without the option the frames carry no samples");
+}
 } // namespace
 
 int main()
@@ -1334,5 +1482,6 @@ int main()
     check_walk();
     check_depth_noise();
     check_depth_gap_and_grey();
+    check_imu_samples();
     return gca_test::check_summary("test_synthetic_source");
 }
