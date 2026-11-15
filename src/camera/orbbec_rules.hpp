@@ -2,14 +2,14 @@
 /// @file orbbec_rules.hpp
 /// The Orbbec camera's decisions that need no camera, as functions of plain data: the profiles
 /// OrbbecSDK offers become the chosen color and depth streams, what OrbbecSDK reported while the
-/// camera was opened becomes an opening or a refusal with its reason, and what a wait for the next
-/// frameset gave becomes the frame source's result (camera/frame_source.hpp): a frame that passed
-/// its checks, a frame skipped for its timestamp or index, a timeout, or a failure with its
-/// message. The checks of a frame are those of one opening: its size, its depth format and depth
-/// unit, its index and its timestamp, where the jump of exactly 2^32 µs that OrbbecSDK's timestamps
-/// make [M 2026-11-13, docs/HARDWARE.md] is taken out. camera/orbbec_device.cpp feeds these
-/// functions with what OrbbecSDK reports; they build and link without OrbbecSDK, so the offline
-/// tests drive them (tests/test_orbbec_rules.cpp).
+/// camera was opened, its firmware's version among it, becomes an opening or a refusal with its
+/// reason, and what a wait for the next frameset gave becomes the frame source's result
+/// (camera/frame_source.hpp): a frame that passed its checks, a frame skipped for its timestamp or
+/// index, a timeout, or a failure with its message. The checks of a frame are those of one
+/// opening: its size, its depth format and depth unit, its index and its timestamp, where the jump
+/// of exactly 2^32 µs that OrbbecSDK's timestamps make [M 2026-11-13, docs/HARDWARE.md] is taken
+/// out. camera/orbbec_device.cpp feeds these functions with what OrbbecSDK reports; they build and
+/// link without OrbbecSDK, so the offline tests drive them (tests/test_orbbec_rules.cpp).
 
 #pragma once
 
@@ -118,25 +118,55 @@ struct orbbec_open_report
     /// The first camera's link as ob::DeviceInfo::getConnectionType() names it: "USB2.0",
     /// "USB3.0" and the like [S: Device.hpp, UsbTypes.cpp, OrbbecSDK v2.10.6]; empty when not read.
     std::string connection_type;
+    /// The first camera's firmware version as ob::DeviceInfo::getFirmwareVersion() gives it: the
+    /// camera's own string, which OrbbecSDK reads from the camera and passes on unchanged
+    /// [S: OrbbecSDK v2.10.6, DeviceBase.cpp, fetchDeviceInfo], "1.5.02" [M 2026-11-15,
+    /// docs/HARDWARE.md]; empty when not read.
+    std::string firmware_version;
     bool color_stream_offered = false; ///< choose_color_profile() found a profile
     bool depth_stream_offered = false; ///< choose_depth_profile() found a profile
     std::optional<orbbec_error> error; ///< the exception that ended the opening, if one did
 };
 
+/// Decides whether a camera's firmware is too old for the scanner, or cannot be read. The least
+/// version is OrbbecSDK v2's least firmware for the Gemini 2 L, 1.4.53 [S: OrbbecSDK v2's README,
+/// web, read 2026-11-15]; the tree serves only that camera, so the rule is applied to whatever
+/// camera is connected, without a check of its name [?: a choice]. On an older firmware, 1.4.38,
+/// every frame's timestamp stood still and every frame was skipped [M 2026-11-15,
+/// docs/HARDWARE.md, "What the camera is and reports"].
+///
+/// The version is read as three numbers major.minor.patch, each one or more ASCII digits read
+/// whole into 32 bits ("02" is 2), separated by dots, and compared part by part as numbers, major
+/// first: 1.10.0 is above 1.4.53. Anything else cannot be read: an empty string or part, a missing
+/// or a fourth part, a sign, a space, a letter or a suffix anywhere, a part beyond 32 bits. This is
+/// stricter than OrbbecSDK's own reading, DeviceBase::getFirmwareVersionInt(), which skips every
+/// character but digits and dots and refuses a part above 99 [S: OrbbecSDK v2.10.6,
+/// DeviceBase.cpp]: a string of another form is refused with the string shown, rather than read as
+/// a version it may not be [?: a choice, the orchestrator's].
+/// @param version [in] the camera's firmware version as OrbbecSDK gives it, "1.5.02"
+///        [M 2026-11-15].
+/// @return nothing when the version is 1.4.53 or later. Otherwise the reason: the version as found
+///         (in quotes when it cannot be read), the least, and that Orbbec's firmware tool updates
+///         it on the user's word only, as it writes the camera's flash (AGENTS.md §3).
+/// @note Allocates for the reason.
+std::optional<std::string> firmware_refusal(std::string_view version);
+
 /// Decides whether an opening of the camera is refused, and why.
 /// @param report [in] what OrbbecSDK reported while the camera was opened.
 /// @param size [in] the stream size asked for, in px.
 /// @param fps [in] the frame rate asked for, in frames per second.
-/// @return nothing when the camera opened: no exception, a camera, both streams. Otherwise the
-///         reason, in this order: an exception that says the camera is held by another program
-///         (resource busy; or an input or output error whose message holds "uvc_open failed"
-///         and "Return Code: -6", which is how OrbbecSDK's LibUVC backend reports a claim of
-///         the camera's interface that libusb refused as busy, LIBUSB_ERROR_BUSY
+/// @return nothing when the camera opened: no exception, a camera, a firmware the firmware's rule
+///         accepts, both streams. Otherwise the reason, in this order: an exception that says the
+///         camera is held by another program (resource busy; or an input or output error whose
+///         message holds "uvc_open failed" and "Return Code: -6", which is how OrbbecSDK's LibUVC
+///         backend reports a claim of the camera's interface that libusb refused as busy,
+///         LIBUSB_ERROR_BUSY
 ///         [S: OrbbecSDK v2.10.6, ObLibuvcDevicePort.cpp; its libuvc, device.c, uvc_claim_if;
 ///         OrbbecSDKConfig.xml gives the Gemini 2 L the LibUVC backend]); any other exception,
-///         with its message; no camera; no stream of that size and rate, where a link named
-///         "USB1..." or "USB2..." is named as the cause (AGENTS.md §6). Each recognition is
-///         unverified on the camera [?].
+///         with its message; no camera; the firmware's refusal, firmware_refusal(), which comes
+///         before the streams as orbbec_device starts none for a firmware it refuses; no stream
+///         of that size and rate, where a link named "USB1..." or "USB2..." is named as the cause
+///         (AGENTS.md §6). Each recognition is unverified on the camera [?].
 /// @note Allocates for the reason.
 std::optional<std::string> opening_refusal(const orbbec_open_report &report, const frame_size &size,
                                            std::uint32_t fps);

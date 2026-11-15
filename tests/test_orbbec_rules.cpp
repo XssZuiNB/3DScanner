@@ -5,8 +5,11 @@
 /// - the color stream is chosen by size, rate and the order of formats; the depth stream is one
 ///   aligned in hardware at the rate, else one of the asked size and rate, never another size;
 /// - an opening's report becomes an opening or a refusal with its own reason: no camera, the
-///   camera held by another program, another exception, no such stream on a USB 2 or a USB 3
+///   camera held by another program, another exception, a firmware the firmware's rule refuses
+///   (after an exception and no camera, before the streams), no such stream on a USB 2 or a USB 3
 ///   link;
+/// - a firmware version is compared with 1.4.53 part by part as numbers; one that is not three
+///   numbers is refused with the string in its reason;
 /// - a frameset that passes its checks becomes the caller's frame, with the opening's size and
 ///   intrinsics, its depth unit, index and timestamp, every pixel copied;
 /// - a timeout and a failure come back as values and leave the caller's frame as it was;
@@ -190,13 +193,20 @@ void check_skipped(const std::string &what, gca::orbbec_frame_gate &gate, sample
     check(holds(out, before), (what + ": the frame left as it was, every pixel").c_str());
 }
 
+/// The end of every firmware refusal's reason, after the least version.
+const std::string firmware_tail =
+    ", the least OrbbecSDK v2 supports for the Gemini 2 L; Orbbec's firmware tool updates it, "
+    "on the user's word only, as it writes the camera's flash (AGENTS.md §3)";
+
 /// Builds an opening's report of a camera that opened.
-/// @return one camera on USB3.0, both streams found, no exception.
+/// @return one camera on USB3.0 with firmware 1.5.02 (the camera's [M 2026-11-15,
+///         docs/HARDWARE.md]), both streams found, no exception.
 gca::orbbec_open_report opened_report()
 {
     gca::orbbec_open_report report;
     report.camera_count = 1;
     report.connection_type = "USB3.0";
+    report.firmware_version = "1.5.02";
     report.color_stream_offered = true;
     report.depth_stream_offered = true;
     return report;
@@ -257,8 +267,34 @@ void check_openings()
     check(!gca::opening_refusal(opened_report(), {1280, 800}, 30).has_value(),
           "opening: a camera with both streams and no exception opens");
 
+    // No camera comes before the firmware: this report's firmware is empty, which the firmware's
+    // rule cannot read.
     gca::orbbec_open_report missing;
     check_opening_refused("opening: no camera", missing, "no Orbbec camera is connected");
+
+    // The firmware comes before the streams: orbbec_device starts no stream for a firmware the
+    // rule refuses, so its report has none offered.
+    gca::orbbec_open_report old_firmware = opened_report();
+    old_firmware.firmware_version = "1.4.38";
+    old_firmware.color_stream_offered = false;
+    old_firmware.depth_stream_offered = false;
+    check_opening_refused("opening: a firmware older than the least, no stream offered",
+                          old_firmware,
+                          "the camera's firmware 1.4.38 is older than 1.4.53" + firmware_tail);
+
+    gca::orbbec_open_report odd_firmware = opened_report();
+    odd_firmware.firmware_version = "1.4.53-rc";
+    check_opening_refused("opening: a firmware version that cannot be read, both streams found",
+                          odd_firmware,
+                          "the camera's firmware version \"1.4.53-rc\" is not three numbers "
+                          "major.minor.patch, so it cannot be compared with 1.4.53" +
+                              firmware_tail);
+
+    // An exception comes before the firmware.
+    gca::orbbec_open_report error_and_old = old_firmware;
+    error_and_old.error = gca::orbbec_error{gca::orbbec_exception::other, "getDeviceInfo failed"};
+    check_opening_refused("opening: an exception and an old firmware", error_and_old,
+                          "OrbbecSDK failed while opening the camera: getDeviceInfo failed");
 
     gca::orbbec_open_report busy = opened_report();
     busy.error = gca::orbbec_error{gca::orbbec_exception::resource_busy, "the device is busy"};
@@ -314,6 +350,53 @@ void check_openings()
     unnamed_link.color_stream_offered = false;
     check_opening_refused("opening: no color stream on a link of no named speed", unnamed_link,
                           "the camera offers no color stream of 1280x800 at 30 fps");
+}
+
+/// Checks one firmware version against the refusal it should give.
+/// @param version [in] the version as OrbbecSDK would report it.
+/// @param reason [in] the expected reason.
+void check_firmware_refused(const std::string &version, const std::string &reason)
+{
+    const std::optional<std::string> refusal = gca::firmware_refusal(version);
+    check_refusal("firmware \"" + version + "\"", refusal.has_value(), refusal.value_or(""),
+                  refusal == reason);
+}
+
+/// Checks one firmware version that is not older than the least.
+/// @param version [in] the version as OrbbecSDK would report it.
+void check_firmware_accepted(const std::string &version)
+{
+    const std::optional<std::string> refusal = gca::firmware_refusal(version);
+    std::printf("firmware \"%s\": %s\n", version.c_str(), refusal.value_or("accepted").c_str());
+    check(!refusal.has_value(), ("firmware accepted: " + version).c_str());
+}
+
+/// Checks the firmware rule: the parts compared as numbers against 1.4.53, OrbbecSDK v2's least
+/// for the Gemini 2 L [S: OrbbecSDK v2's README, web, read 2026-11-15]; a string that is not
+/// three numbers refused with the string in the reason.
+void check_firmware()
+{
+    // The camera's firmware before and after the update [M 2026-11-15, docs/HARDWARE.md].
+    check_firmware_refused("1.4.38",
+                           "the camera's firmware 1.4.38 is older than 1.4.53" + firmware_tail);
+    check_firmware_accepted("1.5.02");
+    check_firmware_accepted("1.4.53");
+    check_firmware_refused("1.4.52",
+                           "the camera's firmware 1.4.52 is older than 1.4.53" + firmware_tail);
+    check_firmware_accepted("1.4.54");
+    check_firmware_accepted("1.10.0");
+    check_firmware_refused("0.99.99",
+                           "the camera's firmware 0.99.99 is older than 1.4.53" + firmware_tail);
+
+    for (const std::string unreadable :
+         {"", "1.4", "1.4.", ".4.53", "1..53", "1.4.5a", " 1.4.53", "1.4.53 ", "1.4.53.1",
+          "1.4.53-rc", "-1.4.53", "+1.4.53", "1.4.4294967296", "v1.5.02"})
+    {
+        check_firmware_refused(unreadable, "the camera's firmware version \"" + unreadable +
+                                               "\" is not three numbers major.minor.patch, so "
+                                               "it cannot be compared with 1.4.53" +
+                                               firmware_tail);
+    }
 }
 
 /// Checks that framesets in order become frames, and that a timeout and a failure come back as
@@ -634,6 +717,7 @@ int main()
 {
     check_stream_choice();
     check_openings();
+    check_firmware();
     check_frames_timeout_and_failure();
     check_picture_refusals();
     check_indices();

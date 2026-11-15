@@ -203,6 +203,12 @@ open_result orbbec_device::open(const frame_size &size) noexcept
             m_opening.serial_number = info->getSerialNumber();
             m_opening.connection_type = info->getConnectionType();
             report.connection_type = m_opening.connection_type;
+            report.firmware_version = m_firmware_version;
+        }
+        // The firmware's rule decides here whether a stream may start at all, so that a camera
+        // whose firmware it refuses never streams; opening_refusal() below gives the reason.
+        if (report.camera_count > 0 && !firmware_refusal(report.firmware_version))
+        {
             m_pipeline = std::make_shared<ob::Pipeline>(m_device);
             select_profiles(size, report);
             if (report.color_stream_offered && report.depth_stream_offered)

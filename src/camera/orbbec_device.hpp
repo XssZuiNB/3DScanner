@@ -55,8 +55,9 @@ public:
     ~orbbec_device() override;
 
     /// Prints the first connected device's name, serial number, firmware, USB connection and
-    /// every color and depth stream profile to stdout. Opens the device, starts no stream. An
-    /// exception is printed as "Orbbec error: <message>".
+    /// every color and depth stream profile to stdout. Opens the device, starts no stream, and
+    /// prints a firmware that open() refuses without a word about it. An exception is printed as
+    /// "Orbbec error: <message>".
     static void print_stream_profiles();
 
     /// Opens the first connected camera and starts its color and aligned depth streams.
@@ -65,8 +66,10 @@ public:
     ///        camera/orbbec_rules.hpp's choose_color_profile() and choose_depth_profile() choose.
     /// @return opened, or not opened with the reason of camera/orbbec_rules.hpp,
     ///         opening_refusal(): held by another program, another exception of OrbbecSDK, no
-    ///         camera, no such stream (on a USB 2 link named as the cause); or the camera is open
-    ///         already, and stays open as it was.
+    ///         camera, a firmware older than 1.4.53 or a version that is not three numbers
+    ///         (firmware_refusal(), checked before any stream starts), no such stream (on a USB 2
+    ///         link named as the cause); or the camera is open already, and stays open as it was.
+    ///         A refused opening releases what it opened.
     /// @note Allocates OrbbecSDK's context, device and pipeline, and the reason of a refusal. Every
     ///       exception thrown inside becomes a refusal. One thread at a time.
     open_result open(const frame_size &size) noexcept override;

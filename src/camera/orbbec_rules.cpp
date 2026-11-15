@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: 0BSD
 /// @file orbbec_rules.cpp
-/// The Orbbec camera's decisions that need no camera: an opening's refusal, a frameset's checks
-/// and the rule for its timestamp (see orbbec_rules.hpp).
+/// The Orbbec camera's decisions that need no camera: the firmware's rule, an opening's refusal,
+/// a frameset's checks and the rule for its timestamp (see orbbec_rules.hpp).
 
 #include "camera/orbbec_rules.hpp"
 
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <system_error>
 #include <utility>
 
 namespace gca
@@ -62,7 +65,65 @@ bool slower_than_usb_3(const std::string &connection_type)
 {
     return connection_type.starts_with("USB1") || connection_type.starts_with("USB2");
 }
+
+/// A firmware version's numbers: major, minor, patch.
+using firmware_numbers = std::array<std::uint32_t, 3>;
+
+/// OrbbecSDK v2's least firmware for the Gemini 2 L [S: OrbbecSDK v2's README, web, read
+/// 2026-11-15].
+constexpr firmware_numbers least_firmware = {1, 4, 53};
+
+/// Reads a firmware version as three numbers, as firmware_refusal() says.
+/// @param version [in] the version as OrbbecSDK gives it.
+/// @return its numbers major, minor, patch; nothing when it is not three parts separated by dots,
+///         each one or more ASCII digits that fit in 32 bits.
+std::optional<firmware_numbers> read_firmware(std::string_view version)
+{
+    firmware_numbers numbers{};
+    for (std::size_t i = 0; i < numbers.size(); i++)
+    {
+        const bool last = i + 1 == numbers.size();
+        const std::size_t end = last ? version.size() : version.find('.');
+        if (end == std::string_view::npos)
+            return std::nullopt;
+        const char *const first = version.data();
+        const char *const past = first + end;
+        // from_chars takes no sign, space or prefix for an unsigned number; an empty part or one
+        // beyond 32 bits is an error, and a part not read to its end has more than digits.
+        const auto [stop, error] = std::from_chars(first, past, numbers[i]);
+        if (error != std::errc{} || stop != past)
+            return std::nullopt;
+        if (!last)
+            version.remove_prefix(end + 1);
+    }
+    return numbers;
+}
+
+/// Writes a firmware version's numbers for a message.
+/// @param numbers [in] the numbers.
+/// @return "<major>.<minor>.<patch>".
+std::string firmware_text(const firmware_numbers &numbers)
+{
+    return std::to_string(numbers[0]) + "." + std::to_string(numbers[1]) + "." +
+           std::to_string(numbers[2]);
+}
 } // namespace
+
+std::optional<std::string> firmware_refusal(std::string_view version)
+{
+    const std::optional<firmware_numbers> numbers = read_firmware(version);
+    // Compared part by part as numbers, major first: std::array's < is lexicographic.
+    if (numbers && *numbers >= least_firmware)
+        return std::nullopt;
+    const std::string tail =
+        firmware_text(least_firmware) +
+        ", the least OrbbecSDK v2 supports for the Gemini 2 L; Orbbec's firmware tool updates it, "
+        "on the user's word only, as it writes the camera's flash (AGENTS.md §3)";
+    if (!numbers)
+        return "the camera's firmware version \"" + std::string(version) +
+               "\" is not three numbers major.minor.patch, so it cannot be compared with " + tail;
+    return "the camera's firmware " + std::string(version) + " is older than " + tail;
+}
 
 std::optional<std::size_t> choose_color_profile(std::span<const orbbec_profile> profiles,
                                                 const frame_size &size, std::uint32_t fps)
@@ -120,6 +181,10 @@ std::optional<std::string> opening_refusal(const orbbec_open_report &report, con
     }
     if (report.camera_count == 0)
         return "no Orbbec camera is connected";
+    // The firmware's rule gives the reason here; orbbec_device::open() calls it too, to start no
+    // stream for a firmware it refuses, so the firmware's reason comes before the streams'.
+    if (std::optional<std::string> refusal = firmware_refusal(report.firmware_version))
+        return refusal;
     if (report.color_stream_offered && report.depth_stream_offered)
         return std::nullopt;
     const std::string stream =

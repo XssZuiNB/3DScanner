@@ -140,7 +140,13 @@ OrbbecSDK on USB 3 with no stream running and no property set [M 2026-11-13].
 * **Firmware** [M 2026-11-15]: 1.5.02 since 2026-11-15, 16:50, updated on the user's word from
   1.4.38, below OrbbecSDK v2's least firmware for the Gemini 2 L, 1.4.53 (its recommended:
   1.5.2) [S: OrbbecSDK v2's README and release notes, web]. On 1.4.38 every frame's device
-  timestamp stood still ("The camera on USB 3", OrbbecSDK's warnings). The update:
+  timestamp stood still ("The camera on USB 3", OrbbecSDK's warnings), and `orbbec_device`
+  skipped every frame without recovering; so `orbbec_device` refuses a camera whose firmware is
+  older than 1.4.53, or whose version is not three numbers, when it opens it, before any stream
+  starts (src/camera/orbbec_rules.hpp, `firmware_refusal()`). The version is the camera's own
+  string, which OrbbecSDK reads from the camera's version structure and passes on unchanged
+  [S: OrbbecSDK v2.10.6, DeviceBase.cpp, `fetchDeviceInfo`]: "1.4.38" and "1.5.02" here
+  [M 2026-11-15: OrbbecSDK's log]. The update:
   `MFG_MX6600_Gemini2_L_1502.bin`, 327680 bytes, from github.com/orbbec/OrbbecFirmware, release
   "Gemini2L-Firmware", kept outside the tree in `~/3DScanner-backup/camera-firmware/`, written by
   OrbbecSDK's example `ob_device_firmware_update -f FILE`, built from the SDK's sources outside
