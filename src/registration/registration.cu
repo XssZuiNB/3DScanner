@@ -11,6 +11,7 @@
 #include "gpu/gpu_messages.hpp"
 #include "gpu/kernel_launch.cuh"
 #include "registration/normal_equations.hpp"
+#include "registration/se3.hpp"
 #include "types/camera_param.hpp"
 
 #include <algorithm>
@@ -56,10 +57,6 @@ constexpr unsigned int min_gradient_neighbours = 3;
 /// it too weakly [?: a choice, far below a window's spread over two rows, far above float's
 /// rounding].
 constexpr float min_gradient_eigenvalue_ratio = 1e-3f;
-
-/// How far the initial transform's linear part may lie from a rotation: |R^T R - I| per entry
-/// [?: a choice, far above double's rounding of a product of rotations, far below a mistake].
-constexpr double rotation_tolerance = 1e-6;
 
 /// The refusal when the registration holds no buffers.
 constexpr char holds_no_buffers[] = "the registration holds no buffers";
@@ -426,19 +423,6 @@ __global__ void __launch_bounds__(total_threads)
     }
     if (threadIdx.x == 0)
         sums[k] = partials[0];
-}
-
-/// Says whether a transform is rigid: finite, its linear part a rotation within rotation_tolerance.
-/// @param transform [in] the transform.
-/// @return whether every entry is finite, every entry of R^T R - I within rotation_tolerance of 0,
-///         and det R > 0.
-bool is_rigid(const Eigen::Isometry3d &transform)
-{
-    if (!transform.matrix().allFinite())
-        return false;
-    const Eigen::Matrix3d r = transform.linear();
-    const double off = (r.transpose() * r - Eigen::Matrix3d::Identity()).cwiseAbs().maxCoeff();
-    return off <= rotation_tolerance && r.determinant() > 0.0;
 }
 
 /// Says why a surface's level cannot be registered against, if it cannot.

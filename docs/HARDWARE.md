@@ -311,6 +311,36 @@ runs took 13.718, 3.988, 22.813 and 15.712 ms, the last paced case at a GPU cloc
 each warp's 35 sums converted to double in its own lane, 1.49 and 4.34 ms back to back
 [M 2026-11-14, as the table, but 1 s per case after 0.2 s, at 19:50].
 
+## Refinement
+
+What refinement takes on the board after a scan (docs/methods/refinement.md), on the host's CPU,
+measured by a scratch program on graphs built as `tests/test_pose_graph.cpp` builds them.
+
+**The pose graph's solve** (`optimize_pose_graph()`, `src/refinement/pose_graph.hpp`), on the graph
+of `check_300_keyframes()` in `tests/test_pose_graph.cpp`:
+
+* **The graph**: the known poses are `walk_around()` of `tabletop_walk()` with 300 poses, one lap
+  0.40 m to 0.50 m around the tabletop box (`tests/synthetic_source.hpp`). Each keyframe k is the
+  target of three edges, to the sources (k + 1), (k + 10) and (k + 25) modulo 300, 900 edges in
+  that order, all offsets of 1 first. Each edge's transform is exp(-ε^) T_k^-1 T_source, ε its error,
+  `edge_noise(e, 1)` of its position e: 1 mrad and 1 mm times sines of e on each axis. Its
+  information is diag(1e6, ..., 1e6), standard deviations of 1 mrad and 1 mm. The start is node 0
+  at its known pose and node k at start_(k-1) T_(k-1)^-1 T_k exp(d^), d a tenth of `ring_drift()`:
+  a turn of 0.015° about (0.3, 0.8, -0.5) and a shift of 0.15 mm along (1, -0.5, 0.3), each axis
+  normalized. The start lies 1.71° and 29 mm off; max_iterations is 100.
+* **The method**: a scratch program, built with g++ 11.4 `-O3 -DNDEBUG` against the Release
+  build's `librefinement.a`, builds the graph once and times each call by `std::chrono::steady_clock`.
+  Calls run for 5 s unrecorded, then 20 s recorded, one thread pinned to cpu0 by `taskset -c 0`.
+  The run holds the build lock, so no compiler runs beside it.
+
+It converged after 4 iterations, 64 runs: median 314.3 ms, p95 316.1 ms, max 316.8 ms
+[M 2026-11-15, 01:21:42 to 01:22:07, MAXN_SUPER by `nvpmodel -q`, cpu0 at 1728 MHz after the warm-up
+and at the end by `scaling_cur_freq`]. The undamped Gauss-Newton step that confirms the end
+(docs/methods/refinement.md, "The end") adds one factorization and solve: without it the same run
+took 255.2 / 256.9 / 257.7 ms [M 2026-11-15, 01:06:55 to 01:07:20], so it costs 59 ms, a fifth of
+the four iterations' time. Graphs of other sizes and shapes, and refinement's other
+steps, are unmeasured.
+
 ## Connections
 
 The four USB-A ports sit on a Realtek USB 3.2 hub, seen twice by the host controller

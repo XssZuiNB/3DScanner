@@ -7,6 +7,7 @@
 #   camera <- orbbec_camera (OrbbecSDK, OpenCV)
 #   types <- camera <- gpu (CUDA runtime) <- geometry (Eigen) <- registration
 #   geometry <- fusion (the sparse TSDF, which takes a frame's organized points)
+#   registration <- refinement (the pose graph, on the host; registration's SE(3) exponential)
 #   types <- camera <- scan (Eigen, OpenCV's core)
 # Every library includes from src/ ("gpu/cuda_container.hpp"); types carries that directory.
 
@@ -150,6 +151,14 @@ add_library(fusion STATIC fusion/block_hash.cuh fusion/sparse_tsdf.cu fusion/spa
 # PUBLIC: the header holds gpu's arrays, its pool, CUDA's half float, geometry's organized points
 # and the camera's pose of types.
 target_link_libraries(fusion PUBLIC geometry)
+
+# ---------------------------------------------------------------- refinement
+# Refinement (docs/methods/refinement.md): today the pose graph of keyframes and its solve, on the
+# host in double; the SE(3) exponential and the check of a rigid transform are registration's
+# (registration/se3.hpp), their one copy.
+add_library(refinement STATIC refinement/pose_graph.cpp refinement/pose_graph.hpp)
+# PUBLIC: the header holds Eigen's types; types carries src/.
+target_link_libraries(refinement PUBLIC types Eigen3::Eigen PRIVATE registration)
 
 # ---------------------------------------------------------------- scan
 # The files a scan keeps and the parameters of each object class (docs/SCAN_FILES.md); host only.

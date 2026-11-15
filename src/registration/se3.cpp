@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: 0BSD
 /// @file se3.cpp
-/// The SE(3) exponential (see se3.hpp; the method: docs/methods/registration.md, "The update: the
-/// SE(3) exponential").
+/// The SE(3) exponential and the check that a transform is rigid (see se3.hpp; the method:
+/// docs/methods/registration.md, "The update: the SE(3) exponential").
 
 #include "registration/se3.hpp"
 
@@ -52,5 +52,14 @@ Eigen::Isometry3d se3_exp(const twist &xi) noexcept
     transform.linear() = Eigen::Matrix3d::Identity() + a * w + b * w2;
     transform.translation() = (Eigen::Matrix3d::Identity() + b * w + c * w2) * upsilon;
     return transform;
+}
+
+bool is_rigid(const Eigen::Isometry3d &transform) noexcept
+{
+    if (!transform.matrix().allFinite())
+        return false;
+    const Eigen::Matrix3d r = transform.linear();
+    const double off = (r.transpose() * r - Eigen::Matrix3d::Identity()).cwiseAbs().maxCoeff();
+    return off <= rigid_rotation_tolerance && r.determinant() > 0.0;
 }
 } // namespace gca

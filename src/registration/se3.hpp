@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: 0BSD
 /// @file se3.hpp
 /// The SE(3) exponential: the rigid transform a twist, a rotation vector and a translation,
-/// generates; and the matrix of a cross product it is built from. It is the registration's pose
-/// update (registration/registration.hpp), the one copy of the exponential.
+/// generates; the matrix of a cross product it is built from; and the check that a transform is
+/// rigid. It is the registration's pose update (registration/registration.hpp) and the pose graph's
+/// (refinement/pose_graph.hpp), the one copy of the exponential and of the check.
 /// The method and its sources: docs/methods/registration.md, "The update: the SE(3) exponential".
 /// Host only, in double.
 
@@ -32,4 +33,17 @@ Eigen::Matrix3d cross_matrix(const Eigen::Vector3d &w) noexcept;
 /// @return the transform: R a rotation to double's rounding, the translation V υ in m.
 /// @note Allocates nothing; host only.
 Eigen::Isometry3d se3_exp(const twist &xi) noexcept;
+
+/// How far a rigid transform's linear part may lie from a rotation: 1e-6 for each entry of
+/// R^T R - I [?: a choice, far above double's rounding of a product of rotations, far below a
+/// mistake].
+inline constexpr double rigid_rotation_tolerance = 1e-6;
+
+/// Says whether a transform is rigid: finite, its linear part a rotation within
+/// rigid_rotation_tolerance.
+/// @param transform [in] the transform, in any unit of length.
+/// @return whether every entry is finite, every entry of R^T R - I within rigid_rotation_tolerance
+///         of 0, and det R > 0.
+/// @note Allocates nothing; host only.
+bool is_rigid(const Eigen::Isometry3d &transform) noexcept;
 } // namespace gca

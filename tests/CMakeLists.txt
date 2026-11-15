@@ -100,3 +100,9 @@ add_test(NAME sparse_tsdf_blocks COMMAND test_sparse_tsdf_blocks)
 add_executable(test_sparse_tsdf_allocation test_sparse_tsdf_allocation.cpp)
 target_link_libraries(test_sparse_tsdf_allocation PRIVATE fusion scan synthetic_source)
 add_test(NAME sparse_tsdf_allocation COMMAND test_sparse_tsdf_allocation)
+
+# Refinement's pose graph solve, on graphs built from the keyframes of a walk of the synthetic
+# source whose poses are known.
+add_executable(test_pose_graph test_pose_graph.cpp)
+target_link_libraries(test_pose_graph PRIVATE refinement registration synthetic_source)
+add_test(NAME pose_graph COMMAND test_pose_graph)

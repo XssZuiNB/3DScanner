@@ -25,16 +25,18 @@ frame's upload (`src/gpu/`); the organized points from a frame's depth
 frame's pyramid of them with the intensity (`src/geometry/frame_pyramid.*`); the registration of
 a frame against a surface by colored ICP, coarse to fine over the pyramid
 (`src/registration/registration.*`); the sparse TSDF's hash of blocks, its pool and the allocation
-of the blocks near a frame's surface (`src/fusion/`); the files a scan keeps and the parameters of
-each object class (`src/scan/`). The tree is CUDA_3D cleaned up (dead code, RealSense and PCL
+of the blocks near a frame's surface (`src/fusion/`); refinement's pose graph of keyframes and its
+solve (`src/refinement/pose_graph.*`); the files a scan keeps and the parameters of each object
+class (`src/scan/`). The tree is CUDA_3D cleaned up (dead code, RealSense and PCL
 removed), made to build here and given the Orbbec camera. It is the rewrite's prototype: its
 methods carry over, and its code is the test oracle until new code replaces it
 (CODING_STANDARDS.md, "The rewrite's code").
 
-The tree today: `src/` is seven static libraries and the header-only `types`, each linking only
+The tree today: `src/` is eight static libraries and the header-only `types`, each linking only
 the ones below it: `types`, `camera`, `orbbec_camera`, `gpu`, `geometry`, `registration`,
-`fusion`, `scan` (`src/CMakeLists.txt`; `gpu` links `camera` for the frame it uploads, `scan` for
-the POSIX file calls; `fusion` links `geometry` for a frame's organized points). There is one
+`fusion`, `refinement`, `scan` (`src/CMakeLists.txt`; `gpu` links `camera` for the frame it
+uploads, `scan` for the POSIX file calls; `fusion` links `geometry` for a frame's organized
+points; `refinement` links `registration` for the SE(3) exponential). There is one
 library per directory, except `src/camera/`, which holds two so that only the Orbbec camera
 links OrbbecSDK: `camera`, the frame, the frame source seam, the sequence on disk and the Orbbec
 camera's rules that need no camera, which the offline tests link without OrbbecSDK; and
@@ -230,8 +232,9 @@ checkers; these are the rules no checker holds.
    | point clouds: creation, filters, normals, search; the 3x3 eigensolver, `float3` arithmetic and its Eigen conversion | `src/geometry/` |
    | the registration of a frame against a surface (docs/methods/registration.md): the surface's view at each level, the parameters, the result, the surface's intensity gradient, the association and the system of both terms on the GPU, the levels coarse to fine | `src/registration/registration.*` |
    | one iteration's normal equations solved on the host: the sums' positions, the centring, the degeneracy test and the damped step, the constants that judge a system | `src/registration/normal_equations.*` |
-   | the SE(3) exponential, the registration's pose update, its one copy | `src/registration/se3.*` |
+   | the SE(3) exponential, the registration's and the pose graph's pose update; the check that a transform is rigid; the one copy of each | `src/registration/se3.*` |
    | the prototype's colored ICP, the oracle until it is retired; the 3x3 LDLT solve | `src/registration/` |
+   | refinement's pose graph (docs/methods/refinement.md): its nodes and edges, the robust weight, the damped Gauss-Newton on SE(3) on the host in double, the result, the constants that end a solve | `src/refinement/pose_graph.*` |
    | the files a scan keeps (docs/SCAN_FILES.md); the parameters of each object class | `src/scan/` |
    | `orbbec_viewer`'s loop on a frame source: the first frame, the report line, the window, the snapshots, the sequence it writes | `apps/viewer_loop.*` |
    | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, a mesh's frames (the colored-ICP fixture's), a point's distance from a known surface, the trajectories it renders along | `tests/synthetic_source.*` |
@@ -239,6 +242,7 @@ checkers; these are the rules no checker holds.
    | the sparse TSDF tests' lookups of blocks, their readings of the usage and the method's starting truncation | `tests/sparse_tsdf_helpers.hpp` |
    | the stages' test frames: the camera's stream sizes and intrinsics, the tabletop sphere, a scene's frames rendered, frames built from functions of the pixel | `tests/stage_frames.hpp` |
    | the stages' tests' checks of an organized picture: a pixel's index, a float3 in double, the zero mark, angles, medians, the rule of one surface in double with its margin | `tests/stage_checks.hpp` |
+   | the tests' rigid transforms in double: one built from an axis, an angle and a shift, how far one lies from a known one, its tolerance and check | `tests/transform_checks.hpp` |
 
 5. **Log lines are an interface.** A tool that reads a program's output holds the strings
    it reads: before a log line, a refusal or a dump key changes, grep the tools and tests
@@ -263,7 +267,7 @@ checkers; these are the rules no checker holds.
 | `CODING_STANDARDS.md` | the style guides, what they leave to this tree, the rules for the rewrite's code, the checkers |
 | `GLOSSARY.md`, `docs/adr/` | the scanner's terms; the decisions in force and why |
 | `docs/SCAN_FILES.md` | the formats of the files a scan keeps: the models (PLY), the trajectory, the parameters |
-| `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md`, `normals.md`, `frame-pyramid.md`, `registration.md` and `sparse-tsdf.md` |
+| `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md`, `normals.md`, `frame-pyramid.md`, `registration.md`, `sparse-tsdf.md` and `refinement.md` |
 | `docs/SEQUENCE_FILE.md` | the format of a sequence: a scan's frames with their poses, which the viewer writes and the scanner and the replay tool are planned to write or read |
 | `docs/agents/` | how the workflow skills in `.claude/skills/` find the tracker and the domain docs |
 

@@ -61,6 +61,7 @@
 #include "scan/object_class.hpp"
 #include "stage_frames.hpp"
 #include "synthetic_source.hpp"
+#include "transform_checks.hpp"
 #include "types/frame_description.hpp"
 
 #include <cuda_runtime_api.h>
@@ -84,7 +85,12 @@
 namespace
 {
 using gca_test::check;
+using gca_test::check_near;
 using gca_test::check_within;
+using gca_test::error_of;
+using gca_test::make_transform;
+using gca_test::transform_error;
+using gca_test::transform_tolerance;
 
 /// The normals' parameters at every level: the method's starting values, a 7x7 window, 25 points,
 /// 75 degrees [S: docs/methods/normals.md, "Input"].
@@ -260,21 +266,6 @@ const char *end_name(gca::registration_end end)
     return "unknown";
 }
 
-/// Builds a rigid transform: a turn about an axis through the origin, then a shift.
-/// @param axis [in] the axis, not zero; normalized here.
-/// @param angle_deg [in] the angle, in degrees.
-/// @param shift_m [in] the shift, in m.
-/// @return the transform p -> R p + shift.
-Eigen::Isometry3d make_transform(const Eigen::Vector3d &axis, double angle_deg,
-                                 const Eigen::Vector3d &shift_m)
-{
-    Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
-    transform.linear() =
-        Eigen::AngleAxisd(angle_deg * std::numbers::pi / 180.0, axis.normalized()).matrix();
-    transform.translation() = shift_m;
-    return transform;
-}
-
 /// The tabletop object's known transform: a turn of 1.5 degrees and a shift of 10.8 mm [?: a
 /// choice, a hand's motion in a frame time at 30 fps: 45 degrees and 0.32 m a second].
 const Eigen::Isometry3d tabletop_delta =
@@ -291,31 +282,6 @@ const Eigen::Isometry3d large_delta =
 /// degenerate system [M 2026-11-14, point-to-plane-registration's test]: the pyramid's case.
 const Eigen::Isometry3d large_turn_delta =
     make_transform(Eigen::Vector3d(-0.4, 0.7, 0.3), 1.5, Eigen::Vector3d(0.008, 0.006, -0.010));
-
-/// How far a transform lies from a known one.
-struct transform_error
-{
-    double rotation_deg;  ///< the angle of the turn between them, in degrees
-    double translation_m; ///< the length of the shift between them at the camera's centre, in m
-};
-
-/// Measures how far a transform lies from a known one: the turn and the shift of known^-1 found.
-/// @param found [in] the transform found.
-/// @param known [in] the known transform.
-/// @return the angle of the turn, in degrees, and the length of the shift, in m.
-transform_error error_of(const Eigen::Isometry3d &found, const Eigen::Isometry3d &known)
-{
-    const Eigen::Isometry3d e = known.inverse() * found;
-    const Eigen::AngleAxisd turn(e.linear());
-    return {std::abs(turn.angle()) * 180.0 / std::numbers::pi, e.translation().norm()};
-}
-
-/// Tolerances of a recovered transform.
-struct transform_tolerance
-{
-    double rotation_deg;  ///< the largest turn from the known transform, in degrees
-    double translation_m; ///< the largest shift from it at the camera's centre, in m
-};
 
 /// The tolerances of each object class and case; a case whose transform is not recovered checks a
 /// result that says converged against its object class's all the same.
@@ -431,21 +397,6 @@ void print_result(const std::string &what, const gca::registration_result &resul
                 result.inlier_rmse_m, result.eigenvalues[0], result.eigenvalues[1],
                 result.eigenvalues[2], result.eigenvalues[3], result.eigenvalues[4],
                 result.eigenvalues[5], result.message.empty() ? "" : ", ", result.message.c_str());
-}
-
-/// Checks that a transform lies within a tolerance of a known one, and prints how far it lies.
-/// @param what [in] the case.
-/// @param found [in] the transform found.
-/// @param known [in] the known transform.
-/// @param tolerance [in] how far it may lie.
-void check_near(const std::string &what, const Eigen::Isometry3d &found,
-                const Eigen::Isometry3d &known, const transform_tolerance &tolerance)
-{
-    const transform_error error = error_of(found, known);
-    check_within((what + ": rotation error (deg)").c_str(), error.rotation_deg,
-                 tolerance.rotation_deg);
-    check_within((what + ": translation error (m)").c_str(), error.translation_m,
-                 tolerance.translation_m);
 }
 
 /// Checks the rule every result keeps: when it says converged, its transform is the known one.
