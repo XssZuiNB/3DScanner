@@ -3,26 +3,14 @@
 # tests/CMakeLists.txt - the offline tests, one program per ctest, and the synthetic source of
 # frames they share; none touches the camera (AGENTS.md §4).
 
-add_executable(test_point_cloud_from_rgbd test_point_cloud_from_rgbd.cpp)
-target_link_libraries(test_point_cloud_from_rgbd PRIVATE geometry)
-add_test(NAME point_cloud_from_rgbd COMMAND test_point_cloud_from_rgbd)
-
-add_executable(test_point_cloud_geometry test_point_cloud_geometry.cpp)
-target_link_libraries(test_point_cloud_geometry PRIVATE geometry)
-add_test(NAME point_cloud_geometry COMMAND test_point_cloud_geometry)
-
+# The tests' PLY reader, header only, on files built in memory; links nothing of the tree.
 add_executable(test_ply_reader test_ply_reader.cpp)
-target_link_libraries(test_ply_reader PRIVATE geometry)
 add_test(NAME ply_reader COMMAND test_ply_reader)
 
-# The files a scan keeps; the tests' PLY reader takes geometry's point type.
+# The files a scan keeps, read back by the scan's readers and by the tests' PLY reader.
 add_executable(test_scan_files test_scan_files.cpp)
-target_link_libraries(test_scan_files PRIVATE scan geometry)
+target_link_libraries(test_scan_files PRIVATE scan)
 add_test(NAME scan_files COMMAND test_scan_files)
-
-add_executable(test_color_icp test_color_icp.cpp)
-target_link_libraries(test_color_icp PRIVATE registration)
-add_test(NAME color_icp COMMAND test_color_icp "${PROJECT_SOURCE_DIR}/data/frag_116.ply")
 
 add_executable(test_viewer_options test_viewer_options.cpp)
 target_link_libraries(test_viewer_options PRIVATE viewer_options)
@@ -41,9 +29,18 @@ add_executable(test_orbbec_rules test_orbbec_rules.cpp)
 target_link_libraries(test_orbbec_rules PRIVATE camera)
 add_test(NAME orbbec_rules COMMAND test_orbbec_rules)
 
-# The viewer's loop on the synthetic source; links no OrbbecSDK.
+# The viewer's loop on the synthetic source; links no OrbbecSDK. CUDA's runtime lets the test leave
+# CUDA's last error set, as a failed call would, before a frame.
 add_executable(test_viewer_loop test_viewer_loop.cpp)
-target_link_libraries(test_viewer_loop PRIVATE viewer_loop synthetic_source opencv_core opencv_imgcodecs)
+target_link_libraries(
+    test_viewer_loop
+    PRIVATE
+    viewer_loop
+    synthetic_source
+    CUDA::cudart
+    opencv_core
+    opencv_imgcodecs
+)
 add_test(NAME viewer_loop COMMAND test_viewer_loop)
 
 add_executable(test_synthetic_source test_synthetic_source.cpp)
@@ -76,19 +73,16 @@ target_link_libraries(test_organized_normals PRIVATE geometry synthetic_source)
 add_test(NAME organized_normals COMMAND test_organized_normals)
 
 # The frame's pyramid: the intensity and the coarser levels, on frames of the synthetic source and
-# frames built in the test; the prototype's intensity is the oracle.
+# frames built in the test.
 add_executable(test_frame_pyramid test_frame_pyramid.cpp)
 target_link_libraries(test_frame_pyramid PRIVATE geometry synthetic_source)
 add_test(NAME frame_pyramid COMMAND test_frame_pyramid)
 
 # The registration of a frame against a surface, on pairs of frames of the synthetic source whose
-# transform is known, and against the prototype's colored ICP on the textured plane and on the
-# fixture, which the synthetic source renders from its faces; scan gives the object classes' depth
-# ranges.
+# transform is known; scan gives the object classes' depth ranges.
 add_executable(test_registration test_registration.cpp)
 target_link_libraries(test_registration PRIVATE registration scan synthetic_source)
-add_test(NAME registration COMMAND test_registration "${PROJECT_SOURCE_DIR}/data/frag_115.ply"
-         "${PROJECT_SOURCE_DIR}/data/frag_116.ply")
+add_test(NAME registration COMMAND test_registration)
 
 # The sparse TSDF's hash of blocks and its pool, fed with block coordinates the test builds.
 add_executable(test_sparse_tsdf_blocks test_sparse_tsdf_blocks.cpp)

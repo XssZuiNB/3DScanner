@@ -32,7 +32,6 @@
 #include "scan/trajectory_file.hpp"
 #include "test_files.hpp"
 
-#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -162,24 +161,18 @@ void test_model_round_trip(const temporary_directory &directory)
         check(written.written, (what + ": written; " + written.reason).c_str());
 
         std::string error;
-        const std::optional<gca_test::ply_vertices> vertices =
+        const std::optional<std::vector<gca_test::ply_vertex>> vertices =
             gca_test::read_ply_file(path.string(), error);
         check(vertices.has_value(), (what + ": the tests' reader reads it; " + error).c_str());
-        bool equal = vertices && vertices->points.size() == model.size() &&
-                     vertices->normals.size() == model.size();
+        bool equal = vertices && vertices->size() == model.size();
         for (std::size_t k = 0; equal && k < model.size(); k++)
         {
-            const gca_test::ply_vertices &v = *vertices;
-            const float position[3] = {v.points[k].coordinates.x, v.points[k].coordinates.y,
-                                       v.points[k].coordinates.z};
-            const float normal[3] = {v.normals[k].x, v.normals[k].y, v.normals[k].z};
-            // The tests' reader scales a color by 1/255; rounding back gives the byte.
-            const float color[3] = {v.points[k].color.r, v.points[k].color.g, v.points[k].color.b};
+            const gca_test::ply_vertex &v = (*vertices)[k];
             for (int c = 0; c < 3; c++)
             {
-                equal = equal && same_bits(position[c], model[k].position_m[c]) &&
-                        same_bits(normal[c], model[k].normal[c]) &&
-                        std::lround(color[c] * 255.0f) == model[k].color[c];
+                equal = equal && same_bits(v.position_m[c], model[k].position_m[c]) &&
+                        same_bits(v.normal[c], model[k].normal[c]) &&
+                        v.color[c] == model[k].color[c];
             }
         }
         check(equal, (what + ": the tests' reader reads every position, normal and color").c_str());

@@ -6,11 +6,13 @@
 /// lines, the color codes taken out, are checked line by line, so a line that changes its words
 /// or appears where it should not shows:
 /// - three frames after the first: the intrinsics line word for word, a report line in today's
-///   form after each frame, then the snapshot of the third: "Saved N points to cloud_000.ply",
-///   N the last report's points, and its three files, no others. Its color PNG holds the
-///   frame's colors and its depth PNG the frame's depth, bit for bit; its PLY has the viewer's
-///   header and N vertices, each with the color of a pixel next to where it projects, so colors
-///   swapped on their way to the GPU show;
+///   form after each frame, its points the frame's valid pixels, those with depth inside the
+///   viewer's range, then the snapshot of the third: "Saved N points to cloud_000.ply" and its
+///   three files, no others. Its color PNG holds the frame's colors and its depth PNG the frame's
+///   depth, bit for bit; the tests' PLY reader (ply_reader.hpp) reads its PLY, a model's, with N
+///   vertices, more than none and at most the report's points, each at its own pixel once: it
+///   projects onto the pixel, its z is the pixel's depth value times the unit, its color the
+///   pixel's, so colors swapped on their way show, and its normal faces the camera;
 /// - timeouts before the first frame and between frames: the first frame is waited for, the
 ///   frame limit counts delivered frames only, and the snapshot is the third delivered frame's;
 /// - a report period longer than the run: no report line, the snapshot still saved;
@@ -19,7 +21,18 @@
 ///   second, as the viewer's SIGINT handler would;
 /// - the source's end after two frames: its message, and the loop ends;
 /// - a failure before the first frame: its message and "Couldn't start stream!", and the viewer
-///   gives up.
+///   gives up;
+/// - a GPU step that fails, CUDA's last error left set as a failed call leaves it: before the
+///   second frame after the first, the frame's step; after the last frame's report, the snapshot's
+///   normals. Each prints the step's reason naming CUDA's error, the loop ends there with no
+///   snapshot written, the viewer gives up, and CUDA's last error is clear after. A failure of the
+///   GPU's set-up (CUDA's stream, the pool's requests) is not provoked offline: nothing here makes
+///   them fail short of exhausting the GPU's memory;
+/// - a directory in the way of the snapshot's PLY: the writer's reason, the pictures still saved,
+///   and the viewer runs on;
+/// - the depth range: a large plane seen at a grazing angle from 5 cm above it, so that the frame
+///   holds depths below 0.15 m, between, beyond 3.0 m and none; the report counts and the snapshot
+///   holds only those within the range.
 /// Without a sequence every report line is in today's form, with nothing after the points. With
 /// one, written into a second temporary directory:
 /// - three frames and a timeout: the sequence read back holds the first frame and the three
@@ -47,26 +60,28 @@
 #include "camera/sequence_writer.hpp"
 #include "check.hpp"
 #include "frame_copy.hpp"
+#include "ply_reader.hpp"
 #include "synthetic_source.hpp"
 #include "test_files.hpp"
 #include "types/frame_description.hpp"
 #include "viewer_loop.hpp"
 #include "viewer_options.hpp"
 
+#include <cuda_runtime_api.h>
+
 #include <algorithm>
 #include <atomic>
-#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <optional>
+#include <ostream>
 #include <regex>
 #include <sstream>
+#include <streambuf>
 #include <string>
 #include <utility>
 #include <variant>
@@ -107,9 +122,15 @@ constexpr gca_test::synthetic_plane test_plane = {0.60, 0.60};
 /// A tabletop box, 0.10 m x 0.08 m x 0.06 m, turned by 25 degrees [?: a choice].
 constexpr gca_test::synthetic_box test_box = {0.02, 0.03, 25.0, 0.10, 0.08, 0.06};
 
-/// The bytes of the viewer's PLY for each vertex: float x, y, z and uchar red, green, blue
-/// [S: viewer_loop.cpp, save_ply].
-constexpr std::size_t ply_vertex_bytes = 3 * sizeof(float) + 3;
+/// The viewer's depth range: a pixel is valid within 0.15 m to 3.0 m [S: viewer_loop.hpp,
+/// run_viewer()].
+constexpr float viewer_near_m = 0.15f;
+constexpr float viewer_far_m = 3.0f;
+
+/// How far a snapshot's vertex may project from a whole pixel, in px: float's rounding of the
+/// deprojection and of the test's projection, a few times 1e-5 px at 160 px [S: float32's relative
+/// step 6e-8], far below the whole pixel a vertex of another pixel lies off [?: a choice].
+constexpr double vertex_pixel_tolerance_px = 1e-3;
 
 /// The bytes of one record of a frame without a pose in the sequence: its kind, index and
 /// timestamp, then two bytes of depth and three of color for each pixel
@@ -122,13 +143,21 @@ constexpr std::size_t sequence_record_bytes =
 constexpr const char *report_pattern = R"(fps [0-9.e+]+ \| grab\+decode [0-9.e+-]+ ms \| )"
                                        R"(gpu point cloud [0-9.e+-]+ ms \| points ([0-9]+))";
 
-static_assert(std::endian::native == std::endian::little,
-              "the PLY's floats are read as the host's: the viewer writes them little-endian");
+/// Leaves CUDA's last error set, as a failed CUDA call does: CUDA refuses 2^52 bytes and keeps
+/// cudaErrorMemoryAllocation as the thread's last error until a call reads it [S:
+/// cuda_runtime_api.h, cudaGetLastError, CUDA 12.6].
+void leave_cuda_error()
+{
+    void *never_granted = nullptr;
+    check(cudaMalloc(&never_granted, std::size_t{1} << 52) != cudaSuccess,
+          "cudaMalloc refuses 2^52 bytes");
+}
 
 /// A frame source that passes every call through to the synthetic source, except the calls of
-/// next() a test names, which give a timeout instead without asking the synthetic source. It
-/// counts the calls of next(), and once a number of them has given a result other than a frame,
-/// it sets the loop's exit flag, as the viewer's SIGINT handler would.
+/// next() a test names, which give a timeout instead without asking the synthetic source. Before
+/// a call a test names it leaves CUDA's last error set, as a failed CUDA call does. It counts the
+/// calls of next(), and once a number of them has given a result other than a frame, it sets the
+/// loop's exit flag, as the viewer's SIGINT handler would.
 class scripted_source final : public gca::frame_source
 {
 public:
@@ -138,12 +167,15 @@ public:
     /// @param stop_after [in] after how many results other than a frame the flag is set; 0 for
     ///        never.
     /// @param exit_flag [out] the loop's exit flag; must outlive the source.
+    /// @param cuda_error_call [in] the call of next(), counted from 1, before which CUDA's last
+    ///        error is left set; 0 for none.
     scripted_source(gca_test::synthetic_source_options options, std::vector<int> timeout_calls,
-                    int stop_after, std::atomic<bool> &exit_flag)
+                    int stop_after, std::atomic<bool> &exit_flag, int cuda_error_call)
         : m_source(std::move(options))
         , m_timeout_calls(std::move(timeout_calls))
         , m_stop_after(stop_after)
         , m_exit_flag(exit_flag)
+        , m_cuda_error_call(cuda_error_call)
     {
     }
 
@@ -155,13 +187,16 @@ public:
         return m_source.open(size);
     }
 
-    /// Counts the call; gives a timeout on a call the test named, else the synthetic source's
-    /// next result; and sets the flag after the stop_after-th result other than a frame.
+    /// Counts the call; leaves CUDA's last error set on the call the test named for it; gives a
+    /// timeout on a call the test named, else the synthetic source's next result; and sets the
+    /// flag after the stop_after-th result other than a frame.
     /// @param out [out] as the synthetic source fills it; left as it was on a timeout.
     /// @return the timeout, or the synthetic source's result.
     gca::next_result next(gca::frame &out) noexcept override
     {
         m_next_calls++;
+        if (m_next_calls == m_cuda_error_call)
+            leave_cuda_error();
         const bool timeout =
             std::ranges::find(m_timeout_calls, m_next_calls) != m_timeout_calls.end();
         gca::next_result result =
@@ -197,6 +232,7 @@ private:
     std::vector<int> m_timeout_calls;
     int m_stop_after;
     std::atomic<bool> &m_exit_flag;
+    int m_cuda_error_call;
     int m_next_calls = 0;
     int m_no_frames = 0;
 };
@@ -387,17 +423,82 @@ struct run_plan
     std::chrono::steady_clock::duration report_period = std::chrono::steady_clock::duration::zero();
     /// Where the frames taken are written; nullptr for no sequence.
     gca_viewer::sequence_sink *sequence = nullptr;
+    /// The call of next(), from 1, before which CUDA's last error is left set; 0 for none.
+    int cuda_error_call = 0;
+    /// The line the viewer prints, from 1, after which CUDA's last error is left set; 0 for none.
+    int cuda_error_line = 0;
+};
+
+/// The stream the viewer prints to: it keeps the text and, once a chosen line has been printed
+/// whole, leaves CUDA's last error set (leave_cuda_error()), so that a GPU step the loop takes
+/// after that line, and before the next frame, fails as after a failed CUDA call.
+class printed_lines final : public std::streambuf
+{
+public:
+    /// Builds an empty stream buffer.
+    /// @param error_line [in] the line, counted from 1, after which CUDA's last error is left set;
+    ///        0 for none.
+    explicit printed_lines(int error_line)
+        : m_error_line(error_line)
+    {
+    }
+
+    /// Gives what was printed.
+    /// @return the text, valid as long as the buffer.
+    const std::string &text() const noexcept
+    {
+        return m_text;
+    }
+
+protected:
+    /// Takes one character: the buffer has no put area, so every character comes here or to
+    /// xsputn().
+    /// @param c [in] the character, or EOF for none.
+    /// @return c, or a value other than EOF for EOF.
+    int_type overflow(int_type c) override
+    {
+        if (traits_type::eq_int_type(c, traits_type::eof()))
+            return traits_type::not_eof(c);
+        take(traits_type::to_char_type(c));
+        return c;
+    }
+
+    /// Takes a run of characters.
+    /// @param s [in] the characters.
+    /// @param n [in] their count.
+    /// @return n, every character taken.
+    std::streamsize xsputn(const char *s, std::streamsize n) override
+    {
+        for (std::streamsize i = 0; i < n; i++)
+            take(s[i]);
+        return n;
+    }
+
+private:
+    /// Keeps a character, and leaves CUDA's error after the chosen line's end.
+    /// @param c [in] the character.
+    void take(char c)
+    {
+        m_text.push_back(c);
+        if (c == '\n' && ++m_lines == m_error_line)
+            leave_cuda_error();
+    }
+
+    std::string m_text;
+    int m_error_line;
+    int m_lines = 0;
 };
 
 /// Runs the viewer headless on the synthetic source in the current directory.
 /// @param options [in] the synthetic source's options.
 /// @param plan [in] the frame limit, the timeouts put in, when the exit flag is set, the report
-///        period, the sequence.
+///        period, the sequence, where CUDA's error is put in.
 /// @return what the run gave and printed.
 run_output run(const gca_test::synthetic_source_options &options, const run_plan &plan)
 {
     std::atomic<bool> exit_flag{false};
-    scripted_source source(options, plan.timeout_calls, plan.stop_after, exit_flag);
+    scripted_source source(options, plan.timeout_calls, plan.stop_after, exit_flag,
+                           plan.cuda_error_call);
     run_output output;
     if (!source.open(test_size).opened)
     {
@@ -407,7 +508,8 @@ run_output run(const gca_test::synthetic_source_options &options, const run_plan
     gca_viewer::options opt;
     opt.headless = true;
     opt.max_frames = plan.max_frames;
-    std::ostringstream printed;
+    printed_lines buffer(plan.cuda_error_line);
+    std::ostream printed(&buffer);
     output.ran = gca_viewer::run_viewer(source, opt,
                                         {.report_period = plan.report_period,
                                          .exit_requested = exit_flag,
@@ -416,7 +518,7 @@ run_output run(const gca_test::synthetic_source_options &options, const run_plan
     output.next_calls = source.next_calls();
 
     const std::regex color_code("\x1b\\[[0-9;]*m");
-    std::istringstream lines(printed.str());
+    std::istringstream lines(buffer.text());
     for (std::string line; std::getline(lines, line);)
     {
         output.lines.push_back(std::regex_replace(line, color_code, ""));
@@ -492,103 +594,99 @@ bool render_frame(const gca_test::synthetic_source_options &options, std::uint64
     return true;
 }
 
-/// One vertex of the viewer's PLY.
-struct ply_vertex
+/// Reads a snapshot's line, "Saved <count> points to cloud_000.ply".
+/// @param line [in] the line.
+/// @return the count; nothing when the line has another form.
+std::optional<std::size_t> saved_points(const std::string &line)
 {
-    float x, y, z;                 ///< the point in the camera frame, in m
-    std::uint8_t red, green, blue; ///< its color
-};
-
-/// Reads the viewer's PLY and checks its header against the header the viewer writes.
-/// @param path [in] the file.
-/// @return the vertices; nothing when the file is missing, its header is not the viewer's, or
-///         its length is not the header's and 15 bytes for each vertex.
-std::optional<std::vector<ply_vertex>> read_viewer_ply(const std::string &path)
-{
-    const std::string bytes = gca_test::bytes_of(path);
-    const std::string end = "end_header\n";
-    const std::size_t header_end = bytes.find(end);
-    const std::string count_key = "element vertex ";
-    const std::size_t count_at = bytes.find(count_key);
-    if (header_end == std::string::npos || count_at == std::string::npos || count_at > header_end)
+    const std::regex saved(R"(Saved ([0-9]+) points to cloud_000\.ply)");
+    std::smatch match;
+    if (!std::regex_match(line, match, saved))
         return std::nullopt;
-    const std::size_t count =
-        std::strtoull(bytes.c_str() + count_at + count_key.size(), nullptr, 10);
-    const std::string header = "ply\nformat binary_little_endian 1.0\nelement vertex " +
-                               std::to_string(count) +
-                               "\nproperty float x\nproperty float y\nproperty float z\n"
-                               "property uchar red\nproperty uchar green\nproperty uchar blue\n" +
-                               end;
-    if (bytes.compare(0, header.size(), header) != 0 ||
-        bytes.size() != header.size() + count * ply_vertex_bytes)
-        return std::nullopt;
-    std::vector<ply_vertex> vertices(count);
-    const char *data = bytes.data() + header.size();
-    for (ply_vertex &vertex : vertices)
-    {
-        float xyz[3];
-        std::memcpy(xyz, data, sizeof(xyz));
-        vertex = {xyz[0],
-                  xyz[1],
-                  xyz[2],
-                  static_cast<std::uint8_t>(data[12]),
-                  static_cast<std::uint8_t>(data[13]),
-                  static_cast<std::uint8_t>(data[14])};
-        data += ply_vertex_bytes;
-    }
-    return vertices;
+    return static_cast<std::size_t>(std::stoull(match[1].str()));
 }
 
-/// Counts the vertices whose color is that of no pixel next to where they project. The
-/// prototype's kernel deprojects pixel (u, v) at (u - 0.5, v - 0.5) (AGENTS.md §6) and takes the
-/// color of pixel (int(x' + 0.5), int(y' + 0.5)), where (x', y') is the point projected back, so
-/// pixel (u, v) up to the floats' rounding; its color passes through 1/255 and back, which can
-/// take one off a channel [S: cuda_point_cloud_factory.cu; viewer_loop.cpp, save_ply]. So a vertex
-/// passes when one of the 3 x 3 pixels around that pixel has, in each channel, the vertex's value
-/// or one more.
+/// Counts a frame's valid pixels as the viewer's organized points take them: depth value d not 0
+/// and its z, d times the unit in float, within the viewer's range [S:
+/// geometry/organized_points.hpp, deproject()].
+/// @param frame [in] the frame.
+/// @return the valid pixels.
+std::size_t valid_pixels(const gca::frame &frame)
+{
+    const float unit = frame.description().depth_unit_m;
+    return static_cast<std::size_t>(std::ranges::count_if(frame.depth(), [&](std::uint16_t d) {
+        const float z = static_cast<float>(d) * unit;
+        return d != 0 && z >= viewer_near_m && z <= viewer_far_m;
+    }));
+}
+
+/// Counts the snapshot's vertices that are not a valid pixel's point with its color and a normal
+/// toward the camera: a vertex has to project onto a whole pixel within vertex_pixel_tolerance_px
+/// by the one pinhole convention (types/camera_param.hpp), no other vertex onto the same; its z
+/// has to be the pixel's depth value times the unit, in float, bit for bit, and within the
+/// viewer's range; its color the pixel's, red, green, blue; its normal n has n . p <= 0.
 /// @param vertices [in] the PLY's vertices.
-/// @param frame [in] the frame they were built from.
-/// @return the vertices that pass at no such pixel.
-std::size_t vertices_off_their_pixel(const std::vector<ply_vertex> &vertices,
+/// @param frame [in] the frame they were made from.
+/// @return the vertices that fail any of these.
+std::size_t vertices_off_their_pixel(const std::vector<gca_test::ply_vertex> &vertices,
                                      const gca::frame &frame)
 {
     const gca::intrinsics &in = frame.description().intrinsics;
+    const float unit = frame.description().depth_unit_m;
     const auto width = static_cast<long>(frame.description().size.width);
     const auto height = static_cast<long>(frame.description().size.height);
     const auto color = frame.color();
+    const auto depth = frame.depth();
+    std::vector<bool> taken(depth.size(), false);
     std::size_t off = 0;
-    for (const ply_vertex &vertex : vertices)
+    for (const gca_test::ply_vertex &vertex : vertices)
     {
-        // The pixel the kernel takes, give or take the rounding of the half.
-        const long u = std::lround(vertex.x * in.fx / vertex.z + in.cx + 0.5);
-        const long v = std::lround(vertex.y * in.fy / vertex.z + in.cy + 0.5);
-        bool found = false;
-        for (long dv = -1; dv <= 1 && !found; ++dv)
+        const double x = vertex.position_m[0];
+        const double y = vertex.position_m[1];
+        const double z = vertex.position_m[2];
+        const double u = z > 0.0 ? x * in.fx / z + in.cx : -1.0;
+        const double v = z > 0.0 ? y * in.fy / z + in.cy : -1.0;
+        const long pu = std::lround(u);
+        const long pv = std::lround(v);
+        if (std::abs(u - static_cast<double>(pu)) > vertex_pixel_tolerance_px ||
+            std::abs(v - static_cast<double>(pv)) > vertex_pixel_tolerance_px || pu < 0 ||
+            pu >= width || pv < 0 || pv >= height)
         {
-            for (long du = -1; du <= 1 && !found; ++du)
-            {
-                if (u + du < 0 || u + du >= width || v + dv < 0 || v + dv >= height)
-                    continue;
-                const std::size_t at = 3 * static_cast<std::size_t>((v + dv) * width + u + du);
-                const auto near = [](std::uint8_t got, std::uint8_t pixel) {
-                    return got == pixel || got + 1 == pixel;
-                };
-                found = near(vertex.red, color[at]) && near(vertex.green, color[at + 1]) &&
-                        near(vertex.blue, color[at + 2]);
-            }
+            off++;
+            continue;
         }
-        off += found ? 0 : 1;
+        const auto pixel = static_cast<std::size_t>(pv * width + pu);
+        const std::uint16_t d = depth[pixel];
+        const float pixel_z = static_cast<float>(d) * unit;
+        const bool at_depth = d != 0 && vertex.position_m[2] == pixel_z &&
+                              pixel_z >= viewer_near_m && pixel_z <= viewer_far_m;
+        const bool colored = vertex.color[0] == color[3 * pixel] &&
+                             vertex.color[1] == color[3 * pixel + 1] &&
+                             vertex.color[2] == color[3 * pixel + 2];
+        const double facing = vertex.normal[0] * x + vertex.normal[1] * y + vertex.normal[2] * z;
+        off += !taken[pixel] && at_depth && colored && facing <= 0.0 ? 0 : 1;
+        taken[pixel] = true;
     }
     return off;
 }
 
-/// Checks the snapshot of a frame: its color PNG and depth PNG against the frame, its PLY's
-/// header, length and colors, and its vertex count against the report's points.
+/// Checks the snapshot of a frame: its color PNG and depth PNG against the frame; its PLY, read by
+/// the tests' PLY reader, against the "Saved" line's count, the report's points and the frame's
+/// pixels (vertices_off_their_pixel()); and the report's points against the frame's valid pixels.
 /// @param snapshot [in] the PLY's name; the PNGs are named after it.
 /// @param frame [in] the frame it should hold.
-/// @param points [in] the points the last report line and the "Saved" line gave.
-void check_snapshot(const std::string &snapshot, const gca::frame &frame, std::size_t points)
+/// @param saved_line [in] the line the snapshot printed.
+/// @param report [in] the points the frame's report line gave; nothing when the run printed none.
+void check_snapshot(const std::string &snapshot, const gca::frame &frame,
+                    const std::string &saved_line, std::optional<std::size_t> report)
 {
+    const std::size_t valid = valid_pixels(frame);
+    const std::size_t pixels = frame.depth().size();
+    std::printf("snapshot: %zu valid pixels of %zu\n", valid, pixels);
+    check(valid > 0 && valid < pixels,
+          "snapshot: the frame has valid pixels and pixels that are not");
+    if (report)
+        check(*report == valid, "snapshot: the report's points are the frame's valid pixels");
     const auto w = static_cast<int>(test_size.width);
     const auto h = static_cast<int>(test_size.height);
     const cv::Mat color = cv::imread(snapshot + ".color.png", cv::IMREAD_COLOR);
@@ -622,17 +720,21 @@ void check_snapshot(const std::string &snapshot, const gca::frame &frame, std::s
         check(depth_off == 0, "snapshot: the depth PNG holds the frame's depth");
     }
 
-    const std::optional<std::vector<ply_vertex>> vertices = read_viewer_ply(snapshot);
-    check(vertices.has_value(),
-          "snapshot: the PLY has the viewer's header and 15 bytes for each vertex");
+    std::string error;
+    const std::optional<std::vector<gca_test::ply_vertex>> vertices =
+        gca_test::read_ply_file(snapshot, error);
+    check(vertices.has_value(), ("snapshot: the tests' PLY reader reads it; " + error).c_str());
     if (!vertices)
         return;
+    const std::optional<std::size_t> saved = saved_points(saved_line);
     const std::size_t off = vertices_off_their_pixel(*vertices, frame);
-    std::printf("snapshot: %zu vertices, %zu of them with no pixel's color near them\n",
-                vertices->size(), off);
-    check(vertices->size() == points && points > 0,
-          "snapshot: the PLY holds the report's points, more than none");
-    check(off == 0, "snapshot: each vertex has the color of a pixel next to its projection");
+    std::printf("snapshot: %zu vertices, %zu of them not a valid pixel's point\n", vertices->size(),
+                off);
+    check(saved && *saved == vertices->size() && !vertices->empty() && vertices->size() <= valid,
+          "snapshot: the PLY holds the \"Saved\" line's points, more than none and at most the "
+          "valid pixels");
+    check(off == 0, "snapshot: each vertex a valid pixel's point, once, with its depth and color, "
+                    "its normal toward the camera");
 }
 
 /// Three frames headless after the first: the intrinsics line, three report lines, the snapshot
@@ -656,10 +758,8 @@ void check_frames_and_snapshot()
     check(reports(output.lines, 1, 3),
           "three frames: a report line in today's form after each frame");
     const std::optional<std::size_t> points = report_points(output.lines[3]);
-    const std::string saved =
-        "Saved " + std::to_string(points.value_or(0)) + " points to cloud_000.ply";
-    check(output.lines[4] == saved, "three frames: \"Saved <the report's points> points to "
-                                    "cloud_000.ply\"");
+    check(saved_points(output.lines[4]).has_value(),
+          "three frames: \"Saved <N> points to cloud_000.ply\"");
     const std::vector<std::string> expected_files = {"cloud_000.ply", "cloud_000.ply.color.png",
                                                      "cloud_000.ply.depth.png"};
     check(directory.files() == expected_files, "three frames: the snapshot's three files, no "
@@ -667,7 +767,7 @@ void check_frames_and_snapshot()
     gca::frame third;
     // The first frame, index 0, sets the viewer up; the third frame after it has index 3.
     check(render_frame(*options, 3, third), "three frames: the third frame rendered again");
-    check_snapshot("cloud_000.ply", third, points.value_or(0));
+    check_snapshot("cloud_000.ply", third, output.lines[4], points);
 }
 
 /// Timeouts before the first frame and between frames: the first frame is waited for without a
@@ -696,13 +796,12 @@ void check_timeouts_between_frames()
     if (!lines_as_expected)
         return;
     const std::optional<std::size_t> points = report_points(output.lines[5]);
-    check(output.lines[6] ==
-              "Saved " + std::to_string(points.value_or(0)) + " points to cloud_000.ply",
+    check(saved_points(output.lines[6]).has_value(),
           "timeouts between frames: the snapshot after the third delivered frame");
     gca::frame third;
     check(render_frame(*options, 3, third),
           "timeouts between frames: the third frame after the first rendered again");
-    check_snapshot("cloud_000.ply", third, points.value_or(0));
+    check_snapshot("cloud_000.ply", third, output.lines[6], points);
 }
 
 /// A report period longer than the run: no report line, the snapshot of the last frame still
@@ -721,10 +820,8 @@ void check_long_report_period()
                                              .stop_after = 0,
                                              .report_period = std::chrono::hours(1)});
     check(output.ran, "long period: the viewer ran");
-    const std::regex saved_line("Saved ([0-9]+) points to cloud_000\\.ply");
-    std::smatch saved;
     const bool lines_as_expected = output.lines.size() == 2 && output.lines[0] == intrinsics_line &&
-                                   std::regex_match(output.lines[1], saved, saved_line);
+                                   saved_points(output.lines[1]).has_value();
     check(lines_as_expected,
           "long period: the intrinsics line, then only \"Saved <N> points to cloud_000.ply\"");
     if (!lines_as_expected)
@@ -732,7 +829,7 @@ void check_long_report_period()
     gca::frame second;
     check(render_frame(*options, 2, second),
           "long period: the second frame after the first rendered again");
-    check_snapshot("cloud_000.ply", second, std::stoull(saved[1].str()));
+    check_snapshot("cloud_000.ply", second, output.lines[1], std::nullopt);
 }
 
 /// A timeout or a failure after two frames: its line each time, no frame shown, counted or saved,
@@ -800,6 +897,169 @@ void check_no_first_frame()
     check(output.lines == std::vector<std::string>{"no picture", "Couldn't start stream!"},
           "no first frame: the failure's message, then \"Couldn't start stream!\"");
     check(directory.files().empty(), "no first frame: no snapshot");
+}
+
+/// A GPU step that fails: CUDA's last error left set before the second frame after the first, as
+/// a failed call leaves it, so that its organized points refuse to launch. The step's reason,
+/// naming CUDA's error, ends the loop; no frame is taken after it, no snapshot saved, the viewer
+/// gives up, and CUDA's last error is clear after.
+void check_gpu_failure()
+{
+    std::printf("a GPU step that fails:\n");
+    const auto options = scene_options(5, gca_test::synthetic_ending::end, "the walk's end");
+    check(options.has_value(), "GPU failure: walk_around() gives the walk");
+    if (!options)
+        return;
+    const snapshot_directory directory;
+    // Call 1 gives the first frame (index 0), 2 frame 1, 3 frame 2 after CUDA's error is left.
+    const run_output output = run(
+        *options, {.max_frames = 3, .timeout_calls = {}, .stop_after = 0, .cuda_error_call = 3});
+    check(!output.ran, "GPU failure: the viewer gives up");
+    check(output.next_calls == 3, "GPU failure: no frame taken after the failed step");
+    const bool lines_as_expected =
+        output.lines.size() == 3 && output.lines[0] == intrinsics_line &&
+        reports(output.lines, 1, 1) &&
+        output.lines[2].find("left by an earlier call") != std::string::npos &&
+        output.lines[2].find("cudaErrorMemoryAllocation") != std::string::npos;
+    check(lines_as_expected, "GPU failure: the intrinsics line, a report after the first frame, "
+                             "then the step's reason naming CUDA's error");
+    check(directory.files().empty(), "GPU failure: no snapshot");
+    check(cudaPeekAtLastError() == cudaSuccess, "GPU failure: CUDA's last error clear after");
+}
+
+/// A GPU step of the snapshot that fails: CUDA's last error left set after the last frame's report
+/// line, so that the snapshot's normals refuse to launch. The step's reason, naming CUDA's error,
+/// ends the loop; nothing of the snapshot is written, the viewer gives up, and CUDA's last error is
+/// clear after.
+void check_snapshot_gpu_failure()
+{
+    std::printf("a GPU step of the snapshot that fails:\n");
+    const auto options = scene_options(5, gca_test::synthetic_ending::end, "the walk's end");
+    check(options.has_value(), "snapshot GPU failure: walk_around() gives the walk");
+    if (!options)
+        return;
+    const snapshot_directory directory;
+    // Line 1 is the intrinsics line, lines 2 to 4 the reports of the three frames: CUDA's error is
+    // left after the third report, between the last frame's step and its snapshot.
+    const run_output output = run(
+        *options, {.max_frames = 3, .timeout_calls = {}, .stop_after = 0, .cuda_error_line = 4});
+    check(!output.ran, "snapshot GPU failure: the viewer gives up");
+    check(output.next_calls == 4, "snapshot GPU failure: the first frame and three more taken");
+    const bool lines_as_expected =
+        output.lines.size() == 5 && output.lines[0] == intrinsics_line &&
+        reports(output.lines, 1, 3) &&
+        output.lines[4].find("left by an earlier call, before the organized normals' kernel") !=
+            std::string::npos &&
+        output.lines[4].find("cudaErrorMemoryAllocation") != std::string::npos;
+    check(lines_as_expected,
+          "snapshot GPU failure: the intrinsics line, three reports, then the normals' reason "
+          "naming CUDA's error");
+    check(directory.files().empty(), "snapshot GPU failure: nothing of the snapshot written");
+    check(cudaPeekAtLastError() == cudaSuccess,
+          "snapshot GPU failure: CUDA's last error clear after");
+}
+
+/// The camera's height above the large plane in the depth range's case: 5 cm, so that the
+/// frame's lowest rows see the plane nearer than 0.15 m [?: a choice; S: computed, the lowest ray
+/// 24 degrees below the horizon meets the plane 0.12 m away].
+constexpr double grazing_height_m = 0.05;
+
+/// The large plane's half size: 50 m, so that rows just below the horizon see it beyond 3.0 m and
+/// its farthest point, 50 m, still fits a depth value of 1 mm [?: a choice; S: 50000 < 65535].
+constexpr gca_test::synthetic_plane grazing_plane = {50.0, 50.0};
+
+/// Counts a frame's pixels by their depth against the viewer's range.
+struct depth_bands
+{
+    std::size_t none = 0;    ///< pixels without depth
+    std::size_t nearer = 0;  ///< pixels nearer than the range
+    std::size_t inside = 0;  ///< pixels within it
+    std::size_t farther = 0; ///< pixels farther than it
+};
+
+/// Sorts a frame's pixels into the depth bands, z as the viewer's organized points take it.
+/// @param frame [in] the frame.
+/// @return the counts.
+depth_bands bands_of(const gca::frame &frame)
+{
+    depth_bands bands;
+    const float unit = frame.description().depth_unit_m;
+    for (const std::uint16_t d : frame.depth())
+    {
+        const float z = static_cast<float>(d) * unit;
+        if (d == 0)
+            bands.none++;
+        else if (z < viewer_near_m)
+            bands.nearer++;
+        else if (z > viewer_far_m)
+            bands.farther++;
+        else
+            bands.inside++;
+    }
+    return bands;
+}
+
+/// The depth range: one frame of a large plane seen at a grazing angle from grazing_height_m, its
+/// lowest rows nearer than 0.15 m, the rows near the horizon beyond 3.0 m and the rows above it
+/// without depth. The report counts only the pixels within the range, and the snapshot holds only
+/// points within it (check_snapshot()).
+void check_depth_range()
+{
+    std::printf("the depth range, a plane at a grazing angle:\n");
+    // Looking along +x at a point 2 m ahead on the plane, 1.4 degrees below the horizon.
+    const std::optional<Eigen::Isometry3d> pose = gca_test::look_at(
+        Eigen::Vector3d(0.0, 0.0, grazing_height_m), Eigen::Vector3d(2.0, 0.0, 0.0), 0.0);
+    check(pose.has_value(), "depth range: look_at() gives the pose");
+    if (!pose)
+        return;
+    gca_test::synthetic_source_options options;
+    options.description = {test_size, test_intrinsics, test_depth_unit_m};
+    options.scene = {.plane = grazing_plane, .trajectory = {*pose, *pose}};
+    options.ending = gca_test::synthetic_ending::end;
+    options.ending_message = "the poses' end";
+    const snapshot_directory directory;
+    const run_output output = run(options, {.max_frames = 1, .timeout_calls = {}, .stop_after = 0});
+    check(output.ran, "depth range: the viewer ran");
+    const bool lines_as_expected = output.lines.size() == 3 && output.lines[0] == intrinsics_line &&
+                                   reports(output.lines, 1, 1) &&
+                                   saved_points(output.lines[2]).has_value();
+    check(lines_as_expected, "depth range: the intrinsics line, a report, \"Saved ...\"");
+    gca::frame second;
+    check(render_frame(options, 1, second),
+          "depth range: the frame after the first rendered again");
+    const depth_bands bands = bands_of(second);
+    std::printf("depth range: %zu pixels without depth, %zu nearer than 0.15 m, %zu within, %zu "
+                "beyond 3.0 m\n",
+                bands.none, bands.nearer, bands.inside, bands.farther);
+    check(bands.none > 0 && bands.nearer > 0 && bands.inside > 0 && bands.farther > 0,
+          "depth range: pixels without depth, nearer than the range, within and beyond it");
+    if (!lines_as_expected)
+        return;
+    check_snapshot("cloud_000.ply", second, output.lines[2], report_points(output.lines[1]));
+}
+
+/// A directory in the way of the snapshot's PLY: the writer's reason in place of "Saved ...", the
+/// pictures saved all the same, and the viewer runs on to the end of its frames.
+void check_model_in_the_way()
+{
+    std::printf("a directory in the way of the snapshot's PLY:\n");
+    const auto options = scene_options(5, gca_test::synthetic_ending::end, "the walk's end");
+    check(options.has_value(), "PLY in the way: walk_around() gives the walk");
+    if (!options)
+        return;
+    const snapshot_directory directory;
+    std::filesystem::create_directory("cloud_000.ply");
+    const run_output output =
+        run(*options, {.max_frames = 3, .timeout_calls = {}, .stop_after = 0});
+    check(output.ran, "PLY in the way: the viewer ran");
+    const std::string reason = "cloud_000.ply: the rename from cloud_000.ply.part failed";
+    check(output.lines.size() == 5 && output.lines[0] == intrinsics_line &&
+              reports(output.lines, 1, 3) && output.lines[4].rfind(reason, 0) == 0,
+          "PLY in the way: the intrinsics line, three reports, then the writer's reason");
+    const std::vector<std::string> expected_files = {"cloud_000.ply", "cloud_000.ply.color.png",
+                                                     "cloud_000.ply.depth.png"};
+    check(directory.files() == expected_files,
+          "PLY in the way: the directory and the snapshot's pictures, no part file");
 }
 
 /// Reads the viewer's sequence back and compares it with the synthetic source's frames, rendered
@@ -923,10 +1183,7 @@ void check_sequence_written()
         output.lines.size() == 7 && output.lines[0] == intrinsics_line &&
         std::ranges::all_of(reports_read,
                             [](const auto &report) { return report && report->queue_full == 0; }) &&
-        output.lines[2] == timeout_line &&
-        output.lines[5] == "Saved " +
-                               std::to_string(reports_read[2] ? reports_read[2]->points : 0) +
-                               " points to cloud_000.ply" &&
+        output.lines[2] == timeout_line && saved_points(output.lines[5]).has_value() &&
         output.lines[6] == closing_line(sink, 4, 0);
     check(lines_as_expected,
           "sequence: the intrinsics line, reports ending in \" | queue full 0\", the timeout line, "
@@ -940,7 +1197,7 @@ void check_sequence_written()
         return;
     gca::frame third;
     check(render_frame(*options, 3, third), "sequence: the third frame rendered again");
-    check_snapshot("cloud_000.ply", third, reports_read[2]->points);
+    check_snapshot("cloud_000.ply", third, output.lines[5], reports_read[2]->points);
     check_read_back("sequence", sink.path(), *options, {0, 1, 2, 3}, false);
 }
 
@@ -971,11 +1228,10 @@ void check_full_queue()
             points = report->points;
         }
     }
-    const bool lines_as_expected =
-        output.lines.size() == 8 && output.lines[0] == intrinsics_line &&
-        counts == std::vector<int>{0, 1, 0, 1, 0} &&
-        output.lines[6] == "Saved " + std::to_string(points) + " points to cloud_000.ply" &&
-        output.lines[7] == closing_line(sink, 3, 3);
+    const bool lines_as_expected = output.lines.size() == 8 && output.lines[0] == intrinsics_line &&
+                                   counts == std::vector<int>{0, 1, 0, 1, 0} &&
+                                   saved_points(output.lines[6]).has_value() &&
+                                   output.lines[7] == closing_line(sink, 3, 3);
     check(lines_as_expected,
           "full: reports counting 0, 1, 0, 1, 0 full pushes, \"Saved ...\", then \"Wrote 3 "
           "frames to <file>, 3 not written because ...\"");
@@ -985,7 +1241,7 @@ void check_full_queue()
         return;
     gca::frame fifth;
     check(render_frame(*options, 5, fifth), "full: the fifth frame rendered again");
-    check_snapshot("cloud_000.ply", fifth, points);
+    check_snapshot("cloud_000.ply", fifth, output.lines[6], points);
     check_read_back("full", sink.path(), *options, {0, 2, 4}, false);
 }
 
@@ -1133,6 +1389,10 @@ int main()
     check_no_frame(gca_test::synthetic_ending::failure, "failure", "the test's failure");
     check_end();
     check_no_first_frame();
+    check_gpu_failure();
+    check_snapshot_gpu_failure();
+    check_model_in_the_way();
+    check_depth_range();
     check_sequence_written();
     check_full_queue();
     check_sequence_in_the_way();

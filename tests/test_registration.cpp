@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: 0BSD
 /// @file test_registration.cpp
 /// The registration module's registration (registration/registration.hpp) on pairs of frames of the
-/// tests' synthetic source whose transform is known, and against the prototype's colored ICP
-/// (registration/color_icp.hpp) as the oracle; the method is docs/methods/registration.md. Frame A
-/// is seen from pose P_A and frame B from P_B = P_A Δ, so that Δ carries B's camera frame into A's.
+/// tests' synthetic source whose transform is known; the method is docs/methods/registration.md,
+/// which also keeps the agreement with the prototype, measured before it was retired. Frame A is
+/// seen from pose P_A and frame B from P_B = P_A Δ, so that Δ carries B's camera frame into A's.
 /// B's pyramid is registered against A's pyramid's levels as the surface, from the identity, and
 /// the result is compared with Δ. Every result that says converged must carry Δ within its case's
 /// tolerance. "The full method" is colored ICP coarse to fine with the object class's starting
@@ -28,10 +28,6 @@
 ///   box on its plane; the same with λ = 1 through the pyramid. Few correspondences, and none,
 ///   there and by the full method. Patches of frame B the surface does not hold, each held off by
 ///   its rule. The ends: the iterations used up, and the last system deciding.
-/// - Against the prototype's colored ICP: the textured plane, and the fixture, frag_116 against
-///   itself moved by a known transform and frag_115 onto frag_116, rendered as frames by the
-///   synthetic source's mesh; the prototype on the points the same frames hold, each transform
-///   within a stated tolerance of the other's.
 /// - Refusals as values, with the initial transform: an empty registration, an empty pyramid, a
 ///   frame larger than the registration's size, a level of the surface with empty images, images
 ///   of two sizes, a size larger than the registration's or intrinsics that cannot be used, an
@@ -40,22 +36,17 @@
 ///   failed. CUDA's last error is clear after each.
 /// - Every buffer is requested before the pool closes, and the registration asks the closed pool
 ///   for nothing.
-/// Its two arguments are the paths of the fixture, data/frag_115.ply and data/frag_116.ply.
 
 #include "camera/frame.hpp"
 #include "check.hpp"
 #include "geometry/frame_pyramid.hpp"
 #include "geometry/organized_normals.hpp"
 #include "geometry/organized_points.hpp"
-#include "geometry/point_cloud.hpp"
-#include "geometry/type.hpp"
 #include "gpu/gpu_frame.hpp"
 #include "gpu/gpu_image.hpp"
 #include "gpu/gpu_pool.hpp"
 #include "gpu/step_result.hpp"
 #include "gpu_test_helpers.hpp"
-#include "ply_reader.hpp"
-#include "registration/color_icp.hpp"
 #include "registration/normal_equations.hpp"
 #include "registration/registration.hpp"
 #include "registration_cases.hpp"
@@ -74,7 +65,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <limits>
-#include <memory>
 #include <numbers>
 #include <optional>
 #include <string>
@@ -229,23 +219,6 @@ constexpr transform_tolerance plane_tolerance = {plane_rotation_tolerance_deg,
                                                  plane_translation_tolerance_m};
 constexpr transform_tolerance bright_patch_tolerance = {bright_patch_rotation_tolerance_deg,
                                                         bright_patch_translation_tolerance_m};
-
-/// How far a transform of the full method may lie from the prototype's on the same scene, the
-/// prototype on the points the same frames hold, about twice the largest difference measured
-/// [M 2026-11-14, this test], the turn and the shift at the camera's centre and at the scene's
-/// point (check_against_prototype()):
-/// - the textured plane: 0.004 degrees, 1.0 mm and 1.0 mm, from 0.00164 degrees, 0.458 mm and
-///   0.472 mm; the prototype lies 0.42 mm off the motion, ours 0.036 mm;
-/// - frag_116 against itself: 0.012 degrees, 0.9 mm and 0.85 mm, from 0.00599 degrees, 0.446 mm
-///   and 0.425 mm; the prototype lies 0.462 mm off the motion, ours 0.023 mm;
-/// - frag_115 onto frag_116, from the prototype's 3.64 degrees and 74.2 mm: 0.7 degrees, 5.5 mm
-///   and 6 mm, from 0.339 degrees, 2.72 mm and 2.92 mm.
-constexpr transform_tolerance oracle_plane_tolerance = {0.004, 1.0e-3};
-constexpr transform_tolerance oracle_fixture_tolerance = {0.012, 0.9e-3};
-constexpr transform_tolerance oracle_pair_tolerance = {0.7, 5.5e-3};
-constexpr double oracle_plane_point_tolerance_m = 1.0e-3;
-constexpr double oracle_fixture_point_tolerance_m = 0.85e-3;
-constexpr double oracle_pair_point_tolerance_m = 6.0e-3;
 
 /// What the tests work on: the GPU frames and pyramids at both stream sizes and the registrations,
 /// every buffer requested before the pool closes, and the stream the work runs on.
@@ -613,9 +586,9 @@ gca::frame untextured(const gca::frame &rendered)
 
 /// The textured plane's motion within itself: a turn of 0.5 degrees about the plane's normal
 /// through the point the views look at, the world's origin, then 3 mm along the world's x and -2 mm
-/// along its y, as the prototype's textured plane's [?: a choice; tests/test_color_icp.cpp].
-/// Frame B is seen from this motion applied to frame A's pose, so that the plane holds both views
-/// alike and only its texture moves.
+/// along its y, the motion of the prototype's test of a textured plane [?: a choice]. Frame B is
+/// seen from this motion applied to frame A's pose, so that the plane holds both views alike and
+/// only its texture moves.
 /// @return the motion, in the world frame.
 Eigen::Isometry3d in_plane_motion()
 {
@@ -1081,308 +1054,6 @@ void check_color_patch(stage &s)
     check_converged_is_known("a bright patch", result, delta, bright_patch_tolerance);
 }
 
-/// The shift the prototype's clouds are moved by, in m: 5 m along x and y, so that every point is
-/// positive on every axis, which the prototype's bounds need (host_geometry.hpp, make_point()) [S].
-/// A transform between two clouds so moved is the same transform conjugated by the shift.
-const Eigen::Vector3d prototype_shift_m(5.0, 5.0, 0.0);
-
-/// The prototype's parameters on a scene.
-struct prototype_parameters
-{
-    float voxel_m;           ///< the voxel downsampling's voxel, in m
-    float normal_radius_m;   ///< the normals' neighbours' radius, in m
-    std::size_t iterations;  ///< the most iterations
-    float correspondence_m;  ///< the nearest neighbour's largest distance, in m
-    float gradient_radius_m; ///< the color gradient's neighbours' radius, in m
-};
-
-/// The prototype on the textured plane: 3 mm voxels, normals from 2 cm, gradients from 1 cm,
-/// correspondences within 5 cm, at most 50 iterations, so that its own stop rule ends it. Its
-/// gradient's radius of 5 cm in CUDA_3D would flatten the plane's waves of 5 to 10 cm to nothing:
-/// a least-squares slope over +-r keeps 3 (sin x - x cos x) / x^3 of a wave's, x = 2 pi r /
-/// wavelength, 0.0 for the 7 cm wave, 0.92 at 1 cm [S: computed] [?: a choice].
-constexpr prototype_parameters plane_prototype = {0.003f, 0.02f, 50, 0.05f, 0.01f};
-
-/// The prototype on the fixture: CUDA_3D's parameters (8 mm voxels, normals from 4 cm,
-/// correspondences within 5 cm, gradients from 5 cm) [S: tests/test_color_icp.cpp], at most 50
-/// iterations instead of 10, so that its own stop rule ends it [?: a choice].
-constexpr prototype_parameters fixture_prototype = {0.008f, 0.04f, 50, 0.05f, 0.05f};
-
-/// Aligns a source cloud onto a target cloud with the prototype's colored ICP: each downsampled,
-/// the target's normals estimated, then color_icp from the identity.
-/// @param source [in] the source's points, positive on every axis.
-/// @param target [in] the target's points, positive on every axis.
-/// @param p [in] the prototype's parameters.
-/// @return the transform from the source's frame into the target's, in m; nothing when a step of
-///         the prototype failed.
-std::optional<Eigen::Isometry3d> prototype_align(const std::vector<gca::point_t> &source,
-                                                 const std::vector<gca::point_t> &target,
-                                                 const prototype_parameters &p)
-{
-    const std::shared_ptr<gca::point_cloud> source_cloud =
-        gca::point_cloud::create_from_points(source)->voxel_grid_down_sample(p.voxel_m);
-    const std::shared_ptr<gca::point_cloud> target_cloud =
-        gca::point_cloud::create_from_points(target)->voxel_grid_down_sample(p.voxel_m);
-    if (source_cloud == nullptr || target_cloud == nullptr ||
-        !target_cloud->estimate_normals(p.normal_radius_m))
-        return std::nullopt;
-    std::printf("the prototype: %zu source and %zu target points after downsampling\n",
-                source_cloud->points_number(), target_cloud->points_number());
-    gca::color_icp icp(p.iterations, p.correspondence_m, p.gradient_radius_m);
-    icp.set_source_point_cloud(source_cloud);
-    icp.set_target_point_cloud(target_cloud);
-    if (!icp.align())
-        return std::nullopt;
-    Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
-    transform.matrix() = icp.get_final_transformation_matrix().cast<double>();
-    return transform;
-}
-
-/// Gives a pyramid's level 0 as the prototype's points: each valid pixel's point, moved by
-/// prototype_shift_m, with the color of the frame it was built from.
-/// @param s [in] the stage; its stream is waited for.
-/// @param pyramid [in] the pyramid, built from host.
-/// @param host [in] the frame, of the pyramid's level 0's size.
-/// @return the points, colors in [0, 1].
-std::vector<gca::point_t> prototype_points(stage &s, const gca::frame_pyramid &pyramid,
-                                           const gca::frame &host)
-{
-    check(cudaStreamSynchronize(s.stream) == cudaSuccess, "the pyramid built for the prototype");
-    const gca::frame_size size = pyramid.size(0);
-    const std::size_t pixels = static_cast<std::size_t>(size.width) * size.height;
-    std::vector<float3> points(pixels);
-    std::vector<std::uint8_t> valid(pixels);
-    check(cudaMemcpy(points.data(), pyramid.points(0).points().data(), pixels * sizeof(float3),
-                     cudaMemcpyDeviceToHost) == cudaSuccess &&
-              cudaMemcpy(valid.data(), pyramid.points(0).validity_mask().data(), pixels,
-                         cudaMemcpyDeviceToHost) == cudaSuccess,
-          "level 0 read back for the prototype");
-    std::vector<gca::point_t> cloud;
-    for (std::size_t k = 0; k < pixels; k++)
-    {
-        if (valid[k] == 0)
-            continue;
-        gca::point_t point{};
-        point.coordinates = make_float3(points[k].x + static_cast<float>(prototype_shift_m.x()),
-                                        points[k].y + static_cast<float>(prototype_shift_m.y()),
-                                        points[k].z + static_cast<float>(prototype_shift_m.z()));
-        const std::uint8_t *rgb = &host.color()[3 * k];
-        point.color = gca::color3{rgb[0] / 255.0f, rgb[1] / 255.0f, rgb[2] / 255.0f};
-        point.property = gca::point_property::inactive;
-        cloud.push_back(point);
-    }
-    return cloud;
-}
-
-/// Prints how far two transforms lie from a known one and from each other, and checks them against
-/// the oracle's tolerance: the turn between them, and the shift between them at the camera's centre
-/// and at a point of the scene.
-/// @param what [in] the case.
-/// @param ours [in] the full method's transform, from frame B's camera frame into A's, in m.
-/// @param prototype [in] the prototype's, in the same frames.
-/// @param known [in] the known transform, or none.
-/// @param scene_point_m [in] the point of the scene, in frame B's camera frame, in m.
-/// @param tolerance [in] how far ours may lie from the prototype's: the turn and the shift at the
-///        camera's centre.
-/// @param point_tolerance_m [in] how far ours may lie from the prototype's at the scene's point, in
-///        m.
-void check_against_prototype(const std::string &what, const Eigen::Isometry3d &ours,
-                             const Eigen::Isometry3d &prototype,
-                             const std::optional<Eigen::Isometry3d> &known,
-                             const Eigen::Vector3d &scene_point_m,
-                             const transform_tolerance &tolerance, double point_tolerance_m)
-{
-    if (known)
-    {
-        const transform_error mine = error_of(ours, *known);
-        const transform_error theirs = error_of(prototype, *known);
-        std::printf("%s: from the known transform, ours %.3g deg and %.3g mm, the prototype's "
-                    "%.3g deg and %.3g mm\n",
-                    what.c_str(), mine.rotation_deg, 1e3 * mine.translation_m, theirs.rotation_deg,
-                    1e3 * theirs.translation_m);
-    }
-    const transform_error moved = error_of(prototype, Eigen::Isometry3d::Identity());
-    std::printf("%s: the prototype's transform turns by %.3g deg and shifts by %.3g mm\n",
-                what.c_str(), moved.rotation_deg, 1e3 * moved.translation_m);
-    check_near(what + ", ours against the prototype's", ours, prototype, tolerance);
-    check_within((what + ", ours against the prototype's: shift at the scene's point (m)").c_str(),
-                 (ours * scene_point_m - prototype * scene_point_m).norm(), point_tolerance_m);
-}
-
-/// Aligns frame B's pyramid's level 0 onto frame A's with the prototype, both as the stage's
-/// pyramids hold them after a registration of B against A: the points the frames hold, with their
-/// colors, the same points ours took.
-/// @param s [in] the stage; its 640x400 pyramids hold frame A's (the surface's) and frame B's.
-/// @param a [in] frame A, its pyramid's frame.
-/// @param b [in] frame B, its pyramid's frame.
-/// @param p [in] the prototype's parameters.
-/// @return the prototype's transform from B's camera frame into A's, in m; nothing when a step of
-///         the prototype failed.
-std::optional<Eigen::Isometry3d> prototype_on_frames(stage &s, const gca::frame &a,
-                                                     const gca::frame &b,
-                                                     const prototype_parameters &p)
-{
-    const std::vector<gca::point_t> source = prototype_points(s, s.small_moved, b);
-    const std::vector<gca::point_t> target = prototype_points(s, s.small_surface, a);
-    const std::optional<Eigen::Isometry3d> shifted = prototype_align(source, target, p);
-    if (!shifted)
-        return std::nullopt;
-    const Eigen::Translation3d shift(prototype_shift_m);
-    return shift.inverse() * *shifted * shift;
-}
-
-/// Runs the textured plane against the prototype: the tilted plane moved within itself at 640x400,
-/// the full method on its frames' pyramids, the prototype on the same frames' level-0 points and
-/// colors; both near the motion, and ours within the oracle's tolerance of the prototype's.
-/// @param s [in,out] the stage.
-void check_oracle_plane(stage &s)
-{
-    const std::optional<Eigen::Isometry3d> pose = tilted_plane_pose();
-    check(pose.has_value(), "the oracle plane's pose");
-    if (!pose)
-        return;
-    const Eigen::Isometry3d delta = delta_of(*pose, in_plane_motion());
-    const gca_test::rendered pair =
-        render_pair(single_plane, *pose, delta, gca_test::small_description);
-    if (pair.frames.size() != 2)
-        return;
-    const std::string what = "the textured plane against the prototype";
-    const gca::registration_result ours =
-        register_pair(s, pair, tabletop_range, tabletop_parameters);
-    print_result(what, ours);
-    check(ours.converged(), (what + ": ours converged").c_str());
-    const std::optional<Eigen::Isometry3d> prototype =
-        prototype_on_frames(s, pair.frames[0], pair.frames[1], plane_prototype);
-    check(prototype.has_value(), (what + ": the prototype aligned").c_str());
-    if (!prototype)
-        return;
-    // The point the views look at, the world's origin, in frame B's camera frame.
-    const Eigen::Vector3d looked_at = (*pose * delta).inverse() * Eigen::Vector3d::Zero();
-    check_against_prototype(what, ours.transform, *prototype, delta, looked_at,
-                            oracle_plane_tolerance, oracle_plane_point_tolerance_m);
-}
-
-/// Builds the synthetic source's mesh of a fixture read with its faces.
-/// @param fixture [in] the fixture's vertices, colors in [0, 1], and triangles.
-/// @return the mesh, its colors 0 to 255.
-gca_test::synthetic_mesh mesh_of(const gca_test::ply_mesh &fixture)
-{
-    gca_test::synthetic_mesh mesh;
-    for (const gca::point_t &point : fixture.vertices.points)
-    {
-        mesh.vertices_m.emplace_back(point.coordinates.x, point.coordinates.y, point.coordinates.z);
-        mesh.colors.push_back(
-            {255.0 * point.color.r, 255.0 * point.color.g, 255.0 * point.color.b});
-    }
-    mesh.triangles = fixture.triangles;
-    return mesh;
-}
-
-/// The distance of the fixture's camera from frag_115's centroid, along the mean of its normals,
-/// the side it was seen from: 1.2 m [?: a choice]; frag_115 is nearly one plane, its points 4.0 mm
-/// RMS off it [M 2026-11-14, a scratch script on the PLY file], seen face on from there.
-constexpr double fixture_view_distance_m = 1.2;
-
-/// The fixture's known transform for frag_116 against itself: 1 degree about (2, -3, 1) and a
-/// shift of (6, -4, 3) mm in the camera's frame, as the prototype's fixture case [?: a choice;
-/// tests/test_color_icp.cpp].
-const Eigen::Isometry3d fixture_delta =
-    make_transform(Eigen::Vector3d(2.0, -3.0, 1.0), 1.0, Eigen::Vector3d(0.006, -0.004, 0.003));
-
-/// Gives the centroid of a fixture's vertices.
-/// @param fixture [in] the vertices, at least one.
-/// @return their mean, in the fixture's frame, in m.
-Eigen::Vector3d centroid_of(const gca_test::ply_vertices &fixture)
-{
-    Eigen::Vector3d sum = Eigen::Vector3d::Zero();
-    for (const gca::point_t &point : fixture.points)
-        sum += Eigen::Vector3d(point.coordinates.x, point.coordinates.y, point.coordinates.z);
-    return sum / static_cast<double>(fixture.points.size());
-}
-
-/// Gives the fixture's camera: fixture_view_distance_m from frag_115's centroid along the mean of
-/// its normals, looking at the centroid.
-/// @param frag_115 [in] frag_115's vertices and normals.
-/// @return the pose, camera to world; nothing when look_at() refuses it.
-std::optional<Eigen::Isometry3d> fixture_pose(const gca_test::ply_vertices &frag_115)
-{
-    const Eigen::Vector3d centroid = centroid_of(frag_115);
-    Eigen::Vector3d normal = Eigen::Vector3d::Zero();
-    for (const float3 &n : frag_115.normals)
-        normal += Eigen::Vector3d(n.x, n.y, n.z);
-    return gca_test::look_at(centroid + fixture_view_distance_m * normal.normalized(), centroid,
-                             0.0);
-}
-
-/// Runs the fixture against the prototype, each fragment rendered at 640x400 by the synthetic
-/// source's mesh from the fixture's camera P, the full method with the large object's values (the
-/// fragments lie from about 1 m to 2 m): frag_116 against itself moved by fixture_delta, and
-/// frag_115 onto frag_116 from the identity. The prototype on the same frames' level-0 points and
-/// colors (prototype_on_frames()); ours within the oracle's tolerance of the prototype's, and on
-/// frag_116 both near fixture_delta.
-/// @param s [in,out] the stage.
-/// @param frag_115_path [in] the path of data/frag_115.ply.
-/// @param frag_116_path [in] the path of data/frag_116.ply.
-void check_oracle_fixture(stage &s, const std::string &frag_115_path,
-                          const std::string &frag_116_path)
-{
-    std::string error;
-    const std::optional<gca_test::ply_mesh> frag_115 =
-        gca_test::read_ply_mesh_file(frag_115_path, error);
-    check(frag_115.has_value(), ("frag_115 read; " + error).c_str());
-    const std::optional<gca_test::ply_mesh> frag_116 =
-        gca_test::read_ply_mesh_file(frag_116_path, error);
-    check(frag_116.has_value(), ("frag_116 read; " + error).c_str());
-    if (!frag_115 || !frag_116)
-        return;
-    const std::optional<Eigen::Isometry3d> pose = fixture_pose(frag_115->vertices);
-    check(pose.has_value(), "the fixture's pose");
-    if (!pose)
-        return;
-    const gca_test::synthetic_scene scene_115 = {.mesh = mesh_of(*frag_115), .trajectory = {}};
-    const gca_test::synthetic_scene scene_116 = {.mesh = mesh_of(*frag_116), .trajectory = {}};
-    // frag_115's centroid, the point the camera looks at, in the fragments' frame.
-    const Eigen::Vector3d centre = centroid_of(frag_115->vertices);
-
-    const std::string self = "frag_116 against itself";
-    const gca_test::rendered pair =
-        render_pair(scene_116, *pose, fixture_delta, gca_test::small_description);
-    if (pair.frames.size() != 2)
-        return;
-    const gca::registration_result ours = register_pair(s, pair, large_range, large_parameters);
-    print_result(self, ours);
-    check(ours.converged(), (self + ": ours converged").c_str());
-    const std::optional<Eigen::Isometry3d> prototype =
-        prototype_on_frames(s, pair.frames[0], pair.frames[1], fixture_prototype);
-    check(prototype.has_value(), (self + ": the prototype aligned").c_str());
-    if (prototype)
-        check_against_prototype(self, ours.transform, *prototype, fixture_delta,
-                                (*pose * fixture_delta).inverse() * centre,
-                                oracle_fixture_tolerance, oracle_fixture_point_tolerance_m);
-
-    const std::string onto = "frag_115 onto frag_116";
-    gca_test::synthetic_scene seen_115 = scene_115;
-    gca_test::synthetic_scene seen_116 = scene_116;
-    seen_115.trajectory = {*pose};
-    seen_116.trajectory = {*pose};
-    const gca_test::rendered frame_115 = gca_test::render(seen_115, gca_test::small_description);
-    const gca_test::rendered frame_116 = gca_test::render(seen_116, gca_test::small_description);
-    if (frame_115.frames.size() != 1 || frame_116.frames.size() != 1)
-        return;
-    const gca::registration_result pair_result =
-        register_frames(s, frame_116.frames[0], frame_115.frames[0], large_range, large_parameters,
-                        Eigen::Isometry3d::Identity());
-    print_result(onto, pair_result);
-    check(pair_result.converged(), (onto + ": ours converged").c_str());
-    const std::optional<Eigen::Isometry3d> pair_prototype =
-        prototype_on_frames(s, frame_116.frames[0], frame_115.frames[0], fixture_prototype);
-    check(pair_prototype.has_value(), (onto + ": the prototype aligned").c_str());
-    if (pair_prototype)
-        check_against_prototype(onto, pair_result.transform, *pair_prototype, std::nullopt,
-                                pose->inverse() * centre, oracle_pair_tolerance,
-                                oracle_pair_point_tolerance_m);
-}
-
 /// Checks that an alignment was refused with a message that holds a text, and left the initial
 /// transform.
 /// @param what [in] the case.
@@ -1577,12 +1248,9 @@ void check_refusals(stage &s)
 } // namespace
 
 /// Requests every buffer, closes the pool, and runs the cases.
-/// @param argc [in] the number of arguments, 3.
-/// @param argv [in] the program, then the paths of data/frag_115.ply and data/frag_116.ply.
 /// @return 0 when every check passed, 1 otherwise.
-int main(int argc, char **argv)
+int main()
 {
-    check(argc == 3, "two arguments, the paths of data/frag_115.ply and data/frag_116.ply");
     stage s;
     if (!gca_test::create_stream(s.stream))
         return gca_test::check_summary("test_registration");
@@ -1608,9 +1276,6 @@ int main(int argc, char **argv)
     check_ends(s);
     check_color_against_geometry(s);
     check_color_patch(s);
-    check_oracle_plane(s);
-    if (argc == 3)
-        check_oracle_fixture(s, argv[1], argv[2]);
     check_refusals(s);
 
     check(s.pool.refused_while_closed() == 0, "the closed pool was asked for nothing");

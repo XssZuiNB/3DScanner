@@ -43,8 +43,6 @@ loop.
   off a homography at 1280x800, centred 0.2 px rms and 0.5 px at most, and a small board near a
   corner only 0.02 to 0.05 px, below the 0.04 px rms (0.12 px at most) the corner finder leaves
   on a synthetic pinhole picture [M 2026-11-14: `tests/test_checkerboard_measure.cpp`].
-* The license of `data/frag_115.ply` and `frag_116.ply`: unchecked (README.md, "License"),
-  while ADR 0002 admits permissive licenses only.
 * The go for each `ready-for-human` ticket.
 * Optional, root: the user in group `debug`, so that `compute-sanitizer` can check the GPU's
   kernels; today it prints "GPU debugging features are disabled", because the debugger's

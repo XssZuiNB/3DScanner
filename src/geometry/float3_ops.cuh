@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: 0BSD
 /// @file float3_ops.cuh
 /// The arithmetic of CUDA's `float3` that the library uses, usable in host and device code: sum,
-/// difference, scaling, division by a number, scaling in place, dot product, cross product and
-/// Euclidean norm. Each is written from its mathematical definition. The functions live in the
-/// global namespace because `float3` does, so that argument-dependent lookup finds them.
+/// difference, scaling, division by a number, dot product, cross product and Euclidean norm. Each
+/// is written from its mathematical definition. The functions live in the global namespace because
+/// `float3` does, so that argument-dependent lookup finds them.
 
 #pragma once
 
@@ -55,16 +55,6 @@ __host__ __device__ __forceinline__ float3 operator*(float s, const float3 &v)
 __host__ __device__ __forceinline__ float3 operator/(const float3 &v, float s)
 {
     return make_float3(v.x / s, v.y / s, v.z / s);
-}
-
-/// Scales a vector by a number in place.
-/// @param v the vector, replaced by its scaled value.
-/// @param s the factor.
-/// @return v after scaling.
-__host__ __device__ __forceinline__ float3 &operator*=(float3 &v, float s)
-{
-    v = v * s;
-    return v;
 }
 
 /// Computes the dot product of two vectors.

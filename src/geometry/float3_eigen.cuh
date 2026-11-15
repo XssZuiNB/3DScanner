@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: 0BSD
 /// @file float3_eigen.cuh
-/// The conversions between CUDA's `float3`, in which the library stores points, normals and
-/// color gradients, and Eigen's `Vector3f`, in which it does matrix arithmetic, usable in host and
-/// device code.
+/// The conversion of Eigen's `Vector3f`, in which the library does matrix arithmetic, into CUDA's
+/// `float3`, in which it stores points and normals, usable in host and device code.
 
 #pragma once
 
@@ -12,14 +11,6 @@
 
 namespace gca
 {
-/// Copies a float3 into an Eigen vector.
-/// @param v the vector.
-/// @return (v.x, v.y, v.z).
-__host__ __device__ __forceinline__ Eigen::Vector3f to_eigen(const float3 &v)
-{
-    return Eigen::Vector3f(v.x, v.y, v.z);
-}
-
 /// Copies an Eigen vector into a float3.
 /// @param v the vector.
 /// @return (v(0), v(1), v(2)).

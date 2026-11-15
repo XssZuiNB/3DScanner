@@ -40,8 +40,13 @@ What the camera offers and does at 5000M; OrbbecSDK reports `USB3.0` [M 2026-11-
   delivers Y14 as 16-bit frames.
 * **Both runs below:** color RGB, depth Y14, hardware depth-to-color alignment, depth unit
   1 mm, about 47 % of pixels with depth in an indoor scene at 0.5 m median.
+* **The times in this section** are the viewer's `gpu point cloud` while it ran the prototype's
+  point cloud from a frame with its upload, a path that is deleted (in git at 74dda68); since then
+  the line times the upload, the organized points and the read-back of their validity mask
+  (`apps/viewer_loop.hpp`), not measured on the camera yet [?]:
+  `first-trial-of-held-exposure` measures it and replaces these times.
 
-| size at 30 fps | intrinsics fx, fy, cx, cy | fps | `create_from_rgbd` with upload | points |
+| size at 30 fps | intrinsics fx, fy, cx, cy | fps | the prototype's point cloud with upload | points |
 |---|---|---|---|---|
 | 640x400 | 306.18, 306.14, 317.41, 199.13 | 29.1 to 30.2 | 5.7 to 5.9 ms | about 91 000 |
 | 1280x800 | 612.37, 612.29, 635.81, 398.27 | 28.6 to 30.3 | 19.4 to 19.9 ms | about 383 000 |
@@ -50,7 +55,7 @@ After the cleanup (the tree at b23f168), the same session ran main's viewer (b5c
 cleaned tree alternately, 100 frames headless each, on a scene with about 1.5x the points of the
 table above [M 2026-11-13]:
 
-| size at 30 fps | `create_from_rgbd` with upload, main (two runs) | the cleaned tree (two runs) | points |
+| size at 30 fps | the prototype's point cloud with upload, main (two runs) | the cleaned tree (two runs) | points |
 |---|---|---|---|
 | 640x400 | 6.99 / 7.55 ms | 7.40 / 7.60 ms | 133 000 to 136 000 |
 | 1280x800 | 25.64 / 25.04 ms | 25.96 / 24.32 ms | 530 000 to 558 000 |
@@ -92,8 +97,8 @@ the fallback when the USB 3 link does not come up.
   5 fps. The SDK delivers Y14 as 16-bit frames.
 * **640x400 at 30 fps, color RGB, depth Y14:** hardware depth-to-color alignment;
   intrinsics fx 306.18, fy 306.14, cx 317.41, cy 199.13; depth unit 1 mm; 30.0 fps;
-  `create_from_rgbd` 6.5 to 6.9 ms with upload; 58 % of pixels with depth in an indoor scene,
-  0.25 m to 21 m.
+  the prototype's point cloud 6.5 to 6.9 ms with upload (as the times of "The camera on USB 3");
+  58 % of pixels with depth in an indoor scene, 0.25 m to 21 m.
 
 ## What the camera is and reports
 

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: 0BSD
 /// @file orbbec_viewer.cpp
 /// Live test of the Orbbec camera: opens it and runs the viewer's loop on it (viewer_loop.hpp),
-/// which grabs aligned RGB-D frames, builds the point cloud on the GPU, reports frame rate and
-/// timings once a second and shows color | depth | overlay. 's' saves the current point cloud as
-/// PLY plus the color and depth images, 'q' or ESC quits.
+/// which grabs aligned RGB-D frames, makes their organized points on the GPU, reports frame rate
+/// and timings once a second and shows color | depth | overlay. 's' saves the current frame's
+/// points with their normals as a model's PLY plus the color and depth images, 'q' or ESC quits.
 ///
 /// The options are viewer_options.hpp's, whose usage line lists them: --list prints the device's
 /// stream profiles and exits. --frames N stops after N frames and, headless, saves the last one.
@@ -17,7 +17,6 @@
 #include "camera/frame_source.hpp"
 #include "camera/orbbec_device.hpp"
 #include "camera/orbbec_rules.hpp"
-#include "gpu/gpu_check.hpp"
 #include "types/console_color.hpp"
 #include "types/frame_description.hpp"
 #include "viewer_loop.hpp"
@@ -139,13 +138,6 @@ private:
     std::uint64_t m_skips_shown = 0; ///< the skipped frames printed since the opening
 };
 
-/// Prints the GPUs and warms up the first one.
-void warm_up_gpu()
-{
-    cuda_print_devices();
-    cuda_warm_up_gpu(0);
-}
-
 /// Names the sequence --sequence asks for; nothing is created until the loop opens it.
 /// @param opt [in] the options.
 /// @return the sequence in the directory opt names; nothing without --sequence.
@@ -159,13 +151,14 @@ std::optional<gca_viewer::sequence_file> name_sequence(const gca_viewer::options
 } // namespace
 
 /// Runs the camera test. Reading the options comes first, before anything touches the camera,
-/// the GPU or a signal handler; then the profiles are listed, or the GPU and the camera are set
-/// up and the viewer's loop runs until quit, a stop signal or the frame limit, writing the sequence
-/// --sequence asks for.
+/// the GPU or a signal handler; then the profiles are listed, or the camera is opened and the
+/// viewer's loop, which sets up the GPU from the first frame, runs until quit, a stop signal, the
+/// frame limit or a failure of the GPU, writing the sequence --sequence asks for.
 /// @param argc the argument count.
 /// @param argv the arguments (viewer_options.hpp).
 /// @return 0 after the list or the loop, 1 when the camera does not open or gives no first frame,
-///     or the sequence cannot be created or written, 2 when the command line is refused.
+///     the GPU cannot be set up or a GPU step fails, or the sequence cannot be created or written,
+///     2 when the command line is refused.
 int main(int argc, char *argv[])
 {
     const std::optional<gca_viewer::options> opt =
@@ -178,7 +171,6 @@ int main(int argc, char *argv[])
         return 0;
     }
     install_stop_handlers();
-    warm_up_gpu();
     console_camera camera(opt->fps);
     if (!camera.open({opt->width, opt->height}).opened)
         return 1;

@@ -1,30 +1,40 @@
 // SPDX-License-Identifier: 0BSD
 /// @file viewer_loop.cpp
-/// orbbec_viewer's loop on a frame source: the first frame, the prototype's GPU code, the report
-/// line, the window, the snapshots and the sequence (see viewer_loop.hpp).
+/// orbbec_viewer's loop on a frame source: the first frame, the GPU's organized points and
+/// normals, the report line, the window, the snapshots and the sequence (see viewer_loop.hpp).
 
 #include "viewer_loop.hpp"
 
 #include "camera/frame.hpp"
 #include "camera/orbbec_rules.hpp"
 #include "camera/sequence_format.hpp"
-#include "geometry/point_cloud.hpp"
-#include "gpu/cuda_container.hpp"
+#include "geometry/organized_normals.hpp"
+#include "geometry/organized_points.hpp"
+#include "gpu/gpu_frame.hpp"
+#include "gpu/gpu_image.hpp"
+#include "gpu/gpu_messages.hpp"
+#include "gpu/gpu_pool.hpp"
+#include "gpu/pinned_buffer.hpp"
+#include "gpu/step_result.hpp"
+#include "scan/model_file.hpp"
 #include "types/camera_param.hpp"
 #include "types/console_color.hpp"
 #include "types/frame_description.hpp"
+#include "types/model_point.hpp"
 
 #include <cuda_runtime_api.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <fstream>
-#include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <Eigen/Core>
 
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
@@ -39,8 +49,15 @@ static_assert(gca::orbbec_frame_time_limit_ms == 5000,
 
 namespace
 {
-constexpr float min_depth_m = 0.15f; ///< [?: a choice] points nearer than this are dropped
-constexpr float max_depth_m = 3.0f;  ///< [?: a choice] points farther than this are dropped
+/// The depth range of the organized points: a pixel nearer than 0.15 m or farther than 3.0 m along
+/// the camera's z is invalid [?: a choice, the viewer's range since CUDA_3D, AGENTS.md §5; the
+/// camera measures from 0.25 m to 10 m, S: docs/HARDWARE.md, "What the camera is and reports"].
+/// The window's depth picture spans 0 to its far limit.
+constexpr gca::organized_points_parameters depth_range = {0.15f, 3.0f};
+
+/// The normals of a snapshot: a 7x7 window, 25 points, 75 degrees, the method's starting values
+/// [?: initial; docs/methods/normals.md, "Input"].
+constexpr gca::organized_normals_parameters snapshot_normals = {3, 25, 75.0f};
 
 /// Timings and counts accumulated between two reports.
 struct frame_stats
@@ -49,12 +66,14 @@ struct frame_stats
     std::chrono::steady_clock::time_point since = std::chrono::steady_clock::now();
     int frames = 0;       ///< the frames delivered since
     double grab_ms = 0.0; ///< their grab times summed: next() and the conversion to BGR8, in ms
-    double gpu_ms = 0.0;  ///< their GPU times summed: upload, point cloud and the wait, in ms
-    int queue_full = 0;   ///< the pushes since that found the sequence writer's queue full
+    /// Their GPU times summed: the upload, the organized points, the mask's copy, the wait and the
+    /// count, in ms.
+    double gpu_ms = 0.0;
+    int queue_full = 0; ///< the pushes since that found the sequence writer's queue full
 };
 
-/// The current frame, and its color as the prototype's GPU code, OpenCV's window and its PNG file
-/// take it, and the frame the next one is taken into.
+/// The current frame, and its color as OpenCV's window and its PNG file take it, and the frame the
+/// next one is taken into.
 struct pictures
 {
     gca::frame frame;  ///< the current frame, RGB8: the last delivered, shown and saved
@@ -72,13 +91,46 @@ struct sequence_state
     std::string failure;           ///< the reason of the push that failed; empty while none has
 };
 
-/// The GPU side of the loop, set up once from the first frame: its parameters and the buffers
-/// each frame is uploaded into.
-struct gpu_buffers
+/// The GPU side of the loop, set up once from the first frame (set_up_gpu()): a CUDA stream of its
+/// own, and the buffers each frame goes through, requested before the loop from a pool that the
+/// stages never see, so that the loop allocates nothing on the GPU. Not copied or moved; one
+/// thread uses it.
+struct gpu_path
 {
-    gca::cuda_camera_param param; ///< the frames' parameters (gpu_camera_param())
-    gca::cuda_color_frame color;  ///< the current color picture, BGR8
-    gca::cuda_depth_frame depth;  ///< the current aligned depth picture
+    /// The stream every step of the loop runs on, not blocking with the default stream; nullptr
+    /// until set_up_gpu() creates it.
+    cudaStream_t stream = nullptr;
+    gca::gpu_frame frame;           ///< the current frame, uploaded
+    gca::organized_points points;   ///< its organized points
+    gca::organized_normals normals; ///< their normals, estimated for a snapshot only
+    gca::pinned_buffer mask;        ///< the current frame's validity mask, read back
+
+    /// Builds a path with no stream and empty buffers.
+    gpu_path() = default;
+
+    /// A path is not copied or moved: it owns its stream.
+    gpu_path(const gpu_path &) = delete;
+    gpu_path &operator=(const gpu_path &) = delete;
+
+    /// Waits for the stream's work, so that no buffer is freed under it, and destroys the stream;
+    /// the buffers are freed after.
+    /// @note Waits for the stream (cudaStreamSynchronize); a failure of either call is not
+    ///       reported, its error left as CUDA's last error.
+    ~gpu_path()
+    {
+        if (stream == nullptr)
+            return;
+        cudaStreamSynchronize(stream);
+        cudaStreamDestroy(stream);
+    }
+};
+
+/// A frame's organized points on the host, the snapshot's copy of the GPU's, each image in the
+/// frame's pixel order.
+struct host_points
+{
+    std::vector<float3> points;  ///< the points, in m, in the frame's camera frame
+    std::vector<float3> normals; ///< their normals, (0, 0, 0) for none
 };
 
 /// What one call of next() gave the loop.
@@ -115,48 +167,102 @@ void convert_color(pictures &current, frame_stats &stats)
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
-/// Writes points as a binary little-endian PLY with float xyz and uchar rgb.
-/// @param path [in] the file to write; an existing file is overwritten.
-/// @param pts [in] the points: coordinates in m in the camera frame of the frame they were built
-///        from (x right, y down, z forward), colors in [0, 1], each written as uint8(255 c),
-///        truncated.
-/// @return true when the file was opened; a write that fails after that is not reported.
-bool save_ply(const std::string &path, const std::vector<gca::point_t> &pts)
+/// Estimates the current frame's normals and copies its points and normals to the host.
+/// @param gpu [in,out] the GPU path, its organized points holding the current frame's; its normals
+///        gain theirs.
+/// @param copied [out] the points and the normals, each resized to the frame's pixels.
+/// @return done; or not done with the reason: the normals' refusal or CUDA's error, which is then
+///         cleared.
+/// @note Allocates the host copies, 24 bytes a pixel. Queues the normals' kernel and two copies
+///       into pageable memory on the stream and waits for it (cudaStreamSynchronize).
+gca::step_result copy_snapshot(gpu_path &gpu, host_points &copied)
 {
-    std::ofstream f(path, std::ios::binary);
-    if (!f)
-        return false;
-    f << "ply\nformat binary_little_endian 1.0\nelement vertex " << pts.size()
-      << "\nproperty float x\nproperty float y\nproperty float z\n"
-         "property uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n";
-    for (const auto &p : pts)
-    {
-        f.write(reinterpret_cast<const char *>(&p.coordinates), sizeof(float) * 3);
-        const uint8_t rgb[3] = {uint8_t(p.color.r * 255.f), uint8_t(p.color.g * 255.f),
-                                uint8_t(p.color.b * 255.f)};
-        f.write(reinterpret_cast<const char *>(rgb), 3);
-    }
-    return true;
+    const gca::step_result estimated =
+        gpu.normals.estimate(gpu.points, snapshot_normals, gpu.stream);
+    if (!estimated.done)
+        return estimated;
+    const gca::gpu_image<float3> &points = gpu.points.points();
+    const gca::gpu_image<float3> &normals = gpu.normals.normals();
+    copied.points.resize(points.size_bytes() / sizeof(float3));
+    copied.normals.resize(normals.size_bytes() / sizeof(float3));
+    const cudaError_t points_error =
+        cudaMemcpyAsync(copied.points.data(), points.data(), points.size_bytes(),
+                        cudaMemcpyDeviceToHost, gpu.stream);
+    if (points_error != cudaSuccess)
+        return {false, gca::cuda_failure("CUDA refused the snapshot's points' copy", points_error)};
+    const cudaError_t normals_error =
+        cudaMemcpyAsync(copied.normals.data(), normals.data(), normals.size_bytes(),
+                        cudaMemcpyDeviceToHost, gpu.stream);
+    if (normals_error != cudaSuccess)
+        return {false,
+                gca::cuda_failure("CUDA refused the snapshot's normals' copy", normals_error)};
+    const cudaError_t wait_error = cudaStreamSynchronize(gpu.stream);
+    if (wait_error != cudaSuccess)
+        return {false, gca::cuda_failure("CUDA failed while the stream ran to the snapshot's copy",
+                                         wait_error)};
+    return {true, {}};
 }
 
-/// Saves the point cloud as cloud_NNN.ply and the frame's pictures as cloud_NNN.ply.color.png and
-/// cloud_NNN.ply.depth.png in the current directory.
-/// @param current [in] the current frame and its BGR8 color.
-/// @param pc [in] the point cloud built from it.
-/// @param index [in] NNN.
-/// @param out [in,out] where "Saved ..." is printed.
-void save_snapshot(pictures &current, const gca::point_cloud &pc, int index, std::ostream &out)
+/// Makes the snapshot's model: each valid pixel's point that has a normal, with its normal and its
+/// pixel's color, in the frame's pixel order.
+/// @param current [in] the current frame, the points' frame.
+/// @param mask [in] its validity mask, 1 for a valid pixel, one byte for each pixel.
+/// @param copied [in] its points and normals.
+/// @return the model's points, in the frame's camera frame, in m.
+/// @note Allocates the points.
+std::vector<gca::model_point> snapshot_model(const pictures &current,
+                                             std::span<const std::byte> mask,
+                                             const host_points &copied)
 {
+    std::vector<gca::model_point> model;
+    const auto color = current.frame.color();
+    for (std::size_t k = 0; k < copied.points.size(); k++)
+    {
+        const float3 p = copied.points[k];
+        const float3 n = copied.normals[k];
+        // (0, 0, 0) marks a pixel without a normal (docs/methods/normals.md, "Output").
+        if (mask[k] == std::byte{0} || (n.x == 0.0f && n.y == 0.0f && n.z == 0.0f))
+            continue;
+        model.push_back({Eigen::Vector3f(p.x, p.y, p.z),
+                         Eigen::Vector3f(n.x, n.y, n.z),
+                         {color[3 * k], color[3 * k + 1], color[3 * k + 2]}});
+    }
+    return model;
+}
+
+/// Saves the current frame's snapshot in the current directory: its normals estimated, then its
+/// valid points that have a normal as a model, cloud_NNN.ply (snapshot_model(),
+/// gca::write_model()), and its pictures as cloud_NNN.ply.color.png and cloud_NNN.ply.depth.png. A
+/// model the writer refuses or cannot write prints its reason and the pictures are written all the
+/// same.
+/// @param current [in] the current frame and its BGR8 color.
+/// @param gpu [in,out] the GPU path, holding the current frame's organized points and validity
+///        mask; its normals gain the frame's.
+/// @param index [in] NNN.
+/// @param out [in,out] where "Saved <count> points to cloud_NNN.ply" or the writer's reason is
+///        printed.
+/// @return done when the GPU's steps ran, whether the files were written or not; else the GPU's
+///         reason, with nothing written.
+gca::step_result save_snapshot(pictures &current, gpu_path &gpu, int index, std::ostream &out)
+{
+    host_points copied;
+    const gca::step_result copy = copy_snapshot(gpu, copied);
+    if (!copy.done)
+        return copy;
     char name[64];
     std::snprintf(name, sizeof(name), "cloud_%03d.ply", index);
-    const auto pts = pc.download();
-    if (save_ply(name, pts))
-        out << GREEN << "Saved " << pts.size() << " points to " << name << RESET << std::endl;
+    const std::vector<gca::model_point> model = snapshot_model(current, gpu.mask.bytes(), copied);
+    const gca::write_result written = gca::write_model(name, model);
+    if (written.written)
+        out << GREEN << "Saved " << model.size() << " points to " << name << RESET << std::endl;
+    else
+        out << RED << written.reason << RESET << std::endl;
     cv::imwrite(std::string(name) + ".color.png", current.color_bgr);
     cv::imwrite(std::string(name) + ".depth.png", depth_picture(current.frame));
+    return {true, {}};
 }
 
-/// Shows color | depth (JET, 0 to max_depth_m, black where invalid) | 50 % overlay.
+/// Shows color | depth (JET, 0 to the depth range's far limit, black where invalid) | 50 % overlay.
 /// @param current [in] the current frame and its BGR8 color.
 /// @return the key pressed, -1 for none.
 int show_frames(pictures &current)
@@ -165,7 +271,7 @@ int show_frames(pictures &current)
     const cv::Mat depth = depth_picture(current.frame);
     cv::Mat depth_vis;
     depth.convertTo(depth_vis, CV_8UC1,
-                    255.0 / (max_depth_m / current.frame.description().depth_unit_m));
+                    255.0 / (depth_range.far_m / current.frame.description().depth_unit_m));
     cv::applyColorMap(depth_vis, depth_vis, cv::COLORMAP_JET);
     depth_vis.setTo(cv::Scalar(0, 0, 0), depth == 0);
     cv::Mat overlay;
@@ -239,40 +345,51 @@ void print_intrinsics(const gca::frame_description &description, std::ostream &o
         << "  depth scale=" << description.depth_unit_m << " m/unit" << std::endl;
 }
 
-/// Copies the frames' parameters to the GPU. Each argument carries the name of the constructor
-/// parameter it fills: three pairs have one type each (the two intrinsics, width and height, the
-/// two formats), so the compiler does not catch a swap, and as a frame's depth is aligned to its
-/// color the two intrinsics are equal and the extrinsics the identity, so no frame does either.
-/// @param description [in] the frames' description.
-/// @return the parameters on the GPU.
-/// @note The prototype's path, until retire-the-prototype-library: allocates device memory
-///       (cudaMalloc, three times) and copies into it with blocking cudaMemcpy() on the default
-///       stream [S: cuda_camera_param_container.cu].
-gca::cuda_camera_param gpu_camera_param(const gca::frame_description &description)
+/// Takes a granted buffer from the pool's answer, or prints why it was refused.
+/// @param requested [in] the request's result; taken over.
+/// @param into [out] the granted buffer; left as it was when refused.
+/// @param out [in,out] where the pool's message is printed when refused.
+/// @return whether the request was granted.
+template <typename Buffer>
+bool take_granted(gca::request_result<Buffer> requested, Buffer &into, std::ostream &out)
 {
-    gca::extrinsics identity{};
-    identity.rotation[0] = identity.rotation[4] = identity.rotation[8] = 1.0f;
-    return gca::cuda_camera_param(/*depth_intrin=*/description.intrinsics,
-                                  /*color_intrin=*/description.intrinsics,
-                                  /*depth2color_extrin=*/identity,
-                                  /*width=*/description.size.width,
-                                  /*height=*/description.size.height,
-                                  /*depth_scale=*/description.depth_unit_m,
-                                  /*depth_format=*/gca::Z16,
-                                  /*color_format=*/gca::BGR8);
+    if (requested.status != gca::request_status::granted)
+    {
+        out << RED << requested.message << RESET << std::endl;
+        return false;
+    }
+    into = std::move(requested.granted);
+    return true;
 }
 
-/// Sets up the GPU side of the loop for the frames of one opening: their parameters and frame
-/// buffers of their size.
-/// @param description [in] the frames' description.
-/// @return the buffers.
-/// @note The prototype's path, until retire-the-prototype-library: allocates device memory for
-///       the parameters (gpu_camera_param()) and for both pictures (thrust::device_vector), on the
-///       default stream [S: cuda_frame.cuh].
-gpu_buffers make_gpu_buffers(const gca::frame_description &description)
+/// Sets up the GPU side of the loop for the frames of one opening: creates its stream and requests
+/// the GPU frame, the organized points, the normals and the mask's pinned buffer of the frames'
+/// size from a pool that lives only here, so that no step of the loop can ask for memory.
+/// @param size [in] the frames' size, in px.
+/// @param gpu [in,out] an empty path; gains the stream and the buffers, those set up before a
+///        failure included, which it frees.
+/// @param out [in,out] where CUDA's error or the pool's message is printed on a failure.
+/// @return whether everything was set up; false after the reason: CUDA could not create the
+///         stream, or the pool refused a request.
+/// @note Allocates device memory (cudaMalloc) and page-locked host memory (cudaMallocHost), 36
+///       bytes a pixel, and creates a stream and an event; whether these wait for the GPU is not
+///       stated by CUDA [?].
+bool set_up_gpu(const gca::frame_size &size, gpu_path &gpu, std::ostream &out)
 {
-    const gca::frame_size size = description.size;
-    return {gpu_camera_param(description), {size.width, size.height}, {size.width, size.height}};
+    const cudaError_t created = cudaStreamCreateWithFlags(&gpu.stream, cudaStreamNonBlocking);
+    if (created != cudaSuccess)
+    {
+        gpu.stream = nullptr;
+        out << RED << gca::cuda_failure("CUDA could not create the viewer's stream", created)
+            << RESET << std::endl;
+        return false;
+    }
+    gca::gpu_pool pool;
+    const std::size_t pixels = static_cast<std::size_t>(size.width) * size.height;
+    return take_granted(gca::gpu_frame::request(pool, size), gpu.frame, out) &&
+           take_granted(gca::organized_points::request(pool, size), gpu.points, out) &&
+           take_granted(gca::organized_normals::request(pool, size), gpu.normals, out) &&
+           take_granted(pool.request_pinned(pixels), gpu.mask, out);
 }
 
 /// Takes the next frame into the spare frame, timed as part of the grab; prints why when there is
@@ -360,31 +477,57 @@ bool close_sequence(sequence_state &sequence, std::ostream &out)
     return false;
 }
 
-/// Uploads the current frame and builds its point cloud on the GPU, and adds the GPU time and the
-/// frame to the statistics.
-/// @param current [in] the current frame and its BGR8 color.
-/// @param gpu [in,out] the GPU buffers, which gain the frame.
-/// @param stats [in,out] gains the GPU time and the frame.
-/// @return the frame's point cloud.
-/// @note The prototype's path, until retire-the-prototype-library: both uploads are blocking
-///       copies from pageable host memory (thrust::copy), create_from_rgbd() allocates the point
-///       cloud on the GPU for every frame and waits for the device inside, and
-///       cudaDeviceSynchronize() then waits for the whole device, all on the default stream
-///       [S: cuda_frame.cuh, cuda_point_cloud_factory.cu, point_cloud.cu].
-std::shared_ptr<gca::point_cloud> build_point_cloud(pictures &current, gpu_buffers &gpu,
-                                                    frame_stats &stats)
+/// Copies the organized points' validity mask into the path's pinned buffer and waits for it.
+/// @param gpu [in,out] the GPU path, its organized points made on its stream; its mask gains
+///        theirs.
+/// @return done; or not done with CUDA's error, which is then cleared.
+/// @note Queues one copy of a byte a pixel on the stream and waits for the stream
+///       (cudaStreamSynchronize), the loop's one wait of a frame. Allocates nothing when done.
+gca::step_result read_back_mask(gpu_path &gpu)
+{
+    const gca::gpu_image<std::uint8_t> &mask = gpu.points.validity_mask();
+    const cudaError_t copy_error =
+        cudaMemcpyAsync(gpu.mask.bytes().data(), mask.data(), mask.size_bytes(),
+                        cudaMemcpyDeviceToHost, gpu.stream);
+    if (copy_error != cudaSuccess)
+        return {false, gca::cuda_failure("CUDA refused the validity mask's copy", copy_error)};
+    const cudaError_t wait_error = cudaStreamSynchronize(gpu.stream);
+    if (wait_error != cudaSuccess)
+        return {false, gca::cuda_failure("CUDA failed while the stream ran to the validity "
+                                         "mask's copy",
+                                         wait_error)};
+    return {true, {}};
+}
+
+/// Uploads the current frame, makes its organized points within depth_range, reads their
+/// validity mask back and counts the valid points, and adds the GPU time and the frame to the
+/// statistics when every step was done.
+/// @param current [in] the current frame.
+/// @param gpu [in,out] the GPU path, which gains the frame, its points and its mask.
+/// @param stats [in,out] gains the GPU time and the frame when done.
+/// @param points [out] the frame's valid points when done; left as it was otherwise.
+/// @return done; or not done with the reason of the first step that was not (gpu_frame::upload(),
+///         organized_points::deproject(), read_back_mask()).
+/// @note Allocates nothing on the GPU or the host when done. Waits for the stream once
+///       (read_back_mask()), besides the upload's wait for its last copies (gpu/gpu_frame.hpp).
+gca::step_result build_points(const pictures &current, gpu_path &gpu, frame_stats &stats,
+                              std::size_t &points)
 {
     const auto t0 = std::chrono::steady_clock::now();
-    const gca::frame_size size = current.frame.description().size;
-    gpu.color.upload(current.color_bgr.data, size.width, size.height);
-    gpu.depth.upload(current.frame.depth().data(), size.width, size.height);
-    auto pc = gca::point_cloud::create_from_rgbd(gpu.depth, gpu.color, gpu.param, min_depth_m,
-                                                 max_depth_m);
-    cudaDeviceSynchronize();
+    gca::step_result made = gpu.frame.upload(current.frame, gpu.stream);
+    if (made.done)
+        made = gpu.points.deproject(gpu.frame, depth_range, gpu.stream);
+    if (made.done)
+        made = read_back_mask(gpu);
+    if (!made.done)
+        return made;
+    const std::span<const std::byte> mask = gpu.mask.bytes();
+    points = static_cast<std::size_t>(
+        std::count_if(mask.begin(), mask.end(), [](std::byte b) { return b != std::byte{0}; }));
     stats.gpu_ms +=
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     stats.frames++;
-    return pc;
+    return made;
 }
 
 /// Reads the window's key after a turn of the loop: after a delivered frame the window shows it
@@ -398,24 +541,26 @@ int read_key(pictures &current, taken what)
     return what == taken::frame ? show_frames(current) : cv::waitKey(1);
 }
 
-/// Grabs, builds and shows frames until quit, the exit flag, the frame limit, the source's end or
-/// a failed push to the sequence; 's', or the last frame of a headless run with a frame limit,
-/// saves a snapshot. Each frame taken goes to the sequence once its successor has come, the last
-/// one after the loop.
+/// Grabs, builds and shows frames until quit, the exit flag, the frame limit, the source's end, a
+/// failed push to the sequence or a failed GPU step, whose reason it prints; 's', or the last frame
+/// of a headless run with a frame limit, saves a snapshot. Each frame taken goes to the sequence
+/// once its successor has come, the last one after the loop.
 /// @param source [in,out] the open source.
 /// @param current [in,out] the first frame, set up from, then each delivered frame in turn; the
 ///        spare frame of the first frame's description.
-/// @param gpu [in,out] the GPU buffers.
+/// @param gpu [in,out] the GPU path.
 /// @param sequence [in,out] the sequence, open, or none; gains every frame taken.
 /// @param opt [in] the options.
 /// @param context [in] the report period, the exit flag and where the lines go.
-void run_loop(gca::frame_source &source, pictures &current, gpu_buffers &gpu,
-              sequence_state &sequence, const options &opt, const run_context &context)
+/// @return true when no GPU step failed; false after the failed step's reason.
+bool run_loop(gca::frame_source &source, pictures &current, gpu_path &gpu, sequence_state &sequence,
+              const options &opt, const run_context &context)
 {
     frame_stats stats;
     int frame = 0;
     int saved = 0;
-    std::shared_ptr<gca::point_cloud> cloud; // the last delivered frame's; none before the first
+    std::size_t points = 0; // the last delivered frame's valid points
+    gca::step_result gpu_step{true, {}};
 
     while (!context.exit_requested.load() && (opt.max_frames < 0 || frame < opt.max_frames))
     {
@@ -432,10 +577,12 @@ void run_loop(gca::frame_source &source, pictures &current, gpu_buffers &gpu,
                 break;
             std::swap(current.frame, current.spare);
             convert_color(current, stats);
-            cloud = build_point_cloud(current, gpu, stats);
+            gpu_step = build_points(current, gpu, stats, points);
+            if (!gpu_step.done)
+                break;
             frame++;
-            report_if_due(stats, cloud->points_number(), sequence.sink != nullptr,
-                          context.report_period, context.out);
+            report_if_due(stats, points, sequence.sink != nullptr, context.report_period,
+                          context.out);
         }
 
         const int key = opt.headless ? -1 : read_key(current, what);
@@ -443,10 +590,18 @@ void run_loop(gca::frame_source &source, pictures &current, gpu_buffers &gpu,
             break;
         // The loop ends at the frame limit, so only a delivered frame can be the last one.
         const bool last_headless_frame = opt.headless && frame == opt.max_frames;
-        if ((key == 's' && cloud) || last_headless_frame)
-            save_snapshot(current, *cloud, saved++, context.out);
+        if ((key == 's' && frame > 0) || last_headless_frame)
+        {
+            gpu_step = save_snapshot(current, gpu, saved++, context.out);
+            if (!gpu_step.done)
+                break;
+        }
     }
     push_frame(sequence, current.frame, stats);
+    if (gpu_step.done)
+        return true;
+    context.out << RED << gpu_step.message << RESET << std::endl;
+    return false;
 }
 } // namespace
 
@@ -490,6 +645,12 @@ bool run_viewer(gca::frame_source &source, const options &opt, const run_context
     }
     const gca::frame_description description = current.frame.description();
     print_intrinsics(description, context.out);
+    gpu_path gpu;
+    if (!set_up_gpu(description.size, gpu, context.out))
+    {
+        context.out << RED << "Couldn't set up the GPU!" << RESET << std::endl;
+        return false;
+    }
     sequence_state sequence;
     if (context.sequence != nullptr)
     {
@@ -504,8 +665,8 @@ bool run_viewer(gca::frame_source &source, const options &opt, const run_context
     }
     // Sized before the loop, so that its first frame allocates no frame.
     current.spare.prepare(description, 0, 0);
-    gpu_buffers gpu = make_gpu_buffers(description);
-    run_loop(source, current, gpu, sequence, opt, context);
-    return sequence.sink == nullptr || close_sequence(sequence, context.out);
+    const bool gpu_ran = run_loop(source, current, gpu, sequence, opt, context);
+    const bool sequence_written = sequence.sink == nullptr || close_sequence(sequence, context.out);
+    return gpu_ran && sequence_written;
 }
 } // namespace gca_viewer

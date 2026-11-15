@@ -32,10 +32,13 @@ set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
 # ---------------------------------------------------------------- Warnings
 # The warning set of CODING_STANDARDS.md, on every target of the tree: -Wall -Wextra for host
 # code and for nvcc's host compiler; nvcc's own warnings are its defaults, none suppressed, and
-# -Wreorder. tools/verify.sh fails on any warning in the configure or build log.
+# -Wreorder, -Wdefault-stream-launch (a launch that names no stream) and -Wmissing-launch-bounds (a
+# kernel without __launch_bounds__). tools/verify.sh fails on any warning in the configure or build
+# log.
 add_compile_options(
     "$<$<COMPILE_LANGUAGE:C,CXX>:-Wall;-Wextra>"
     "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra;-Wreorder>"
+    "$<$<COMPILE_LANGUAGE:CUDA>:-Wdefault-stream-launch;-Wmissing-launch-bounds>"
 )
 
 # The dependencies are found here, so that their targets are seen in src/, apps/ and tests/.

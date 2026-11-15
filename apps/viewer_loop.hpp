@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: 0BSD
 /// @file viewer_loop.hpp
 /// orbbec_viewer's loop on a frame source (camera/frame_source.hpp): it takes the first frame,
-/// prints the intrinsics line and sets up the prototype's GPU code from that frame, then grabs
-/// frame after frame, builds each one's point cloud on the GPU, reports the frame rate and the
-/// timings, shows color | depth | overlay and saves snapshots, until quit, the exit flag, the
-/// frame limit or the source's end. With --sequence it writes every frame it takes into a
-/// sequence (docs/SEQUENCE_FILE.md), each marked as tracked by nothing, and counts the frames the
-/// writer's queue had no room for. The viewer runs it on the Orbbec camera, the offline tests on
-/// their synthetic source; it links no OrbbecSDK.
+/// prints the intrinsics line and sets up the GPU for frames of its size, then grabs frame after
+/// frame, makes each one's organized points on the GPU (geometry/organized_points.hpp), reports the
+/// frame rate and the timings, shows color | depth | overlay and saves snapshots, the points with
+/// their normals (geometry/organized_normals.hpp) as a model's PLY (scan/model_file.hpp), until
+/// quit, the exit flag, the frame limit, the source's end or a failure of the GPU. With --sequence
+/// it writes every frame it takes into a sequence (docs/SEQUENCE_FILE.md), each marked as tracked
+/// by nothing, and counts the frames the writer's queue had no room for. The viewer runs it on the
+/// Orbbec camera, the offline tests on their synthetic source; it links no OrbbecSDK.
 ///
-/// The frame is RGB8 (camera/frame.hpp); the prototype's point-cloud kernel, OpenCV's window and
-/// its PNG files take BGR8, so the loop converts each frame's color once, into one picture all
-/// three read, until the prototype's GPU code is replaced.
+/// The frame is RGB8 (camera/frame.hpp), as the GPU frame uploads it; OpenCV's window and its PNG
+/// files take BGR8, so the loop converts each frame's color once, into one picture both read.
 
 #pragma once
 
@@ -154,29 +154,37 @@ struct run_context
 /// - the first frame: timeouts are waited through for first_frame_time_limit, then "Timeout
 ///   while waiting for first frames."; a failure or the end prints the source's message; either
 ///   way "Couldn't start stream!" follows and nothing else runs. The first frame prints
-///   "Intrinsics fx=<fx> fy=<fy> cx=<cx> cy=<cy>  depth scale=<m> m/unit", opens the sequence
-///   when there is one (a refusal prints its reason, and nothing else runs) and sets up the GPU;
-///   it is not shown or counted, but it is the sequence's first frame.
+///   "Intrinsics fx=<fx> fy=<fy> cx=<cx> cy=<cy>  depth scale=<m> m/unit", sets up the GPU for
+///   frames of its size (a failure prints CUDA's or the pool's reason, then "Couldn't set up the
+///   GPU!", and nothing else runs) and opens the sequence when there is one (a refusal prints its
+///   reason, and nothing else runs); it is not shown or counted, but it is the sequence's first
+///   frame.
 /// - the loop, until 'q' or ESC in the window, the exit flag, opt.max_frames delivered frames, the
-///   source's end (its message printed) or a push to the sequence that fails: each delivered
-///   frame is converted, uploaded, made a point cloud on the GPU, shown unless headless, and
-///   counted. A timeout prints "No frames received from Orbbec camera for 5s!" (AGENTS.md §3 reads
-///   it as a stop condition), a failure the source's message; neither counts a frame, and the
-///   loop goes on. In the window the keys keep working through them: the window stays on the last
-///   delivered frame, which 's' saves.
+///   source's end (its message printed), a push to the sequence that fails or a GPU step that
+///   fails (its reason printed): each delivered frame is converted, uploaded, made organized points
+///   on the GPU within the depth range 0.15 m to 3.0 m, its validity mask read back and its valid
+///   points counted, shown unless headless, and counted. A timeout prints "No frames received from
+///   Orbbec camera for 5s!" (AGENTS.md §3 reads it as a stop condition), a failure the source's
+///   message; neither counts a frame, and the loop goes on. In the window the keys keep working
+///   through them: the window stays on the last delivered frame, which 's' saves.
 /// - the sequence: each frame taken, the first included, is pushed once its successor has come,
 ///   or after the loop for the last one, so that the frame stays whole while it is shown and
 ///   saved. A push that finds the queue full is counted, the frame not written; it was shown like
 ///   any other.
 /// - the report, once the report period has passed since the last: "fps <frames per second> |
 ///   grab+decode <ms> ms | gpu point cloud <ms> ms | points <count>", the frames per second
-///   counting delivered frames only, the times the means over the frames since the last report
+///   counting delivered frames only, the times the means over the frames since the last report,
+///   the GPU's from the upload to the count, the points the last frame's valid ones
 ///   (docs/HARDWARE.md's numbers come from it). With a sequence the line goes on with " | queue
 ///   full <count>", the pushes since the last report that found the queue full.
-/// - a snapshot, on 's' in the window and on the last of opt.max_frames frames when headless:
-///   cloud_NNN.ply (binary PLY, float x, y, z in m and uchar red, green, blue),
-///   cloud_NNN.ply.color.png (8-bit color) and cloud_NNN.ply.depth.png (16-bit depth values) in the
-///   current directory, NNN counting from 000, and "Saved <count> points to cloud_NNN.ply".
+/// - a snapshot, on 's' in the window and on the last of opt.max_frames frames when headless: the
+///   frame's normals estimated on the GPU, then cloud_NNN.ply, the frame's valid points that have a
+///   normal as a model's PLY (docs/SCAN_FILES.md, "Models"), in the frame's camera frame, with
+///   their pixels' colors, and "Saved <count> points to cloud_NNN.ply", or the writer's reason when
+///   it fails, the loop going on; then cloud_NNN.ply.color.png (8-bit color) and
+///   cloud_NNN.ply.depth.png (16-bit depth values), all in the current directory, NNN counting
+///   from 000. A GPU step of the snapshot that fails prints its reason and ends the loop, with
+///   nothing written.
 /// - the sequence's close, after the loop: "Wrote <accepted> frames to <file>, <full> not written
 ///   because the writer's queue was full", the totals of the run; or, when a push or the close
 ///   failed, once: "<reason, naming the file>; <written> of <taken> frames taken written, <lost>
@@ -188,14 +196,21 @@ struct run_context
 ///        rest, and the sequence comes in the context.
 /// @param context [in] the report period, the exit flag, the stream the lines go to and the
 ///        sequence.
-/// @return true when the loop ran and the sequence, if any, was written whole; false when no
-///         first frame came, or the sequence could not be created or written.
-/// @note The prototype's GPU path, until retire-the-prototype-library: allocates the two frames,
-///       the BGR picture and the GPU buffers once, and a point cloud for every frame; every GPU
-///       call runs on the default stream, and each frame waits for the whole device. With a
-///       sequence, its open allocates the writer's queue, gca::sequence_queue_frames frames, 16,
-///       82 MB at 1280x800 [S: sequence_writer.hpp], and starts the writer's thread, which writes
-///       the frames beside the loop until the close waits for it. Runs on one thread besides the
+/// @return true when the loop ran, no GPU step failed and the sequence, if any, was written whole;
+///         false when no first frame came, the GPU could not be set up, a GPU step failed, or the
+///         sequence could not be created or written.
+/// @note Allocates the two frames and the BGR picture once, and on the GPU, for the first frame's
+///       size, a CUDA stream of its own and from a pool (gpu/gpu_pool.hpp) the GPU frame, the
+///       organized points and normals and a pinned buffer of the validity mask, 36 bytes a pixel
+///       [S: computed, gpu_frame.hpp, organized_points.hpp, organized_normals.hpp], 37 MB at
+///       1280x800; a frame allocates nothing on the GPU. Each frame's work runs on that stream, and
+///       the loop waits for it once per frame, after the mask's copy, so that the report counts the
+///       frame's points: a camera test's choice, not the scanner's per-frame path, which reads back
+///       only what its next step needs (CODING_STANDARDS.md, "The rewrite's code"). A snapshot
+///       allocates its points' host copies and waits for the stream once more. With a sequence,
+///       its open allocates the writer's queue, gca::sequence_queue_frames frames, 16, 82 MB at
+///       1280x800 [S: sequence_writer.hpp], and starts the writer's thread, which writes the
+///       frames beside the loop until the close waits for it. Runs on one thread besides the
 ///       writer's; only the exit flag may be set from another.
 bool run_viewer(gca::frame_source &source, const options &opt, const run_context &context);
 } // namespace gca_viewer

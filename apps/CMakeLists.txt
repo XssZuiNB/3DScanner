@@ -15,7 +15,8 @@ target_include_directories(viewer_options PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(viewer_options PRIVATE camera)
 
 # The viewer's loop on any frame source, without the camera backend: the offline tests run it on
-# the synthetic source.
+# the synthetic source. geometry gives it the organized points and normals, scan the models' PLY
+# writer its snapshot uses.
 add_library(viewer_loop STATIC viewer_loop.cpp viewer_loop.hpp)
 target_link_libraries(
     viewer_loop
@@ -24,6 +25,7 @@ target_link_libraries(
     viewer_options
     PRIVATE
     geometry
+    scan
     opencv_core
     opencv_highgui
     opencv_imgcodecs
@@ -76,13 +78,12 @@ target_include_directories(box_fit_options PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 add_executable(box_fit box_fit.cpp)
 target_link_libraries(box_fit PRIVATE box_fit_options box_measure scan)
 
-# Orbbec camera test / live point cloud viewer
+# The Orbbec camera test: the viewer's loop on the camera.
 if(GCA_WITH_ORBBEC)
     add_executable(orbbec_viewer orbbec_viewer.cpp)
     target_link_libraries(
         orbbec_viewer
         PRIVATE
-        gpu
         orbbec_camera
         viewer_loop
         viewer_options

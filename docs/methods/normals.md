@@ -227,7 +227,7 @@ On the sphere only the pixels whose window lies on it alone are compared. A wind
 picture's border, at the range's limits, beside a depth edge or a pixel without depth; on the
 planes its fit errs about twice as much as a whole window's. On the box's plane at 0.39 m a
 pixel at the picture's left border, whose window keeps 4 of its 7 columns, is 10.8° off
-[M 2026-11-14: the test prints it, the oracle's comparison below].
+[M 2026-11-14: the test printed it, in the oracle's comparison below].
 
 At 1280x800 the errors are two to three times those at 640x400. A window of radius 3 spans half
 the surface there, R z / fx with fx twice as large, over steps of the same height, so its fit
@@ -271,18 +271,18 @@ normals' contents then unspecified.
 
 ## What the prototype did, and what is not carried
 
-The prototype's `point_cloud::estimate_normals` (`src/geometry/point_cloud.cu`,
-`src/geometry/cuda_estimate_normals.cu`) is the oracle until this stage agrees with it within a
-stated tolerance. Its method, the eigenvector of a neighbourhood's covariance, carries over;
-these do not:
+The prototype's normals of a point cloud, CUDA_3D's, were the oracle until this stage agreed with
+them within a stated tolerance (below); they are deleted since, and their code stands in git at
+74dda68 (`src/geometry/`). Their method, the eigenvector of a neighbourhood's covariance, carries
+over; these do not:
 
 * **The neighbourhood in space**: every point within a radius, found through a grid built anew
   at each call. Here the neighbourhood is the window in the picture, which the organized points
   give for free, with the depth edge rule in place of the radius.
 * **The uncentred covariance**: sums of p and p pᵀ in float, then E[p pᵀ] - E[p] E[p]ᵀ
-  [S: `cuda_estimate_normals.cu`, `compute_cumulant_functor`, `compute_normal_functor`]. On a
-  tilted plane at 1 m with a radius of 2 cm it is 0.154° off where PCA in double over the same
-  neighbours is 0.0002° off [M 2026-11-13: `tests/test_point_cloud_geometry.cpp`].
+  [S: the prototype's normals at 74dda68, their sums and their normal]. On a tilted plane at 1 m
+  with a radius of 2 cm it was 0.154° off where PCA in double over the same neighbours is
+  0.0002° off [M 2026-11-13: the prototype's test of its normals, in git at 74dda68].
 * **The orientation toward (0, 0, -1)**: a fixed direction, so that a surface seen at the side
   of the picture, whose normal is perpendicular to the optical axis, has no defined sign. Here
   the normal is turned toward the camera's centre.
@@ -294,13 +294,13 @@ these do not:
 Carried: a pixel without a normal holds the zero vector, as the prototype's normal of a point
 with fewer than three neighbours.
 
-**The comparison with the oracle** runs the prototype on the stage's own valid points, so both
-see the same points, and holds away from depth edges and creases, where the two neighbourhoods
+**The comparison with the oracle** ran the prototype on the stage's own valid points, so both
+saw the same points, and held away from depth edges and creases, where the two neighbourhoods
 differ in kind: at pixels whose window lies on one surface of the scene and whose point has no
 other surface within the oracle's radius. There both fit a plane to points of one face: on three
 frames of a walk around a box, depth range 0.30 m to 1.0 m, with the oracle's radius of 1 cm,
-383431 normals agree with the oracle's as lines within 11.9°, median 0.509°
-[M 2026-11-14: `tests/test_organized_normals.cpp`]. The largest lie at the picture's border,
-where the stage's window is cut: there the stage's normal is 10.8° off the face's and the
-oracle's, from a ball of 1 cm, 1.3° [M 2026-11-14]. This stays the record of the agreement when
-the prototype and its comparison are deleted.
+383431 normals agreed with the oracle's as lines within 11.9°, median 0.509°
+[M 2026-11-14: `tests/test_organized_normals.cpp` at 74dda68]. The largest lay at the picture's
+border, where the stage's window is cut: there the stage's normal was 10.8° off the face's and
+the oracle's, from a ball of 1 cm, 1.3° [M 2026-11-14]. This is the record of the agreement;
+the prototype and the comparison are deleted.

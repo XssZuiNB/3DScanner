@@ -13,10 +13,6 @@
 ///   with a range from 0 its pixels without depth stay invalid; with limits that are exactly the
 ///   rounded z of depth values in the picture, the pixels of those values are valid; at 641x401,
 ///   a size that is no multiple of the kernel's block, the last column and row are written too.
-/// - Against the prototype's create_from_rgbd(), the oracle, on frames of a walk around a box,
-///   with a range narrower than 0.5 m, where the oracle's bilateral filter does nothing: both
-///   keep the same pixels, and every point is the oracle's once the stated half pixel
-///   (0.5 z / fx, 0.5 z / fy, 0) is added to it.
 /// - Refusals as values, each leaving the points as they were: empty organized points, depth
 ///   ranges that are none, a GPU frame that holds no frame, a frame of another size, each kind of
 ///   intrinsics or depth unit that cannot be used, and CUDA's last error left by an earlier call;
@@ -26,11 +22,8 @@
 ///   nothing.
 
 #include "camera/frame.hpp"
-#include "camera/frame_source.hpp"
 #include "check.hpp"
 #include "geometry/organized_points.hpp"
-#include "geometry/point_cloud.hpp"
-#include "gpu/cuda_container.hpp"
 #include "gpu/gpu_frame.hpp"
 #include "gpu/gpu_pool.hpp"
 #include "gpu/step_result.hpp"
@@ -72,7 +65,6 @@ using gca_test::max_error;
 using gca_test::odd_description;
 using gca_test::render;
 using gca_test::small_description;
-using gca_test::tabletop_box;
 using gca_test::tabletop_plane;
 using gca_test::tabletop_sphere;
 using gca_test::tall_size;
@@ -97,16 +89,10 @@ constexpr gca::organized_points_parameters range_from_zero = {0.0f, 70.0f};
 constexpr std::uint16_t near_search_from = 450;
 constexpr std::uint16_t far_search_from = 750;
 
-/// The oracle's depth range: 0.3005 m to 0.7995 m, narrower than 0.5 m, so that the prototype's
-/// bilateral filter has a radius of 0 px everywhere and returns each pixel's own depth
-/// [S: cuda_point_cloud_factory.cu, __adaptive_bilateral_filter: radius floor((z - near) / 0.5 m)];
-/// each limit lies half a depth unit off a depth value [S].
-constexpr gca::organized_points_parameters oracle_range = {0.3005f, 0.7995f};
-
 /// The tolerance of a valid point against the pinhole point of its pixel and depth value, in m:
 /// float's rounding, a step of 1.2e-7 m at 1 m to 2 m, taken a few times [S: float32 ulp]. The
-/// largest distance over the pictures is 5.3e-8 m [M 2026-11-14]; the half pixel of the
-/// prototype would be 0.65 mm at 0.4 m [S: 0.5 z / fx].
+/// largest distance over the pictures is 5.3e-8 m [M 2026-11-14]; a half pixel off would be
+/// 0.65 mm at 0.4 m [S: 0.5 z / fx].
 constexpr double pinhole_tolerance_m = 1e-6;
 
 /// The tolerance of a valid point's distance from the analytic surface, divided by the depth
@@ -115,17 +101,6 @@ constexpr double pinhole_tolerance_m = 1e-6;
 /// ray, and no farther from the surface [S]; and 1e-3 for float's rounding of the point, about
 /// 1e-7 m [S: float32 ulp]. The largest is 0.4963, on the sphere [M 2026-11-14].
 constexpr double surface_tolerance = 0.5 + 1e-3;
-
-/// The tolerance of a point against the oracle's once the half pixel is added, in m: both are
-/// float points of the same z, each rounded a few times [S: float32 ulp, as pinhole_tolerance_m].
-/// The largest is 9.7e-8 m [M 2026-11-14].
-constexpr double oracle_tolerance_m = 1e-6;
-
-/// How far an oracle point may project from a whole pixel once the half pixel is added, in px:
-/// float's rounding, a few times 4e-5 px at 640 px [S: float32's relative step 6e-8], far below
-/// the whole pixel a point of another pixel lies off [?: a choice]. The largest is 3.1e-5 px
-/// [M 2026-11-14].
-constexpr double oracle_pixel_tolerance_px = 1e-2;
 
 /// What the stage works on at one size: a GPU frame and organized points of that size, both from
 /// the pool, and the stream the work runs on.
@@ -462,145 +437,6 @@ void check_analytic_surfaces(analytic_stages stages)
           "sphere on the plane: valid pixels on the sphere and on the plane");
 }
 
-/// Converts a frame's color from RGB8 to the BGR8 the oracle reads.
-/// @param frame [in] the frame.
-/// @return its color picture, BGR8, rows dense.
-std::vector<std::uint8_t> bgr_of(const gca::frame &frame)
-{
-    std::vector<std::uint8_t> bgr(frame.color().begin(), frame.color().end());
-    for (std::size_t i = 0; i + 2 < bgr.size(); i += 3)
-        std::swap(bgr[i], bgr[i + 2]);
-    return bgr;
-}
-
-/// Runs the oracle, the prototype's create_from_rgbd(), on a frame: depth aligned to color, both
-/// with the frame's intrinsics, identity extrinsics.
-/// @param frame [in] the frame, of the smaller stream size.
-/// @param parameters [in] the depth range.
-/// @return the oracle's points, the invalid ones dropped.
-/// @note The oracle runs on the default stream and waits for the whole device.
-std::vector<gca::point_t> oracle_points(const gca::frame &frame,
-                                        const gca::organized_points_parameters &parameters)
-{
-    gca::extrinsics identity{};
-    identity.rotation[0] = identity.rotation[4] = identity.rotation[8] = 1.0f;
-    const gca::cuda_camera_param param(small_description.intrinsics, small_description.intrinsics,
-                                       identity, small_description.size.width,
-                                       small_description.size.height, camera_depth_unit_m);
-    const std::vector<std::uint8_t> bgr = bgr_of(frame);
-    const gca::cuda_depth_frame depth(frame.depth().data(), small_description.size.width,
-                                      small_description.size.height);
-    const gca::cuda_color_frame color(bgr.data(), small_description.size.width,
-                                      small_description.size.height);
-    return gca::point_cloud::create_from_rgbd(depth, color, param, parameters.near_m,
-                                              parameters.far_m)
-        ->download();
-}
-
-/// The comparison with the oracle over the frames.
-struct oracle_counts
-{
-    std::size_t oracle_points = 0;   ///< the oracle's points
-    std::size_t valid_pixels = 0;    ///< the stage's valid pixels
-    std::size_t unmatched = 0;       ///< oracle points of no valid pixel, or of one taken already
-    max_error off_pixel_px;          ///< oracle points' distance from their whole pixel, in px
-    max_error after_half_pixel_m;    ///< |point - (oracle's + half pixel)|, in m
-    double least_half_pixel_m = 0.0; ///< the least |point - oracle's|, in m
-    double most_half_pixel_m = 0.0;  ///< the largest |point - oracle's|, in m
-};
-
-/// Compares a frame's organized points with the oracle's points: each oracle point is projected
-/// back to its pixel with the oracle's half pixel, (u - 0.5, v - 0.5), and must belong to a valid
-/// pixel no other oracle point took; there the point must be the oracle's plus
-/// (0.5 z / fx, 0.5 z / fy, 0).
-/// @param oracle [in] the oracle's points.
-/// @param got [in] the stage's points and marks, of the smaller stream size.
-/// @param counts [in,out] the counts and errors are added.
-void compare_oracle(const std::vector<gca::point_t> &oracle, const downloaded_points &got,
-                    oracle_counts &counts)
-{
-    const gca::intrinsics &k = small_description.intrinsics;
-    std::vector<bool> taken(got.mask.size(), false);
-    counts.oracle_points += oracle.size();
-    counts.valid_pixels += static_cast<std::size_t>(std::ranges::count(got.mask, 1));
-    for (const gca::point_t &q : oracle)
-    {
-        const double qx = q.coordinates.x;
-        const double qy = q.coordinates.y;
-        const double qz = q.coordinates.z;
-        const double u = qx * k.fx / qz + k.cx + 0.5;
-        const double v = qy * k.fy / qz + k.cy + 0.5;
-        const double u_whole = std::round(u);
-        const double v_whole = std::round(v);
-        counts.off_pixel_px.add(std::max(std::abs(u - u_whole), std::abs(v - v_whole)));
-        if (!(u_whole >= 0.0 && u_whole < small_description.size.width && v_whole >= 0.0 &&
-              v_whole < small_description.size.height))
-        {
-            counts.unmatched++;
-            continue;
-        }
-        const std::size_t pixel = static_cast<std::size_t>(v_whole) * small_description.size.width +
-                                  static_cast<std::size_t>(u_whole);
-        if (got.mask[pixel] != 1 || taken[pixel])
-        {
-            counts.unmatched++;
-            continue;
-        }
-        taken[pixel] = true;
-        const float3 &p = got.points[pixel];
-        const Eigen::Vector3d point(p.x, p.y, p.z);
-        const Eigen::Vector3d oracle_point(qx, qy, qz);
-        const Eigen::Vector3d half_pixel(0.5 * qz / k.fx, 0.5 * qz / k.fy, 0.0);
-        counts.after_half_pixel_m.add((point - (oracle_point + half_pixel)).norm());
-        const double shift_m = (point - oracle_point).norm();
-        const bool first = counts.least_half_pixel_m == 0.0;
-        counts.least_half_pixel_m = first ? shift_m : std::min(counts.least_half_pixel_m, shift_m);
-        counts.most_half_pixel_m = std::max(counts.most_half_pixel_m, shift_m);
-    }
-}
-
-/// Compares the stage with the oracle on three frames of a walk around a box on the plane, with
-/// a range narrower than 0.5 m, where the oracle's bilateral filter does nothing.
-/// @param stage [in,out] the GPU frame, organized points and stream of the smaller stream size.
-void check_oracle(stage_buffers &stage)
-{
-    // Three views of the tabletop walk, 120 degrees apart [?: a choice].
-    gca_test::synthetic_walk walk = gca_test::tabletop_walk();
-    walk.pose_count = 3;
-    const std::optional<std::vector<Eigen::Isometry3d>> trajectory = gca_test::walk_around(walk);
-    check(trajectory.has_value(), "oracle: walk_around() gives the walk");
-    if (!trajectory)
-        return;
-    const std::vector<gca::frame> frames =
-        render({.plane = tabletop_plane, .box = tabletop_box, .trajectory = *trajectory},
-               small_description)
-            .frames;
-    oracle_counts counts;
-    for (const gca::frame &frame : frames)
-    {
-        const std::string name = "oracle, frame " + std::to_string(frame.index());
-        if (!deproject(name, frame, stage, oracle_range))
-            continue;
-        const downloaded_points got = download(name, stage.points, stage.stream);
-        if (!got.points.empty())
-            compare_oracle(oracle_points(frame, oracle_range), got, counts);
-    }
-    std::printf("oracle: %zu frames, %zu oracle points, %zu valid pixels, %zu oracle points "
-                "unmatched\n",
-                frames.size(), counts.oracle_points, counts.valid_pixels, counts.unmatched);
-    std::printf("oracle: the stated half pixel, |point - oracle's point| from %.4f mm to %.4f mm\n",
-                1e3 * counts.least_half_pixel_m, 1e3 * counts.most_half_pixel_m);
-    check(frames.size() == 3 && counts.oracle_points > 0,
-          "oracle: three frames with oracle points");
-    check(counts.oracle_points == counts.valid_pixels,
-          "oracle: as many oracle points as valid pixels");
-    check_within("oracle: oracle points of no valid pixel or of one taken", counts.unmatched, 0);
-    check_max_error("oracle: oracle points off their whole pixel, in px", counts.off_pixel_px,
-                    oracle_pixel_tolerance_px);
-    check_max_error("oracle: |point - (oracle's point + half pixel)|, in m",
-                    counts.after_half_pixel_m, oracle_tolerance_m);
-}
-
 /// The GPU memory the refusals use, all requested before the pool closes.
 struct refusal_buffers
 {
@@ -729,7 +565,6 @@ void check_with_closed_pool(cudaStream_t stream)
         granted(points_name, gca::organized_points::request(pool, tall_size))};
     pool.close();
     check_analytic_surfaces({test, odd_sized});
-    check_oracle(test);
     check_refusals_leave_points(test, buffers);
     check_refused_launch(buffers, stream);
     check_within("requests to the closed pool", static_cast<double>(pool.refused_while_closed()),

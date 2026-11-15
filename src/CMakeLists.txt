@@ -10,7 +10,7 @@
 #   registration <- refinement (the pose graph, on the host; registration's SE(3) exponential)
 #   types <- separation (the proposal of the support plane and the box, on the host; Eigen)
 #   types <- camera <- scan (Eigen, OpenCV's core)
-# Every library includes from src/ ("gpu/cuda_container.hpp"); types carries that directory.
+# Every library includes from src/ ("gpu/gpu_pool.hpp"); types carries that directory.
 
 # ---------------------------------------------------------------- types (header only)
 # The plain structs, the camera parameters, a frame's description, the camera's pose and a model's
@@ -71,15 +71,7 @@ endif()
 add_library(
     gpu
     STATIC
-    gpu/cuda_camera_param_container.cu
-    gpu/cuda_color_frame_container.cu
-    gpu/cuda_container.hpp
-    gpu/cuda_depth_frame_container.cu
-    gpu/cuda_frame.cuh
-    gpu/cuda_util.cuh
     gpu/gpu_array.hpp
-    gpu/gpu_check.cu
-    gpu/gpu_check.hpp
     gpu/gpu_frame.cpp
     gpu/gpu_frame.hpp
     gpu/gpu_image.hpp
@@ -91,52 +83,31 @@ add_library(
     gpu/pinned_buffer.hpp
     gpu/step_result.hpp
 )
-# PUBLIC: the headers hold thrust and CUDA types, and gpu_frame.hpp the frame of camera.
+# PUBLIC: the headers hold CUDA types, and gpu_frame.hpp the frame of camera.
 target_link_libraries(gpu PUBLIC types camera CUDA::cudart)
 
 # ---------------------------------------------------------------- geometry
 add_library(
     geometry
     STATIC
-    geometry/cuda_estimate_normals.cu
-    geometry/cuda_estimate_normals.cuh
-    geometry/cuda_nn_search.cu
-    geometry/cuda_nn_search.cuh
-    geometry/cuda_point_cloud_factory.cu
-    geometry/cuda_point_cloud_factory.cuh
-    geometry/cuda_voxel_grid_down_sample.cu
-    geometry/cuda_voxel_grid_down_sample.cuh
     geometry/float3_eigen.cuh
     geometry/float3_ops.cuh
     geometry/frame_pyramid.cu
     geometry/frame_pyramid.hpp
-    geometry/geometry_util.cuh
     geometry/one_surface.cuh
     geometry/organized_normals.cu
     geometry/organized_normals.hpp
     geometry/organized_points.cu
     geometry/organized_points.hpp
-    geometry/point_cloud.cu
-    geometry/point_cloud.hpp
     geometry/symmetric_eigen_3x3.cuh
-    geometry/type.hpp
 )
 target_link_libraries(geometry PUBLIC gpu Eigen3::Eigen)
 
 # ---------------------------------------------------------------- registration
-# The registration of a frame against a surface (docs/methods/registration.md), and the
-# prototype's colored ICP, its oracle until the prototype is retired.
+# The registration of a frame against a surface (docs/methods/registration.md).
 add_library(
     registration
     STATIC
-    registration/color_icp.cu
-    registration/color_icp.hpp
-    registration/cuda_color_icp_build_least_square.cu
-    registration/cuda_color_icp_build_least_square.cuh
-    registration/cuda_compute_color_gradient.cu
-    registration/cuda_compute_color_gradient.cuh
-    registration/eigen_solver.hpp
-    registration/ldlt_3x3.cuh
     registration/normal_equations.cpp
     registration/normal_equations.hpp
     registration/registration.cu
@@ -199,13 +170,13 @@ target_link_libraries(scan PUBLIC types camera Eigen3::Eigen PRIVATE opencv_core
 
 # Separable compilation stays off: no device function or variable is used outside the
 # translation unit that defines it, so nothing needs a device link [M 2026-11-13: every test
-# passes; the colored-ICP fixture's rotation error prints 0.000224 deg instead of 0.000225, every
-# other printed value is equal]. It guards nothing more [M 2026-11-13: nvcc 12.6 probes]: a
-# __host__ __device__ function calling a host-only one draws warning #20011-D (#20014-D when the
-# callee's body is visible) in either mode, and the device code drops the call, device link or
-# not; a __host__ __device__ function left undefined stops ptxas without it, nvlink with it.
+# passes; the prototype's colored-ICP test, deleted since, printed one rotation error of 0.000224
+# deg instead of 0.000225, every other printed value equal]. It guards nothing more
+# [M 2026-11-13: nvcc 12.6 probes]: a __host__ __device__ function calling a host-only one draws
+# warning #20011-D (#20014-D when the callee's body is visible) in either mode, and the device code
+# drops the call, device link or not; a __host__ __device__ function left undefined stops ptxas
+# without it, nvlink with it.
 set_target_properties(
-    gpu
     geometry
     registration
     fusion

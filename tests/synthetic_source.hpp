@@ -3,19 +3,18 @@
 /// The tests' synthetic source: a frame source (camera/frame_source.hpp) that renders a known scene
 /// by the one pinhole convention (types/camera_param.hpp) and tells a test what it rendered. The
 /// scene is a textured support plane or none, a textured box of known size standing on it or none,
-/// a textured sphere of known centre and radius or none, a mesh of triangles colored at their
-/// vertices or none (a recorded surface, such as the colored-ICP fixture's), and a known
-/// trajectory: frame i of an opening is seen from the trajectory's pose i. The depth may carry
-/// Gaussian noise that grows with the square of the depth, from a fixed seed. The source tells a
-/// test the trajectory and the known surfaces, textured rectangles in the world frame, and the
-/// sphere, which are exactly what it renders besides the mesh, the pinhole ray of any point of the
-/// picture, where any ray first meets them, the hit it renders each pixel from, and how far a point
-/// lies from a known surface. It also builds the trajectories its scenes are seen along: a camera's
-/// upright pose looking at a point, and a walk once around a point, each refused as a value where
-/// the view is not defined. This is the one renderer of the tests' frames: a test whose scene it
-/// lacks adds the scene here as one more option. A test builds the source to deliver its
-/// trajectory's frames and then to report the end, a timeout or a failure, or to refuse its
-/// opening, each with the message it is given. No camera and no OrbbecSDK; host only.
+/// a textured sphere of known centre and radius or none, and a known trajectory: frame i of an
+/// opening is seen from the trajectory's pose i. The depth may carry Gaussian noise that grows with
+/// the square of the depth, from a fixed seed. The source tells a test the trajectory and the known
+/// surfaces, textured rectangles in the world frame, and the sphere, which are exactly what it
+/// renders, the pinhole ray of any point of the picture, where any ray first meets them, the hit it
+/// renders each pixel from, and how far a point lies from a known surface. It also builds the
+/// trajectories its scenes are seen along: a camera's upright pose looking at a point, and a walk
+/// once around a point, each refused as a value where the view is not defined. This is the one
+/// renderer of the tests' frames: a test whose scene it lacks adds the scene here as one more
+/// option. A test builds the source to deliver its trajectory's frames and then to report the end,
+/// a timeout or a failure, or to refuse its opening, each with the message it is given. No camera
+/// and no OrbbecSDK; host only.
 
 #pragma once
 
@@ -66,18 +65,6 @@ struct synthetic_sphere
     double radius_m;          ///< its radius, in m, > 0
 };
 
-/// A mesh of triangles, each vertex with its color, in the world frame, seen from either side: a
-/// recorded surface, such as the colored-ICP fixture's (data/frag_115.ply, frag_116.ply). A point
-/// of a triangle has the color its vertices' colors give by its barycentric coordinates.
-struct synthetic_mesh
-{
-    std::vector<Eigen::Vector3d> vertices_m; ///< the vertices, in the world frame, in m
-    /// Each vertex's red, green and blue, each 0 to 255.
-    std::vector<std::array<double, 3>> colors;
-    /// The triangles: three indices into vertices_m each, every one below vertices_m.size().
-    std::vector<std::array<std::uint32_t, 3>> triangles;
-};
-
 /// The scene the synthetic source renders. The world frame is the scene's own, in m: x and y in
 /// the support plane, z up from it. A test builds it with designated initializers, so that a
 /// scene it does not name is none.
@@ -86,7 +73,6 @@ struct synthetic_scene
     std::optional<synthetic_plane> plane = std::nullopt;   ///< the support plane, or none
     std::optional<synthetic_box> box = std::nullopt;       ///< the box on the plane, or none
     std::optional<synthetic_sphere> sphere = std::nullopt; ///< the sphere, or none
-    std::optional<synthetic_mesh> mesh = std::nullopt;     ///< the mesh, or none
     /// The trajectory: pose i maps a point from the camera frame of frame i of an opening (x
     /// right, y down, z forward, in m) into the world frame. The source delivers one frame for
     /// each pose.
@@ -294,16 +280,13 @@ public:
     gca::open_result open(const gca::frame_size &size) noexcept override;
 
     /// Renders the next frame: frame i of an opening has index i and timestamp i * 33333 µs
-    /// (30 fps [?: a choice, the camera's rate]) and shows the known surfaces, the sphere and the
-    /// mesh from the trajectory's pose i. Each pixel shows the nearest surface its ray meets in
-    /// front of the camera: depth is the hit's z in the camera frame, with the options' depth
-    /// noise added when they give one, rounded to the nearest depth value; color is the surface's
-    /// texture at the hit, or at a triangle of the mesh its vertices'
-    /// colors weighted by the hit's barycentric coordinates, rounded. A triangle with a vertex at
-    /// or behind the camera's plane, z <= 0 in the camera frame, is not rendered: a mesh is seen
-    /// from in front of it. A pixel whose ray meets no surface in front
-    /// of the camera, or whose depth rounds below 1 or above the largest 16-bit value, 65535 [S],
-    /// has depth 0 and color black. Frames come as fast as they are asked for.
+    /// (30 fps [?: a choice, the camera's rate]) and shows the known surfaces and the sphere from
+    /// the trajectory's pose i. Each pixel shows the nearest surface its ray meets in front of the
+    /// camera: depth is the hit's z in the camera frame, with the options' depth noise added when
+    /// they give one, rounded to the nearest depth value; color is the surface's texture at the
+    /// hit, rounded. A pixel whose ray meets no surface in front of the camera, or whose depth
+    /// rounds below 1 or above the largest 16-bit value, 65535 [S], has depth 0 and color black.
+    /// Frames come as fast as they are asked for.
     /// @param out [out] the frame, filled when the status is frame, else left as it was.
     /// @return frame for the first calls after an opening, one for each pose of the trajectory,
     ///         then the ending with its message at every call; a failure when the source is not
@@ -323,8 +306,8 @@ public:
     ///         of an opening; valid as long as the source.
     const synthetic_scene &scene() const noexcept;
 
-    /// Tells a test the known surfaces, the rectangles every frame is rendered from; the sphere
-    /// and the mesh, the surfaces that are not rectangles, are the scene's (scene()).
+    /// Tells a test the known surfaces, the rectangles every frame is rendered from; the sphere,
+    /// the one surface that is not a rectangle, is the scene's (scene()).
     /// @return the plane first when the scene has one, then, when the scene has a box, its top and
     ///         its sides on its own +x, +y, -x and -y; valid as long as the source.
     const std::vector<synthetic_surface> &surfaces() const noexcept;

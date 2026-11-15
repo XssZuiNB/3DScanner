@@ -11,9 +11,6 @@
 /// - a sphere resting on the plane, every pixel: seen from outside, a pixel shows the sphere or
 ///   the plane behind and beside it, whichever its ray meets first; seen from inside, every pixel
 ///   shows the sphere's inner surface;
-/// - a square given as a mesh of two triangles colored at their corners, every pixel: alone, a
-///   pixel shows the square, with the color its corners give it, or nothing; above the plane, the
-///   square or the plane around it;
 /// - a walk once around a box standing on the plane: frame i is seen from the trajectory's pose
 ///   i, and every pixel the test names holds the depth and the color that the known box, plane,
 ///   textures and that pose give. The test projects its own box's corners forward into each
@@ -736,167 +733,6 @@ void check_sphere_pictures()
     check(inside.sphere == pixels, "sphere from inside: every pixel sees the sphere");
 }
 
-/// The square of the pictures of a mesh: 0.20 m on a side, centred 6 cm above the plane, its first
-/// axis level and turned by 20 degrees, its second rising by 26.6 degrees (0.5 in 1), so that its
-/// depth changes along both image axes and it lies above the plane everywhere [?: a choice].
-struct test_square
-{
-    Eigen::Vector3d centre_m;  ///< its centre, in the world frame, in m
-    Eigen::Vector3d axis_s;    ///< its first axis, a unit vector
-    Eigen::Vector3d axis_t;    ///< its second axis, a unit vector perpendicular to the first
-    double half_side_m = 0.10; ///< half its side, in m
-};
-
-/// Builds the test's square.
-/// @return the square, in the world frame.
-test_square make_test_square()
-{
-    const double turn_rad = 20.0 * M_PI / 180.0;
-    return {Eigen::Vector3d(0.02, 0.03, 0.06),
-            Eigen::Vector3d(std::cos(turn_rad), std::sin(turn_rad), 0.0),
-            Eigen::Vector3d(-std::sin(turn_rad), std::cos(turn_rad), 0.5).normalized()};
-}
-
-/// Returns the square's color at a point of it given by its coordinates along the axes: an affine
-/// function of them, which the barycentric weights of either triangle reproduce exactly [S: a
-/// point's barycentric coordinates weigh its triangle's corners into the point], each channel
-/// within 60 to 168 of the 8-bit range [S: computed, s and t within +-0.1 m].
-/// @param s_m [in] the coordinate along the first axis, from the centre, in m.
-/// @param t_m [in] the coordinate along the second axis, from the centre, in m.
-/// @return red, green and blue, unrounded.
-std::array<double, 3> square_color(double s_m, double t_m)
-{
-    return {128.0 + 400.0 * s_m, 128.0 - 300.0 * t_m, 100.0 + 200.0 * (s_m + t_m)};
-}
-
-/// Builds the square as a mesh of two triangles, split along a diagonal, each corner with the
-/// square's color there.
-/// @param square [in] the square.
-/// @return the mesh, in the world frame.
-gca_test::synthetic_mesh square_mesh(const test_square &square)
-{
-    gca_test::synthetic_mesh mesh;
-    const double h = square.half_side_m;
-    const std::array<std::array<double, 2>, 4> corners = {{{-h, -h}, {h, -h}, {h, h}, {-h, h}}};
-    for (const std::array<double, 2> &c : corners)
-    {
-        mesh.vertices_m.push_back(square.centre_m + c[0] * square.axis_s + c[1] * square.axis_t);
-        mesh.colors.push_back(square_color(c[0], c[1]));
-    }
-    mesh.triangles = {{0, 1, 2}, {0, 2, 3}};
-    return mesh;
-}
-
-/// The pixels of a picture of the square by what they see.
-struct mesh_counts
-{
-    int square = 0;    ///< pixels that see the square
-    int plane = 0;     ///< pixels that see the plane beside it
-    int nothing = 0;   ///< pixels that see neither
-    int not_named = 0; ///< pixels whose ray meets the square's plane within plane_margin_m of its
-                       ///< outline
-};
-
-/// Computes what a pixel should hold in a picture of the square, above the plane or alone, by the
-/// one pinhole convention, on paths apart from the renderer's (hit_plane()).
-/// @param square [in] the square.
-/// @param plane [in] the plane, or none.
-/// @param camera_to_world [in] the camera's pose, camera frame to world frame, above the square.
-/// @param description [in] the frame's intrinsics and depth unit.
-/// @param u [in] the pixel's column, in px.
-/// @param v [in] the pixel's row, in px.
-/// @param counts [in,out] the pixel is counted by what it sees.
-/// @return its depth and color, or not seen; nothing for a pixel at the square's outline.
-std::optional<expected_pixel> expect_on_square(
-    const test_square &square, const std::optional<gca_test::synthetic_plane> &plane,
-    const Eigen::Isometry3d &camera_to_world, const gca::frame_description &description, int u,
-    int v, mesh_counts &counts)
-{
-    const Eigen::Vector3d ray = pixel_ray(description.intrinsics, u, v);
-    const ray_hit hit =
-        hit_plane(square.axis_s.cross(square.axis_t), square.centre_m, camera_to_world, ray);
-    const Eigen::Vector3d offset = hit.point_world - square.centre_m;
-    const double s = offset.dot(square.axis_s);
-    const double t = offset.dot(square.axis_t);
-    const double reach = std::max(std::abs(s), std::abs(t));
-    if (std::abs(reach - square.half_side_m) < plane_margin_m)
-    {
-        counts.not_named++;
-        return std::nullopt;
-    }
-    if (hit.z_m > 0.0 && reach < square.half_side_m)
-    {
-        counts.square++;
-        if (range_of(hit.z_m, description) != depth_range::within)
-            return expected_pixel{};
-        return expected_pixel{true, hit.z_m, square_color(s, t)};
-    }
-    pixel_counts on_plane;
-    const expected_pixel below =
-        plane ? expect_on_plane(*plane, camera_to_world, description, u, v, on_plane)
-              : expected_pixel{};
-    (below.seen ? counts.plane : counts.nothing)++;
-    return below;
-}
-
-/// Renders one picture of the square as a mesh, above the plane or alone, and checks every pixel
-/// but those at the square's outline: a pixel holds the depth and color of what its ray meets
-/// first, the square's color its corners' weighted, or depth 0 and black.
-/// @param name [in] the case, printed in each line.
-/// @param with_plane [in] whether the scene holds the plane under the square.
-/// @return the pixels by what they see; all zero when the source gave no frame.
-mesh_counts check_mesh_picture(const std::string &name, bool with_plane)
-{
-    const test_square square = make_test_square();
-    const Eigen::Isometry3d camera_to_world =
-        pose_looking("the pose over the square", {0.05, -0.35, 0.40}, square.centre_m, 8.0);
-    gca_test::synthetic_source_options options =
-        picture_options(fine_depth_unit_m, camera_to_world);
-    if (!with_plane)
-        options.scene.plane = std::nullopt;
-    options.scene.mesh = square_mesh(square);
-    gca_test::synthetic_source source(options);
-    check(source.open(test_size).opened, (name + ": opened").c_str());
-    check(source.surfaces().size() == (with_plane ? 1u : 0u),
-          (name + ": the known surfaces, the plane or none").c_str());
-    gca::frame frame;
-    mesh_counts counts;
-    if (source.next(frame).status != gca::next_status::frame)
-    {
-        check(false, (name + ": a frame").c_str());
-        return counts;
-    }
-    pixel_errors errors;
-    for (int v = 0; v < static_cast<int>(test_size.height); v++)
-    {
-        for (int u = 0; u < static_cast<int>(test_size.width); u++)
-        {
-            const std::optional<expected_pixel> expected = expect_on_square(
-                square, source.scene().plane, camera_to_world, frame.description(), u, v, counts);
-            if (expected)
-                compare_pixel(frame, u, v, *expected, errors);
-        }
-    }
-    std::printf("%s: %d pixels see the square, %d the plane, %d nothing, %d at the square's "
-                "outline not named\n",
-                name.c_str(), counts.square, counts.plane, counts.nothing, counts.not_named);
-    check_errors(name, errors);
-    return counts;
-}
-
-/// Checks the pictures of a square given as a mesh of two triangles: alone, the pixels around it
-/// see nothing; above the plane, it hides part of the plane, which is seen around it. Across the
-/// triangles' shared diagonal every pixel sees the square.
-void check_mesh_pictures()
-{
-    const mesh_counts alone = check_mesh_picture("square alone", false);
-    check(alone.square > 0 && alone.nothing > 0 && alone.plane == 0,
-          "square alone: pixels on the square and pixels that see nothing");
-    const mesh_counts above = check_mesh_picture("square above the plane", true);
-    check(above.square > 0 && above.plane > 0,
-          "square above the plane: pixels on the square and on the plane");
-}
-
 /// Returns a surface's corners.
 /// @param surface [in] the surface.
 /// @return its centre moved by +- half its extent along each axis, in order around it, in the
@@ -1436,7 +1272,6 @@ int main()
     check_look_at();
     check_pictures();
     check_sphere_pictures();
-    check_mesh_pictures();
     check_walk();
     check_depth_noise();
     return gca_test::check_summary("test_synthetic_source");

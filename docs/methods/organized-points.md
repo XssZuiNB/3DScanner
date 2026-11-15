@@ -102,39 +102,41 @@ time on the board stands in docs/HARDWARE.md, "The per-frame path's stages".
 
 ## What the prototype did, and what is not carried
 
-The prototype's `point_cloud::create_from_rgbd` (`src/geometry/point_cloud.cu`,
-`src/geometry/cuda_point_cloud_factory.cu`) is the oracle until this stage agrees with it
-within a stated tolerance. Its deprojection and depth range carry over; these do not:
+The prototype's point cloud from a frame, CUDA_3D's, was the oracle until this stage agreed with
+it within a stated tolerance (below); it is deleted since, and its code stands in git at 74dda68
+(`src/geometry/`). Its deprojection and depth range carry over; these do not:
 
-* **The half pixel.** It deprojects pixel (u, v) at (u - 0.5, v - 0.5) (AGENTS.md §6), so its
-  point lies (0.5 z / fx, 0.5 z / fy, 0) from this stage's. At 1 m that is 0.82 mm along x
-  and along y, 1.15 mm apart, with fx = 612.37 px at 1280x800, and 1.63 mm along each axis,
-  2.31 mm apart, with fx = 306.18 px at 640x400 [S: computed; the intrinsics,
+* **The half pixel.** It deprojected pixel (u, v) at (u - 0.5, v - 0.5), half a pixel off the
+  convention OrbbecSDK's own code uses for its intrinsics (docs/HARDWARE.md, "Pixel
+  convention"), so its point lay (0.5 z / fx, 0.5 z / fy, 0) from this stage's. At 1 m that is
+  0.82 mm along x and along y, 1.15 mm apart, with fx = 612.37 px at 1280x800, and 1.63 mm along
+  each axis, 2.31 mm apart, with fx = 306.18 px at 640x400 [S: computed; the intrinsics,
   docs/HARDWARE.md].
 * **The bilateral filter**, always on, its constants tuned for RealSense: no measured benefit
   on this camera (AGENTS.md §7 rule 6).
 * **NaN points at a minimum depth of 0.** A pixel without depth then passed the range and went
-  through the filter, whose sum over neighbours with depth was empty, 0 / 0 [S:
-  `cuda_point_cloud_factory.cu`, `__bilateral_filter`]. Here rule 1 makes it invalid.
+  through the filter, whose sum over neighbours with depth was empty, 0 / 0 [S: the
+  prototype's point-cloud kernel at 74dda68, its bilateral filter]. Here rule 1 makes it
+  invalid.
 * **No check of the frame's size** against the camera parameters: the kernel took the size
   from the parameters alone. Here the frame's size, its description's and the output's are
   compared.
 * **A new buffer every frame**: an allocation and fill of the point buffer, a
-  `cudaDeviceSynchronize`, and a compaction that drops the invalid points. Here the buffers come
-  from the pool before the scan, nothing waits, and the output stays organized.
-* **The color in each point.** It projects the point, deprojected at u - 0.5, back to the
-  color picture and takes the pixel `static_cast<int>(u_c + 0.5f)` of the result u_c, which
-  lies on the boundary between two pixels, so that float's rounding picks one of them
-  [S: `cuda_point_cloud_factory.cu`, the color lookup, `target_x` and `target_y`]. Here the
-  color stays in the frame's picture at the point's index.
+  `cudaDeviceSynchronize`, and a compaction that dropped the invalid points. Here the buffers
+  come from the pool before the scan, nothing waits, and the output stays organized.
+* **The color in each point.** It projected the point, deprojected at u - 0.5, back to the
+  color picture and took the pixel `static_cast<int>(u_c + 0.5f)` of the result u_c, which
+  lies on the boundary between two pixels, so that float's rounding picked one of them
+  [S: the prototype's point-cloud kernel at 74dda68, its color lookup]. Here the color stays in
+  the frame's picture at the point's index.
 
-**The comparison with the oracle** holds where its filter is the identity. The filter's radius
-is floor((z - near) / 0.5 m) px, at most 5, and a radius of 0 returns the pixel's own depth
-[S: `cuda_point_cloud_factory.cu`, `__adaptive_bilateral_filter`]; outside the range it is not
-applied. A range narrower than 0.5 m therefore turns it off on the whole frame, and the test
-runs both on such a range. There every valid pixel's point equals the oracle's point of the same
-pixel plus (0.5 z / fx, 0.5 z / fy, 0), and the two keep the same pixels: on three frames of a
-walk around a box at 640x400, 377831 points, each within 9.7e-8 m of the oracle's plus the half
-pixel, against a tolerance of 1e-6 m, float's rounding of the two points [M 2026-11-14:
-`tests/test_organized_points.cpp`, the range 0.3005 m to 0.7995 m]. This stays the record of
-the agreement when the prototype and its comparison are deleted.
+**The comparison with the oracle** held where its filter was the identity. The filter's radius
+was floor((z - near) / 0.5 m) px, at most 5, and a radius of 0 returned the pixel's own depth
+[S: the prototype's point-cloud kernel at 74dda68, its adaptive bilateral filter]; outside the
+range it was not applied. A range narrower than 0.5 m therefore turned it off on the whole
+frame, and the test ran both on such a range. There every valid pixel's point equalled the
+oracle's point of the same pixel plus (0.5 z / fx, 0.5 z / fy, 0), and the two kept the same
+pixels: on three frames of a walk around a box at 640x400, 377831 points, each within 9.7e-8 m
+of the oracle's plus the half pixel, against a tolerance of 1e-6 m, float's rounding of the two
+points [M 2026-11-14: `tests/test_organized_points.cpp` at 74dda68, the range 0.3005 m to
+0.7995 m]. This is the record of the agreement; the prototype and the comparison are deleted.

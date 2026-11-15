@@ -14,8 +14,8 @@
 ///   rule's threshold is left out of the reference, where float and double may decide the pair
 ///   differently; their share is bounded. So a coarser point combines exactly the pairs the rule
 ///   takes for one surface, and none across a depth edge.
-/// - The intensity of known colors at level 0 is the Rec. 709 luma and the prototype's, the
-///   oracle's, within float's rounding, and so is a coarser pixel's within one color.
+/// - The intensity of known colors at level 0 is the Rec. 709 luma within float's rounding, and so
+///   is a coarser pixel's within one color.
 /// - At both stream sizes and at a size that is no multiple of the kernels' block, a tilted
 ///   analytic plane and a plane 2 m away: every level's points lie on the plane within the
 ///   depth's rounding, a whole window's points project onto their pixels' centres, and every
@@ -40,7 +40,6 @@
 #include "geometry/frame_pyramid.hpp"
 #include "geometry/organized_normals.hpp"
 #include "geometry/organized_points.hpp"
-#include "geometry/type.hpp"
 #include "gpu/gpu_frame.hpp"
 #include "gpu/gpu_pool.hpp"
 #include "gpu/step_result.hpp"
@@ -149,11 +148,10 @@ constexpr double reference_point_tolerance_m = 1e-6;
 /// largest is 1.69e-7 [M 2026-11-14, this test].
 constexpr double reference_intensity_tolerance = 1e-5;
 
-/// An intensity against the Rec. 709 luma in double and against the oracle's: three products and
-/// two sums of numbers below 256 and a division, each rounded once in float, a few float steps of
-/// 1 [S: float32 ulp]; one step of 8 bits, 1/255, is 8000 times as large. The largest is 1.02e-7
-/// against the luma, 1.19e-7 against the oracle and 1.94e-7 inside a cell at level 2
-/// [M 2026-11-14, this test].
+/// An intensity against the Rec. 709 luma in double: three products and two sums of numbers below
+/// 256 and a division, each rounded once in float, a few float steps of 1 [S: float32 ulp]; one
+/// step of 8 bits, 1/255, is 8000 times as large. The largest is 1.02e-7 at level 0 and 1.94e-7
+/// inside a cell at level 2 [M 2026-11-14, this test].
 constexpr double intensity_tolerance = 4 * gca_test::float_step;
 
 /// A point's distance from the analytic plane, divided by the depth unit times the length of its
@@ -875,9 +873,8 @@ double rec709(const std::array<std::uint8_t, 3> &rgb)
 }
 
 /// Checks the intensity of known colors on a flat frame at 0.5 m tiled by cells of one color each:
-/// at level 0 every pixel's intensity is the Rec. 709 luma in double and the oracle's, the
-/// prototype's color3::to_intensity() of the color scaled by 1/255 as create_from_rgbd scales it;
-/// at a coarser level a pixel whose window lies inside one cell has that cell's luma.
+/// at level 0 every pixel's intensity is the Rec. 709 luma in double; at a coarser level a pixel
+/// whose window lies inside one cell has that cell's luma.
 /// @param stage [in,out] the stage of the smaller stream size.
 void check_known_colors(stage_buffers &stage)
 {
@@ -894,7 +891,6 @@ void check_known_colors(stage_buffers &stage)
     if (!complete(got))
         return;
     max_error against_rec709;
-    max_error against_oracle;
     const level_picture &frame_level = got[0];
     for (std::uint32_t v = 0; v < frame_level.size.height; v++)
     {
@@ -903,19 +899,10 @@ void check_known_colors(stage_buffers &stage)
             const std::array<std::uint8_t, 3> rgb = cell_color(cell_of(u, v));
             const double intensity = frame_level.intensity[index_of(frame_level.size, u, v)];
             against_rec709.add(std::abs(intensity - rec709(rgb)));
-            // The oracle: create_from_rgbd scales each channel by 1/255 in float
-            // (cuda_point_cloud_factory.cu), to_intensity() takes the luma in double (type.hpp).
-            const float scale = 1.0f / 255.0f;
-            const gca::color3 color{static_cast<float>(rgb[0]) * scale,
-                                    static_cast<float>(rgb[1]) * scale,
-                                    static_cast<float>(rgb[2]) * scale};
-            against_oracle.add(std::abs(intensity - double{color.to_intensity()}));
         }
     }
     check_max_error(name + ", level 0: intensity against the Rec. 709 luma in double",
                     against_rec709, intensity_tolerance);
-    check_max_error(name + ", level 0: intensity against the oracle's", against_oracle,
-                    intensity_tolerance);
     for (std::size_t level = 1; level < level_count; level++)
     {
         const level_picture &l = got[level];

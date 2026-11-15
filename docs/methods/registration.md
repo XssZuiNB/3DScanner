@@ -15,8 +15,8 @@ it (docs/adr/0002-own-reconstruction-code.md).
 Built: both terms, coarse to fine, with the numerics and the result of this document
 (`src/registration/registration.*`, the solve of one iteration's system
 `src/registration/normal_equations.*`, the SE(3) exponential `src/registration/se3.*`; the test
-`tests/test_registration.cpp`, which also holds the comparison with the prototype, "Against the
-prototype").
+`tests/test_registration.cpp`). The agreement with the prototype, measured before it was deleted,
+stands in "Against the prototype".
 
 ## Input
 
@@ -100,12 +100,12 @@ The objective at fixed correspondences is a sum over them,
 
     E = λ Σ ρ_G(r_G) + (1 - λ) Σ ρ_C(r_C),
 
-ρ the robust loss of each term ("The robust weight"), λ = 0.968 to start [S: the prototype,
-`src/registration/color_icp.hpp`, "0.968 from paper"; the paper's value is unchecked here [?]].
-λ weighs a residual in m against one in intensity units, [0, 1]; the prototype takes both units as
-here. λ is a parameter of each call, in (0, 1] ("Parameters"): λ = 1 leaves the color term out,
-and the registration is then the point-to-plane term's alone, its systems' sums bit for bit those
-of the registration before the color term joined ("Accuracy").
+ρ the robust loss of each term ("The robust weight"), λ = 0.968 to start [S: the prototype's
+colored ICP at 74dda68, "0.968 from paper"; the paper's value is unchecked here [?]]. λ weighs a
+residual in m against one in intensity units, [0, 1]; the prototype took both units as here. λ
+is a parameter of each call, in (0, 1] ("Parameters"): λ = 1 leaves the color term out, and the
+registration is then the point-to-plane term's alone, its systems' sums bit for bit those of the
+registration before the color term joined ("Accuracy").
 
 **The update** is a small motion of the surface's frame applied on the left, T ← exp(ξ^) T, with
 ξ = (ω, υ) in R^6, ω the rotation vector in rad and υ the translation in m ("The update"). To first
@@ -140,8 +140,8 @@ the second form because d_q · n = 0. With (I - n n^T) d_q = d_q and d_q · (ω 
 
     J_C = ∂r_C / ∂ξ = [ (s × d_q)^T   d_q^T ].
 
-The prototype writes J_C with (I - n n^T) d_q in place of d_q, the same vector for a gradient in
-the plane [S: `cuda_color_icp_build_least_square.cu`].
+The prototype wrote J_C with (I - n n^T) d_q in place of d_q, the same vector for a gradient in
+the plane [S: the prototype's colored ICP at 74dda68, its least squares].
 
 **The gradient d_q** is estimated once per call for each level of the surface that iterates, not
 per iteration, by a kernel of its own: for each surface pixel with a normal, by least squares over
@@ -201,11 +201,12 @@ held fixed while it solves. Huber's loss is convex, so the weight adds no minimu
 association's thresholds still cut the gross outliers, a point across a depth edge or of something
 the surface lacks. The point-to-plane term's δ_G is in m ("Parameters"); the color term's δ_C, in
 intensity units, is 0.1 of the intensity's range, a constant of the registration [?: initial]: no
-object class differs in it. δ_C = 0.03 made the fixture's real pair, frag_115 onto frag_116, end
-with its iterations used up 1.89° and 55 mm from the prototype's transform, where 0.1 converges
-within 0.25° and 4 mm of it [M 2026-11-14: `tests/test_registration.cpp`, and with δ_C = 0.03]:
-the fragments' intensities differ by more than the synthetic frames', and a weight that falls off
-early leaves the color term too weak to pull them together. A bright patch of frame B the surface
+object class differs in it. δ_C = 0.03 made the fixture's real pair, fragment A onto fragment B
+("Against the prototype"), end with its iterations used up 1.89° and 55 mm from the prototype's
+transform, where 0.1 converged within 0.25° and 4 mm of it [M 2026-11-14:
+`tests/test_registration.cpp` at 74dda68, and with δ_C = 0.03]: the fragments' intensities
+differ by more than the synthetic frames', and a weight that falls off early leaves the color
+term too weak to pull them together. A bright patch of frame B the surface
 does not hold, a highlight, leaves the transform 0.00359° and 0.116 mm off Δ with δ_C, 0.0103° and
 0.332 mm with the color term's weight 1 ("Accuracy").
 
@@ -441,7 +442,8 @@ refused as a mistake [?: a choice]:
 * **n_l**: 20 at level 0, where every case of the tests converged within 3 to 4 iterations after
   the coarser levels; 10 at levels 1 and 2, which do not converge as finely and hand on what they
   reach. The tests' recoveries took 7 to 23 systems in all, the fixture's real pair 29
-  [M 2026-11-14: `tests/test_registration.cpp`], the time per frame "On the GPU".
+  [M 2026-11-14: `tests/test_registration.cpp`, the fixture's pair at 74dda68], the time per
+  frame "On the GPU".
 * **λ**: the paper's value by the prototype; the user's starting value (spec, "Registration"),
   kept at 0.968 [?: initial] until real sequences tune it (the user's decision, 2026-11-14, late
   evening; `tracking-thresholds-from-real-sequences`). On the tests' textures it lets the color
@@ -599,46 +601,48 @@ The patches, the association's thresholds and the ends above are the point-to-pl
 
 ## Against the prototype
 
-The prototype's `gca::color_icp` (`src/registration/color_icp.*`) is the oracle: on the same frames,
-the prototype given the points their level 0 holds with their colors, this registration's
-transform lies within a stated tolerance of the prototype's, about twice the largest difference
-measured, its turn and its shift at the camera's centre and at a point of the scene
-[M 2026-11-14: `tests/test_registration.cpp`]:
+The prototype's colored ICP, CUDA_3D's, was the oracle until this registration agreed with it; it
+is deleted since, with its fixture, and its code and the comparison stand in git at 74dda68
+(`src/registration/`, `tests/test_registration.cpp`). On the same frames, the prototype given the
+points their level 0 held with their colors, this registration's transform lay within a stated
+tolerance of the prototype's, about twice the largest difference measured, its turn and its shift
+at the camera's centre and at a point of the scene [M 2026-11-14: `tests/test_registration.cpp`
+at 74dda68]; this is the record of the agreement:
 
 | case | ours from Δ | the prototype's from Δ | ours from the prototype's | tolerance |
 |---|---|---|---|---|
 | textured tilted plane, 640x400 | 0.00091°, 0.036 mm | 0.0024°, 0.42 mm | 0.0016°, 0.46 mm, 0.47 mm | 0.004°, 1.0 mm, 1.0 mm |
-| frag_116 against itself | 0.0012°, 0.023 mm | 0.0072°, 0.46 mm | 0.0060°, 0.45 mm, 0.43 mm | 0.012°, 0.9 mm, 0.85 mm |
-| frag_115 onto frag_116 | | | 0.339°, 2.72 mm, 2.92 mm | 0.7°, 5.5 mm, 6 mm |
+| fragment B against itself | 0.0012°, 0.023 mm | 0.0072°, 0.46 mm | 0.0060°, 0.45 mm, 0.43 mm | 0.012°, 0.9 mm, 0.85 mm |
+| fragment A onto fragment B | | | 0.339°, 2.72 mm, 2.92 mm | 0.7°, 5.5 mm, 6 mm |
 
 * **The textured plane**: the plane moved within itself of "Accuracy", the prototype on 85535
   points of each frame after 3 mm voxels, normals from 2 cm, gradients from 1 cm, correspondences
-  within 5 cm and at most 50 iterations, so that its own stop rule ends it [?: a choice]. CUDA_3D's
-  5 cm gradient radius would flatten the plane's waves of 5 cm to 10 cm to nothing [S: computed,
-  "The color term"]. The scene's point is the point the views look at.
-* **The fixture** (`data/frag_115.ply`, `frag_116.ply`, fragments of a room's scan with their
-  triangles): each fragment is rendered as organized frames at 640x400 by the synthetic source's
-  mesh, every pixel the nearest exact hit of its ray with a triangle, its color the triangle's
-  corners' weighted by the hit, depth rounded to 1 mm (`tests/synthetic_source.hpp`), seen from a
-  camera 1.2 m from frag_115's centroid along the mean of its normals, looking at the centroid
-  [?: a choice]. The full method takes the large object's values; the prototype CUDA_3D's, 8 mm
-  voxels, normals from 4 cm, correspondences within 5 cm, gradients from 5 cm [S:
-  `tests/test_color_icp.cpp`], at most 50 iterations: 46521 and 46158 points for frag_116 against
-  itself, 38197 and 46158 for the real pair. frag_116 against itself is moved by 1° and 7.8 mm;
-  frag_115 onto frag_116 starts from the identity, 3.64° and 74.2 mm from the prototype's
-  transform: the fixture is nearly one plane, frag_115's points 4.0 mm RMS off it and frag_116's
-  plane near it turned by 3.0° and 36 mm off [M 2026-11-14, a scratch script on the PLY files],
-  the case colored ICP is made for.
-* **What the gap is**: both methods take the same points, so the gap is the methods': the
+  within 5 cm and at most 50 iterations, so that its own stop rule ended it [?: a choice].
+  CUDA_3D's 5 cm gradient radius would flatten the plane's waves of 5 cm to 10 cm to nothing
+  [S: computed, "The color term"]. The scene's point is the point the views look at.
+* **The fixture**, two fragments of a room's scan with their triangles, A and B, which the
+  prototype's tests used and whose license was never checked (it went with the prototype): each
+  fragment was rendered as organized frames at 640x400 by a mesh in the synthetic source, every
+  pixel the nearest exact hit of its ray with a triangle, its color the triangle's corners'
+  weighted by the hit, depth rounded to 1 mm, seen from a camera 1.2 m from A's centroid along
+  the mean of its normals, looking at the centroid [?: a choice]. The full method took the large
+  object's values; the prototype CUDA_3D's, 8 mm voxels, normals from 4 cm, correspondences
+  within 5 cm, gradients from 5 cm [S: the prototype's colored-ICP test at 74dda68], at most 50
+  iterations: 46521 and 46158 points for B against itself, 38197 and 46158 for the real pair. B
+  against itself was moved by 1° and 7.8 mm; A onto B started from the identity, 3.64° and
+  74.2 mm from the prototype's transform: the fixture is nearly one plane, A's points 4.0 mm RMS
+  off it and B's plane near it turned by 3.0° and 36 mm off [M 2026-11-14, a scratch script on
+  the PLY files], the case colored ICP is made for.
+* **What the gap is**: both methods took the same points, so the gap is the methods': the
   association, by projection here, the nearest neighbour within 5 cm in 3D there; the sampling,
   every pixel here, one point per 8 mm voxel there; the gradient, over 3 x 3 pixels of 4 mm here,
   over 5 cm in 3D there; Huber's weights here, plain least squares there; three levels here, one
-  scale there. On frag_116 against itself the prototype lies 0.46 mm off the known motion where
-  ours lies 0.023 mm, so most of that gap is the prototype's own error on these frames. On the real
-  pair the 0.339° between them is 2.92 mm at frag_115's centroid, 1.2 m away, mostly a turn about
-  the plane's normal that only the texture holds; which one is nearer the truth the fixture cannot
-  say. Given every vertex of both fragments instead, about 86 % and 62 % of which the frames show
-  [?: a reviewer's projection], the prototype lay 0.246° and 3.95 mm from ours.
+  scale there. On B against itself the prototype lay 0.46 mm off the known motion where ours lay
+  0.023 mm, so most of that gap was the prototype's own error on these frames. On the real pair
+  the 0.339° between them is 2.92 mm at A's centroid, 1.2 m away, mostly a turn about the
+  plane's normal that only the texture holds; which one is nearer the truth the fixture cannot
+  say. Given every vertex of both fragments instead, about 86 % and 62 % of which the frames
+  show [?: a reviewer's projection], the prototype lay 0.246° and 3.95 mm from ours.
 
 ## On the GPU
 
@@ -678,8 +682,8 @@ call left as CUDA's last error, before the first launch; a refused launch; a fai
 
 ## What the prototype did, and what is not carried
 
-The prototype's `gca::color_icp` (`src/registration/color_icp.*`) is colored ICP at one scale on
-unorganized clouds [S: the audit of CUDA_3D, 2026-11-13]. Carried: the two residuals and their
+The prototype's colored ICP (in git at 74dda68, `src/registration/`) was colored ICP at one scale
+on unorganized clouds [S: the audit of CUDA_3D, 2026-11-13]. Carried: the two residuals and their
 Jacobians, the left update of the source in the target's frame, λ = 0.968. Not carried:
 
 * **The nearest neighbour** within the correspondence distance on a uniform grid rebuilt every
@@ -694,6 +698,6 @@ Jacobians, the left update of the source in the target's frame, λ = 0.968. Not 
 * **Plain least squares**: here Huber's weight.
 * **The color gradient** from the neighbours within 5 cm in 3D: here from the surface's window.
 
-The prototype has no point-to-plane term alone (λ is a constant), so it is no oracle for that
-term: the known transform of the synthetic pairs is. It is the oracle for colored ICP on its fixture
-and the textured plane ("Against the prototype").
+The prototype had no point-to-plane term alone (λ was a constant), so it was no oracle for that
+term: the known transform of the synthetic pairs is. It was the oracle for colored ICP on its
+fixture and the textured plane ("Against the prototype").

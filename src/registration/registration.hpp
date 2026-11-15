@@ -148,8 +148,9 @@ public:
     static constexpr float max_normal_angle_deg = 30.0f;
 
     /// δ_C, the color residual beyond which Huber's weight falls below 1, in intensity units of
-    /// [0, 1]: 0.1 of the intensity's range [?: initial]; at 0.03 the fixture's real pair did not
-    /// converge [M 2026-11-14: docs/methods/registration.md, "The robust weight"].
+    /// [0, 1]: 0.1 of the intensity's range [?: initial]; at 0.03 the real pair of the prototype's
+    /// fixture, two fragments of a room's scan, did not converge [M 2026-11-14:
+    /// docs/methods/registration.md, "The robust weight"].
     static constexpr float color_huber_threshold = 0.1f;
 
     /// R_C, the half size of the window the surface's intensity gradient is fitted over, in px of

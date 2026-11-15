@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: 0BSD
 /// @file synthetic_source.cpp
 /// The tests' synthetic source: the scene's textures and known surfaces, the trajectories, the
-/// renderer of the surfaces, the sphere and the mesh with its depth noise, and the source's states
+/// renderer of the surfaces and the sphere with its depth noise, and the source's states
 /// (see synthetic_source.hpp).
 
 #include "synthetic_source.hpp"
@@ -176,96 +176,6 @@ std::optional<double> hit_sphere(const synthetic_sphere &sphere, const Eigen::Ve
     return std::nullopt;
 }
 
-/// The nearest hit of a mesh along each pixel's ray, in a picture's pixel order.
-struct mesh_picture
-{
-    std::vector<double> depth_m;              ///< each pixel's nearest hit's depth; +inf for none
-    std::vector<std::array<double, 3>> color; ///< the hit's color, its vertices' weighted, 0 to 255
-};
-
-/// Finds where the ray of each pixel first meets a mesh in front of the camera, by the one pinhole
-/// convention: for each triangle whose vertices all lie in front of the camera's plane, over the
-/// pixels whose centres lie within its projected bounds, the exact hit of the pixel's ray
-/// ((u - cx) / fx, (v - cy) / fy, 1) with the triangle [S: T. Möller, B. Trumbore, "Fast,
-/// Minimum Storage Ray/Triangle Intersection", Journal of Graphics Tools 2(1), 1997], its edges
-/// included, so that two triangles sharing an edge leave no pixel between them unseen. The ray's z
-/// is 1, so the hit's parameter is its depth; the nearer of two hits is kept, the earlier triangle
-/// on a tie.
-/// @param mesh [in] the mesh, in the world frame.
-/// @param camera_to_world [in] the camera's pose: camera frame to world frame.
-/// @param description [in] the picture's size and intrinsics.
-/// @return each pixel's nearest hit's depth, in m, and color.
-mesh_picture render_mesh(const synthetic_mesh &mesh, const Eigen::Isometry3d &camera_to_world,
-                         const gca::frame_description &description)
-{
-    const std::uint32_t width = description.size.width;
-    const std::uint32_t height = description.size.height;
-    const gca::intrinsics &k = description.intrinsics;
-    const std::size_t pixels = static_cast<std::size_t>(width) * height;
-    mesh_picture picture{std::vector<double>(pixels, std::numeric_limits<double>::infinity()),
-                         std::vector<std::array<double, 3>>(pixels)};
-    const Eigen::Isometry3d world_to_camera = camera_to_world.inverse();
-    for (const std::array<std::uint32_t, 3> &triangle : mesh.triangles)
-    {
-        std::array<Eigen::Vector3d, 3> corner;
-        double u_low = std::numeric_limits<double>::infinity();
-        double u_high = -u_low;
-        double v_low = u_low;
-        double v_high = -u_low;
-        bool in_front = true;
-        for (std::size_t i = 0; i < 3; i++)
-        {
-            corner[i] = world_to_camera * mesh.vertices_m.at(triangle[i]);
-            in_front = in_front && corner[i].z() > 0.0;
-            const double u = k.fx * corner[i].x() / corner[i].z() + k.cx;
-            const double v = k.fy * corner[i].y() / corner[i].z() + k.cy;
-            u_low = std::min(u_low, u);
-            u_high = std::max(u_high, u);
-            v_low = std::min(v_low, v);
-            v_high = std::max(v_high, v);
-        }
-        if (!in_front)
-            continue;
-        const double first_u = std::max(std::ceil(u_low), 0.0);
-        const double last_u = std::min(std::floor(u_high), static_cast<double>(width) - 1.0);
-        const double first_v = std::max(std::ceil(v_low), 0.0);
-        const double last_v = std::min(std::floor(v_high), static_cast<double>(height) - 1.0);
-        const Eigen::Vector3d edge_1 = corner[1] - corner[0];
-        const Eigen::Vector3d edge_2 = corner[2] - corner[0];
-        const Eigen::Vector3d from_corner = -corner[0];
-        const Eigen::Vector3d q = from_corner.cross(edge_1);
-        const double s_numerator = edge_2.dot(q);
-        for (double v = first_v; v <= last_v; v++)
-        {
-            for (double u = first_u; u <= last_u; u++)
-            {
-                const Eigen::Vector3d ray = pixel_ray(k, u, v);
-                const Eigen::Vector3d p = ray.cross(edge_2);
-                const double determinant = edge_1.dot(p);
-                // A ray in the triangle's plane meets it nowhere or along a line: no hit.
-                if (determinant == 0.0)
-                    continue;
-                const double b_1 = from_corner.dot(p) / determinant;
-                const double b_2 = ray.dot(q) / determinant;
-                const double s = s_numerator / determinant;
-                if (!(b_1 >= 0.0 && b_2 >= 0.0 && b_1 + b_2 <= 1.0 && s > 0.0))
-                    continue;
-                const std::size_t pixel =
-                    static_cast<std::size_t>(v) * width + static_cast<std::size_t>(u);
-                if (!(s < picture.depth_m[pixel]))
-                    continue;
-                picture.depth_m[pixel] = s;
-                const double b_0 = 1.0 - b_1 - b_2;
-                for (std::size_t c = 0; c < 3; c++)
-                    picture.color[pixel][c] = b_0 * mesh.colors.at(triangle[0])[c] +
-                                              b_1 * mesh.colors.at(triangle[1])[c] +
-                                              b_2 * mesh.colors.at(triangle[2])[c];
-            }
-        }
-    }
-    return picture;
-}
-
 /// Draws the depth noise of one frame, one standard normal value for each pixel in the frame's
 /// order, from std::mt19937_64 seeded with the noise's seed and the frame's index
 /// (synthetic_depth_noise).
@@ -286,23 +196,20 @@ std::vector<double> standard_normals(const synthetic_depth_noise &noise, std::ui
     return values;
 }
 
-/// Renders the known surfaces, the sphere and the mesh as the camera sees them into a prepared
-/// frame, by the one pinhole convention: the ray of pixel (u, v) is ((u - cx) / fx,
-/// (v - cy) / fy, 1) in the camera frame. Its point at parameter s has the camera-frame depth s,
-/// so the ray's parameter where it meets a surface is the hit's depth, and the nearest surface is
-/// the one of the smallest s > 0; on a tie a known surface or the sphere before the mesh. With
-/// depth noise, the depth s becomes s + c s^2 n, n the pixel's standard normal value, before it is
-/// rounded; the color stays the hit's.
+/// Renders the known surfaces and the sphere as the camera sees them into a prepared frame, by the
+/// one pinhole convention: the ray of pixel (u, v) is ((u - cx) / fx, (v - cy) / fy, 1) in the
+/// camera frame. Its point at parameter s has the camera-frame depth s, so the ray's parameter
+/// where it meets a surface is the hit's depth, and the nearest surface is the one of the smallest
+/// s > 0. With depth noise, the depth s becomes s + c s^2 n, n the pixel's standard normal value,
+/// before it is rounded; the color stays the hit's.
 /// @param surfaces [in] the surfaces, in the world frame.
 /// @param sphere [in] the sphere, in the world frame, or none.
-/// @param mesh [in] the mesh, in the world frame, or none.
 /// @param camera_to_world [in] the camera's pose: camera frame to world frame.
 /// @param noise [in] the depth noise, or none.
 /// @param out [in,out] prepared for its description and index (frame::prepare()); every pixel
 ///            of its color and depth is written.
 void render(const std::vector<synthetic_surface> &surfaces,
-            const std::optional<synthetic_sphere> &sphere,
-            const std::optional<synthetic_mesh> &mesh, const Eigen::Isometry3d &camera_to_world,
+            const std::optional<synthetic_sphere> &sphere, const Eigen::Isometry3d &camera_to_world,
             const std::optional<synthetic_depth_noise> &noise, gca::frame &out)
 {
     const gca::frame_description &description = out.description();
@@ -311,9 +218,6 @@ void render(const std::vector<synthetic_surface> &surfaces,
     const Eigen::Vector3d origin = camera_to_world.translation();
     const std::span<std::uint8_t> color = out.color();
     const std::span<std::uint16_t> depth = out.depth();
-    const std::optional<mesh_picture> meshed =
-        mesh ? std::optional<mesh_picture>(render_mesh(*mesh, camera_to_world, description))
-             : std::nullopt;
     const std::vector<double> normals =
         noise ? standard_normals(*noise, out.index(), depth.size()) : std::vector<double>{};
     for (std::uint32_t v = 0; v < description.size.height; v++)
@@ -324,21 +228,17 @@ void render(const std::vector<synthetic_surface> &surfaces,
             const Eigen::Vector3d ray_world = rotation * pixel_ray(k, u, v);
             const std::optional<synthetic_hit> nearest =
                 first_hit(surfaces, sphere, origin, ray_world);
-            const bool on_mesh = meshed && (nearest ? meshed->depth_m[pixel] < nearest->s
-                                                    : meshed->depth_m[pixel] <
-                                                          std::numeric_limits<double>::infinity());
-            const double nearest_s = on_mesh ? meshed->depth_m[pixel] : nearest ? nearest->s : 0.0;
+            const double nearest_s = nearest ? nearest->s : 0.0;
             const double noisy_s =
                 noise ? nearest_s + noise->noise_per_m * nearest_s * nearest_s * normals[pixel]
                       : nearest_s;
             const double value = std::round(noisy_s / description.depth_unit_m);
-            const bool seen = (on_mesh || nearest.has_value()) && value >= 1.0 &&
+            const bool seen = nearest.has_value() && value >= 1.0 &&
                               value <= std::numeric_limits<std::uint16_t>::max();
             depth[pixel] = seen ? static_cast<std::uint16_t>(value) : 0;
             const std::array<double, 3> rgb =
-                !seen     ? std::array<double, 3>{}
-                : on_mesh ? meshed->color[pixel]
-                          : texture_color(nearest->texture, origin + nearest_s * ray_world);
+                seen ? texture_color(nearest->texture, origin + nearest_s * ray_world)
+                     : std::array<double, 3>{};
             for (std::size_t c = 0; c < 3; c++)
                 color[3 * pixel + c] = static_cast<std::uint8_t>(std::lround(rgb[c]));
         }
@@ -516,8 +416,8 @@ gca::next_result synthetic_source::next(gca::frame &out) noexcept
     if (m_next_index >= m_options.scene.trajectory.size())
         return {ending_status(m_options.ending), m_options.ending_message};
     out.prepare(m_options.description, m_next_index, m_next_index * frame_period_us);
-    render(m_surfaces, m_options.scene.sphere, m_options.scene.mesh,
-           m_options.scene.trajectory[m_next_index], m_options.depth_noise, out);
+    render(m_surfaces, m_options.scene.sphere, m_options.scene.trajectory[m_next_index],
+           m_options.depth_noise, out);
     m_next_index++;
     return {gca::next_status::frame, {}};
 }

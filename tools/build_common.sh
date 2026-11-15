@@ -13,9 +13,10 @@
 # tools/run_mutant.sh builds through tools/verify.sh. It is four, not one per
 # core (six on this board), the user's decision of 2026-11-13.
 # Measured on 2026-11-13 [M 2026-11-13]:
-#   - the peak memory of one compiler process: registration/color_icp.cu
-#     1554 MB, geometry/cuda_estimate_normals.cu 804 MB,
-#     registration/cuda_color_icp_build_least_square.cu 746 MB;
+#   - the peak memory of one compiler process: the prototype's colored ICP
+#     1554 MB, its normals 804 MB, its colored ICP's least squares 746 MB,
+#     CUDA files of the prototype, which is deleted since (in git at 74dda68);
+#     the peak of the rewrite's own files is unmeasured [?];
 #   - MemAvailable when idle: about 4.3 to 4.5 GB of 7.4 GiB;
 #   - at -j3 MemAvailable fell to 1.69 GB at its lowest, with no swap used;
 #   - a -j6 clean build of Eigen-heavy CUDA code froze the board at about

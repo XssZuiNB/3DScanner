@@ -14,10 +14,8 @@
 ///   picture's middle and one near its side: the normals agree with the analytic ones within an
 ///   angle of each size. Near the picture's side the sphere has normals with n.z > 0 that point
 ///   toward the camera. The tilted plane also at a size that is no multiple of the kernel's block.
-/// - Against the prototype's estimate_normals(), the oracle, run on the stage's own valid points
-///   of three frames of the tabletop walk: away from depth edges and creases the two agree as
-///   lines within an angle. The same frames with windows of radius 1 and 2 agree with the
-///   reference.
+/// - Three frames of the tabletop walk, depth edges where the box hides the plane, agree with the
+///   reference, the first also with windows of radius 1 and 2.
 /// - Depth edges, too few points and the eigensolver's diagonal case, on frames built here: a step
 ///   in depth beyond the rule marks its two columns, one within it marks nothing, and beside a
 ///   large step the normals are the flat ones; a neighbourhood of exactly the fewest points has a
@@ -35,8 +33,6 @@
 #include "check.hpp"
 #include "geometry/organized_normals.hpp"
 #include "geometry/organized_points.hpp"
-#include "geometry/point_cloud.hpp"
-#include "geometry/type.hpp"
 #include "gpu/gpu_frame.hpp"
 #include "gpu/gpu_pool.hpp"
 #include "gpu/step_result.hpp"
@@ -56,7 +52,6 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
-#include <memory>
 #include <numbers>
 #include <optional>
 #include <string>
@@ -77,7 +72,6 @@ using gca_test::check_no_cuda_error;
 using gca_test::check_refused;
 using gca_test::check_within;
 using gca_test::create_stream;
-using gca_test::distance_from;
 using gca_test::granted;
 using gca_test::grey;
 using gca_test::index_of;
@@ -128,10 +122,6 @@ constexpr gca::organized_points_parameters box_range = {0.3005f, 0.9995f};
 /// The range of the frames built here, which lie at 0.5 m to 0.6 m [?: a choice].
 constexpr gca::organized_points_parameters built_range = {0.3005f, 0.9995f};
 
-/// The oracle's search radius: 1 cm [?: a choice, a neighbourhood of a few dozen points at the
-/// walk's 0.4 m to 0.6 m, as the stage's 7x7 window].
-constexpr float oracle_radius_m = 0.01f;
-
 /// | |n| - 1 |: 8 float steps, the eigensolver's normalized cross product rounded a few times
 /// [S: float32 ulp]. The largest is 4.24e-7, 3.6 steps [M 2026-11-14].
 constexpr double length_tolerance = 8 * gca_test::float_step;
@@ -168,11 +158,6 @@ constexpr analytic_tolerance large_tilted = {13.0, 1.0};
 constexpr analytic_tolerance large_far = {5.5, 0.3};
 constexpr analytic_tolerance large_sphere = {18.0, 1.5};
 constexpr analytic_tolerance large_side_sphere = {30.0, 2.6};
-
-/// The stage against the oracle as lines, in degrees. The largest is 11.9, at a pixel of the
-/// plane at the picture's left border, whose window is cut to 4 columns (the test prints both
-/// normals' angles to the plane's there), and the median 0.509 [M 2026-11-14].
-constexpr analytic_tolerance oracle_tolerance = {15.0, 0.6};
 
 /// A flat picture's normals against (0, 0, -1), in degrees: 8 float steps in radians [S: float32
 /// ulp]. The largest is 0: a window of one depth has no spread along z, and the eigensolver gives
@@ -708,127 +693,6 @@ void check_spheres(stream_case &size)
     check(leaning_out > 0, ("sphere near the side" + at + ": normals with n.z > 0").c_str());
 }
 
-/// Runs the oracle, the prototype's estimate_normals(), on a picture's valid points.
-/// @param got [in] the picture.
-/// @param pixels [out] the index of the pixel of each oracle normal.
-/// @return the oracle's normals, one for each valid pixel in index order; empty, with a failed
-///         check, when it failed.
-/// @note The oracle runs on the default stream and waits for the whole device.
-std::vector<float3> oracle_normals(const downloaded &got, std::vector<std::size_t> &pixels)
-{
-    std::vector<gca::point_t> cloud;
-    pixels.clear();
-    for (std::size_t pixel = 0; pixel < got.mask.size(); pixel++)
-    {
-        if (got.mask[pixel] == 0)
-            continue;
-        gca::point_t point{};
-        point.coordinates = got.points[pixel];
-        point.color = gca::color3{0.5f, 0.5f, 0.5f};
-        point.property = gca::point_property::inactive;
-        cloud.push_back(point);
-        pixels.push_back(pixel);
-    }
-    const std::shared_ptr<gca::point_cloud> oracle = gca::point_cloud::create_from_points(cloud);
-    const bool estimated = oracle->estimate_normals(oracle_radius_m);
-    check(estimated, "oracle: estimate_normals()");
-    std::vector<float3> normals = estimated ? oracle->download_normals() : std::vector<float3>{};
-    check(normals.size() == pixels.size(), "oracle: one normal for each point");
-    return normals.size() == pixels.size() ? normals : std::vector<float3>{};
-}
-
-/// The comparison with the oracle over the frames.
-struct oracle_counts
-{
-    std::size_t compared = 0; ///< pixels away from depth edges and creases with both normals
-    max_error angle_deg;      ///< the axis angle between the two, in degrees
-    std::vector<double> all;  ///< every axis angle, for the median
-    /// At the largest axis angle: the stage's normal's and the oracle's axis angle to the normal
-    /// of the pixel's known surface, in degrees, its pixel and whether its window is cut.
-    double largest_stage_to_face_deg = 0.0;
-    double largest_oracle_to_face_deg = 0.0;
-    std::uint32_t largest_u = 0;
-    std::uint32_t largest_v = 0;
-    bool largest_cut = false;
-};
-
-/// Returns the angle between two lines.
-/// @param a [in] the first line's direction, not zero.
-/// @param b [in] the second line's direction, not zero.
-/// @return the angle in degrees, 0 to 90.
-double axis_angle_deg(const Eigen::Vector3d &a, const Eigen::Vector3d &b)
-{
-    const double angle = angle_deg(a, b);
-    return std::min(angle, 180.0 - angle);
-}
-
-/// Compares a picture's normals with the oracle's as lines, at pixels away from depth edges and
-/// creases: the pixel's window lies on the pixel's own known surface, and no other known surface
-/// lies within the oracle's radius of its point.
-/// @param got [in] the picture.
-/// @param surfaces [in] the known surfaces.
-/// @param pose [in] the picture's pose, camera frame to world frame.
-/// @param counts [in,out] the comparisons are added.
-void compare_oracle(const downloaded &got, const std::vector<gca_test::synthetic_surface> &surfaces,
-                    const Eigen::Isometry3d &pose, oracle_counts &counts)
-{
-    std::vector<std::size_t> pixels;
-    const std::vector<float3> oracle = oracle_normals(got, pixels);
-    if (oracle.empty())
-        return;
-    // Each valid pixel's surface: the nearest known one.
-    std::vector<int> label(got.mask.size(), -1);
-    for (std::size_t pixel = 0; pixel < got.mask.size(); pixel++)
-    {
-        if (got.mask[pixel] == 0)
-            continue;
-        const Eigen::Vector3d world = pose * to_double(got.points[pixel]);
-        double nearest = std::numeric_limits<double>::infinity();
-        for (std::size_t s = 0; s < surfaces.size(); s++)
-        {
-            const double distance = distance_from(surfaces[s], world);
-            if (distance < nearest)
-            {
-                nearest = distance;
-                label[pixel] = static_cast<int>(s);
-            }
-        }
-    }
-    for (std::size_t i = 0; i < pixels.size(); i++)
-    {
-        const std::size_t pixel = pixels[i];
-        const float3 &mine = got.normals[pixel];
-        if (is_zero(mine) || is_zero(oracle[i]))
-            continue;
-        const auto u = static_cast<std::uint32_t>(pixel % got.size.width);
-        const auto v = static_cast<std::uint32_t>(pixel / got.size.width);
-        if (!whole_window(got, u, v, [&](std::size_t j) { return label[j] == label[pixel]; }))
-            continue;
-        const Eigen::Vector3d world = pose * to_double(got.points[pixel]);
-        bool alone = true;
-        for (std::size_t s = 0; s < surfaces.size(); s++)
-            alone = alone && (static_cast<int>(s) == label[pixel] ||
-                              distance_from(surfaces[s], world) > oracle_radius_m);
-        if (!alone)
-            continue;
-        const double angle = axis_angle_deg(to_double(mine), to_double(oracle[i]));
-        if (counts.compared == 0 || angle > counts.angle_deg.max)
-        {
-            const gca_test::synthetic_surface &face = surfaces[label[pixel]];
-            const Eigen::Vector3d face_normal =
-                pose.linear().transpose() * face.axis_u.cross(face.axis_v);
-            counts.largest_stage_to_face_deg = axis_angle_deg(to_double(mine), face_normal);
-            counts.largest_oracle_to_face_deg = axis_angle_deg(to_double(oracle[i]), face_normal);
-            counts.largest_u = u;
-            counts.largest_v = v;
-            counts.largest_cut = !window_not_cut(got, u, v);
-        }
-        counts.compared++;
-        counts.angle_deg.add(angle);
-        counts.all.push_back(angle);
-    }
-}
-
 /// Checks the stage with windows of radius 1 and 2 on one frame against the reference.
 /// @param frame [in] the frame, of the stage's size.
 /// @param stage [in,out] the stage of the frame's size.
@@ -851,8 +715,7 @@ void check_other_windows(const gca::frame &frame, stage_buffers &stage)
 }
 
 /// Checks three frames of the tabletop walk, with depth edges where the box hides the plane: every
-/// normal and the reference, at depth edges too, the comparison with the oracle away from them,
-/// and the first frame with the other windows.
+/// normal and the reference, at depth edges too, and the first frame with the other windows.
 /// @param stage [in,out] the stage of the smaller stream size.
 void check_tabletop_walk(stage_buffers &stage)
 {
@@ -866,7 +729,6 @@ void check_tabletop_walk(stage_buffers &stage)
     const rendered scene =
         render({.plane = tabletop_plane, .box = tabletop_box, .trajectory = *trajectory},
                small_description);
-    oracle_counts counts;
     int at_edge = 0;
     for (std::size_t i = 0; i < scene.frames.size(); i++)
     {
@@ -875,21 +737,9 @@ void check_tabletop_walk(stage_buffers &stage)
         if (made.got.points.empty())
             continue;
         at_edge += made.reference.at_edge;
-        compare_oracle(made.got, scene.surfaces, (*trajectory)[i], counts);
     }
     std::printf("tabletop walk: %d pixels at a depth edge, without a normal\n", at_edge);
     check(scene.frames.size() == 3 && at_edge > 0, "tabletop walk: three frames with depth edges");
-    std::printf("tabletop walk, oracle: %zu normals away from depth edges and creases\n",
-                counts.compared);
-    std::printf("tabletop walk, oracle: at the largest axis angle, pixel (%u, %u), its window %s, "
-                "the stage's normal is %.3g degrees off its face's and the oracle's %.3g\n",
-                counts.largest_u, counts.largest_v, counts.largest_cut ? "cut" : "whole",
-                counts.largest_stage_to_face_deg, counts.largest_oracle_to_face_deg);
-    check(counts.compared > 0, "tabletop walk, oracle: normals to compare");
-    check_max_error("tabletop walk, oracle: axis angle to the prototype's normal, in degrees",
-                    counts.angle_deg, oracle_tolerance.largest_deg);
-    check_within("tabletop walk, oracle: median axis angle to the prototype's normal, in degrees",
-                 median(std::move(counts.all)), oracle_tolerance.median_deg);
     if (!scene.frames.empty())
         check_other_windows(scene.frames[0], stage);
 }

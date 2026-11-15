@@ -184,8 +184,9 @@ built without a measured need (AGENTS.md §7 rule 6).
 On the synthetic source's frames, depth unit 1 mm, the camera's intrinsics at each size and the
 normals' starting parameters [M 2026-11-14: `tests/test_frame_pyramid.cpp`]:
 
-* **The intensity** of known colors lies within 1.02e-7 of the Rec. 709 luma computed in double
-  and within 1.19e-7 of the prototype's; a pixel of level 2 inside one color within 1.94e-7.
+* **The intensity** of known colors lies within 1.02e-7 of the Rec. 709 luma computed in double,
+  and lay within 1.19e-7 of the prototype's before it was deleted (its record, "What the
+  prototype did"); a pixel of level 2 inside one color within 1.94e-7.
 * **The combining** agrees with the method computed in double from the level before as the GPU
   left it, wherever no pair of a window lies within 1° of the rule's threshold: the same pixels
   are valid, the points within 1.79e-7 m and the intensities within 1.69e-7, on every picture
@@ -246,9 +247,12 @@ levels' contents then unspecified.
 
 ## What the prototype did, and what is not carried
 
-The prototype registers at one scale and has no pyramid. Its intensity is
-`gca::color3::to_intensity()` (`src/geometry/type.hpp`), the Rec. 709 luma of a point's color,
-whose channels `create_from_rgbd` scales by 1/255 in float, computed in double and rounded to
-float [S: `type.hpp`, `cuda_point_cloud_factory.cu`]. Carried: the coefficients and the scale to
-[0, 1]. Not carried: the intensity computed anew from a point's color at every use, in double;
-here it is one image of each level, computed once per frame in float.
+The prototype registered at one scale and had no pyramid; it is deleted since, and its code
+stands in git at 74dda68 (`src/geometry/`). Its intensity was the Rec. 709 luma of a point's
+color, whose channels its point cloud from a frame scaled by 1/255 in float, computed in double
+and rounded to float [S: the prototype's point type and point-cloud kernel at 74dda68]. On the
+test's cells of known colors this stage's intensity lay within 1.19e-7 of it, against a
+tolerance of 4 float steps, 4.8e-7 [M 2026-11-14: `tests/test_frame_pyramid.cpp` at 74dda68];
+this is the record of the agreement. Carried: the coefficients and the scale to [0, 1]. Not
+carried: the intensity computed anew from a point's color at every use, in double; here it is
+one image of each level, computed once per frame in float.

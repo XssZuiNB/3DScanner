@@ -28,10 +28,10 @@ deviation. This document adds what the guides leave to the project.
   for g++ and `-std=c++20` for nvcc [M 2026-11-14: `compile_commands.json` of a configure of
   the tree, 20 of 20 entries]. C++17 is the fallback where C++20 fails on this board's tools;
   such a failure is written here with its measurement.
-  - The tree builds without a warning and its tests pass as C++20, Eigen 3.4.0, Thrust,
-    OpenCV and OrbbecSDK included [M 2026-11-14: `tools/verify.sh`]. C++20 removed the
-    constructor spelling `cuda_frame<T, N_CHANNEL>(...)`: g++ 11 refuses it and nvcc takes it
-    [M 2026-11-13]; `cuda_frame(...)`, as `src/gpu/cuda_frame.cuh` spells it, is right in both
+  - The tree builds without a warning and its tests pass as C++20, Eigen 3.4.0, OpenCV and
+    OrbbecSDK included [M 2026-11-14: `tools/verify.sh`]. C++20 removed the spelling of a class
+    template's constructor with its arguments, `name<T, N>(...)`: g++ 11 refuses it and nvcc
+    takes it [M 2026-11-13, on a class of the prototype]; the plain `name(...)` is right in both
     dialects.
   - CMake knows the CUDA dialect from 3.25.2 on, with nvcc 12.0 and above [S: CMake 3.25's
     release notes, "Updates", 3.25.2]; apt's 3.22.1 refuses it, also when only
@@ -64,11 +64,14 @@ deviation. This document adds what the guides leave to the project.
   `-diag-suppress`), and `-Wreorder`. The top-level `CMakeLists.txt` sets them on every target;
   `tools/verify.sh` fails on any warning in the configure or build log, also on a ccache hit,
   which replays the compile's warnings. A warning in code that stays is fixed, not silenced.
-  nvcc's opt-ins `-Wdefault-stream-launch` and `-Wmissing-launch-bounds` stay off: they are no
-  defaults, and in today's kernels they print 4 and 5 warning lines (#20198-D and #20238-D, in
-  `gpu_check.cu` and `cuda_point_cloud_factory.cu`) [M 2026-11-13], kernels the rewrite
-  replaces; the rewrite can turn them on. `-Wext-lambda-captures-this` cannot fire without
-  `--extended-lambda`, which the build does not use.
+  nvcc's opt-ins `-Wdefault-stream-launch` (a launch that names no stream, #20198-D) and
+  `-Wmissing-launch-bounds` (a kernel without `__launch_bounds__`, #20238-D) are on too, so that
+  every kernel states its block's size and every launch its stream; the prototype's kernels, the
+  only ones that tripped them [M 2026-11-13], are deleted, and the tree builds without either
+  [M 2026-11-15: `tools/verify.sh`]. A kernel without its bounds and a launch without a stream
+  each fail verify on its warning [M 2026-11-15: `tools/run_mutant.sh`].
+  `-Wext-lambda-captures-this` cannot fire without `--extended-lambda`, which the build does not
+  use.
 - **Include order:** the file's own header, then this tree's headers (`"camera/..."`, from
   `src/`), then the system and library headers, each group sorted.
 - **File names:** snake_case; `.cpp`/`.hpp` for host code, `.cu`/`.cuh` for CUDA.
