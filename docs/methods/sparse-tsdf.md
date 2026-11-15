@@ -31,7 +31,7 @@ The TSDF lives in the models' frame, the camera frame of the first fused frame
 (docs/SCAN_FILES.md, "The models' frame"): x right, y down, z forward, in m. A pose maps the
 camera frame of a frame into it (`src/types/camera_pose.hpp`).
 
-* **The voxel size** v, in m, is the TSDF's one length: the live model's or the final models'
+* **The voxel size** v, in m, is the TSDF's one length: the live model's TSDF's or the full model's TSDF's
   of the object class (GLOSSARY.md, "Voxel size"; `src/scan/object_class.cpp`). Voxel g, a
   triple of integers, is the cube [g, g + 1) v; its values stand for the cube's centre
   (g + ½) v. The point p lies in voxel floor(p / v).
@@ -118,10 +118,10 @@ user's, 2026-11-14, each for the reason given]:
   be set by measurement, and the check of one frame below limits every size at its budget.
 * **c above 0 up to 0.02 /m**, twice the datasheet's bound: the measured c is likely below the
   bound, which holds the plane's flatness besides the noise, and twice it leaves room for a camera
-  noisier than its datasheet. At the object classes' budget, 2.0 GB, every final model passes
+  noisier than its datasheet. At the object classes' budget, 2.0 GB, every full model passes
   the check of one frame over the whole range, the large object's at 0.02 /m with N at 0.80 of
   the room; so does every budget from 1.11 GB, where S becomes 2^21, up to the board's memory.
-  Below that the final models pass only part of the range, at 1.0 GB the large object's up to
+  Below that the full models pass only part of the range, at 1.0 GB the large object's up to
   0.0132 /m [S: computed, "One frame's blocks"], so a smaller budget can refuse a measured c.
 * **k from 1 to 5**: five standard deviations hold all but 6e-7 of a Gaussian
   noise's measurements [S: the normal distribution], and a wider band only lets nearer surfaces
@@ -301,7 +301,7 @@ of blocks B for which
 so at 2.0 GB, B = 479620 blocks and S = 2097152 slots, 1999996448 bytes, of which the keys and
 numbers take 25.2 MB and the stamps and the list 10.3 MB [S: computed]. B is at most 2^29, so that
 S fits 32 bits. The stamps and the list are the allocation's ("The allocation near a frame's
-surface"). S is four times B, not twice, so that one frame of a final model fits the hash ("One
+surface"). S is four times B, not twice, so that one frame of the full model's TSDF fits the hash ("One
 frame's blocks") [?: a choice, the user's, 2026-11-14]: at 2.0 GB that costs 4092 blocks, 0.85 %
 of the pool, against S at twice B [S: computed].
 
@@ -374,8 +374,8 @@ and S doubles.
 count of the distinct blocks met by the bands of the 1024000 pixels' rays, each sampled every
 eighth of a block, at three poses: the identity, a turn of 30° about x and one of 54.7° about
 (1, -1, 0) [S: computed, a CPU count].) At 2.0 GB the room is 1617532 blocks, so every model is
-granted, the final ones with 3.15 and 2.67 times their N [S: computed]. A final model's frame of
-this kind takes 72 % to 79 % of its pool for the tabletop object and 93 % to 94 % for the large
+granted, the full models' with 3.15 and 2.67 times their N [S: computed]. A frame of the full model's
+TSDF of this kind takes 72 % to 79 % of its pool for the tabletop object and 93 % to 94 % for the large
 object [S: computed, the counts over B]. The allocation's test measures N's margin at its edge:
 a wall at 3.119 m filling 1280x800 at 8 mm voxels, N = 105778.4 against
 a room of 105779, touches 68321 blocks at the identity and 74437 turned by 54.7° about
@@ -559,7 +559,7 @@ in the camera frame of the pose with its validity mark, a normal or none, and an
   the model at its own ray, not the pyramid's combining of the finer level. Through the
   registration they do what the frame's pyramid's levels do ("What the ray cast gives"); a
   combining is built only on a measured need.
-* **No color** [?: a choice]: the cast gives the intensity alone, the registration being its one
+* **No color** [?: the user's decision, 2026-11-15]: the cast gives the intensity alone, the registration being its one
   reader; a reader that needs the cast's colors adds them. The full model's colors come from the
   extraction.
 * **No depth edges** [?: a choice]: the normals do not mark depth edges as the normals stage's do,
@@ -724,7 +724,7 @@ largest:
 | large, live | 8 mm | 3.0 m | 181794 | 0.51 / 4.41 / 13.0 | 4.2 / 24.3 / 84.6 | 16.1 / 91.8 / 183 |
 | large, final | 4 mm | 2.0 m | 772148 | 0.41 / 4.97 / 14.9 | 6.6 / 44.7 / 176 | 7.4 / 98.7 / 199 |
 
-(The far depths of the final models are nearer than their object classes', so that the test's
+(The far depths of the full models are nearer than their object classes', so that the test's
 pool of 65536 blocks holds one frame's bound.) The normals at 1 mm voxels show the depth's steps
 of 1 mm. The largest angles, flipped up to 176°, lie where the band reaches past the sphere's
 rim. The colors follow the textures' waves of 45 mm to 100 mm, up to 14 levels a millimetre

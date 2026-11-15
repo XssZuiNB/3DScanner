@@ -283,7 +283,7 @@ bool is_small(const Eigen::VectorXd &step)
 /// Says whether the Gauss-Newton step without damping is small: the check that a damped step under
 /// ε_ω and ε_υ ends the solve at a minimum and not where the damping shrank it, which a damping by
 /// H's diagonal does in the weak directions of an Ω whose eigenvalues span far [?: the
-/// orchestrator's choice, 2026-11-15, option (a) over a refusal of Ω's span;
+/// user's decision, 2026-11-15, option (a) over a refusal of Ω's span;
 /// docs/methods/refinement.md, "The end"].
 /// @param system [in] the system at the poses the solve would end with.
 /// @return whether H h = -g factorizes and its h is_small(); false when the factorization fails

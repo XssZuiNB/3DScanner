@@ -11,6 +11,15 @@ stay OrbbecSDK, Eigen and OpenCV; the web page alone may add small libraries. Ev
 carries a permissive license (MIT, BSD, Apache, MPL, 0BSD): no GPL and no non-commercial code
 or data. Decided by the user, 2026-11-13.
 
+**OrbbecSDK's LGPL parts.** OrbbecSDK v2.10.6 is MIT and carries libusb (LGPL-2.1) and live555
+(LGPL) statically inside `libOrbbecSDK.so` [B 2026-11-15: `readelf -d` names only libc, libstdc++,
+libm, libgcc_s, libdl, libpthread and ld-linux; `strings` finds 421 lines with "libusb" and the
+string "LIVE555 Streaming Media"; the SDK's `licenses/THIRD_PARTY_LICENSES.md` lists both]. The
+user accepted this on 2026-11-15: the permissive-only rule covers the code the tree holds and
+links as its own. The camera vendor's SDK is linked dynamically and fetched by
+`tools/fetch_deps.sh`, not distributed by the tree. A device sold with the SDK installed needs a
+license check then [?: not legal advice].
+
 ## Considered Options
 
 * Open3D (MIT) for tracking, fusion and meshing: CUDA_3D's algorithms would go, and Open3D

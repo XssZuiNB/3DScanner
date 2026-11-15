@@ -2,7 +2,7 @@
 /// @file test_box_measure.cpp
 /// Offline test of the acceptance tool's box fit (box_measure.hpp) and of the program box_fit on
 /// object models the test builds: the five faces of a box of each object class's size, a point
-/// every voxel of the class's final model, in four orientations and up to 2.5 m away, each face
+/// every voxel of the class's full model, in four orientations and up to 2.5 m away, each face
 /// with its own noise along its normal and its normals tilted at random, from a fixed seed. The
 /// three edges agree with the box's, each face's spread with its noise, each face's normal with
 /// the box's. They stay so with an end seen only in its upper half, with a few stray normals

@@ -39,9 +39,9 @@
 ///   request's refusals of a single value are test_sparse_tsdf_blocks.cpp's.
 /// - One frame's bound (docs/methods/sparse-tsdf.md, "One frame's blocks"), computed here in
 ///   double from the method's formula with the camera's 1280x800 intrinsics: every object class's
-///   live and final models pass the request's checks at its budget and far depth, each requested
+///   live and full models pass the request's checks at its budget and far depth, each requested
 ///   from a closed pool, which refuses the first claim, so that no device memory is claimed for
-///   them; each final model at the farthest depth the request takes, 10 m, is refused by the
+///   them; each full model at the farthest depth the request takes, 10 m, is refused by the
 ///   bound before any claim, at its object class's budget; at the edge the request is
 ///   granted with a budget of B blocks and refused with B + 1, granted at a far depth whose bound
 ///   lies 50 blocks inside the room and refused 50 blocks outside it. The edge frame, a wall
@@ -756,11 +756,11 @@ unclaimed_request request_from_closed(const gca::sparse_tsdf_parameters &paramet
     return checked;
 }
 
-/// Every object class's live and final models pass the request's checks at its budget and far
+/// Every object class's live and full models pass the request's checks at its budget and far
 /// depth, with the method's starting values of the truncation's rule (parameters_of()), without
 /// device memory: each is requested from a closed pool, comes back closed with its first claim
 /// refused, and the room of its budget's layout (layout_for_budget()) lies above its bound
-/// computed here; the bounds are printed against the room. Each final model at the farthest depth
+/// computed here; the bounds are printed against the room. Each full model at the farthest depth
 /// the request takes, 10 m, is refused by the same check at its object class's budget before any
 /// claim: its bound, 5.4e9 blocks at 1 mm and 8.7e7 at 4 mm, lies above the room of every budget
 /// the board's 7607 MB could hold, 7.3e6 blocks at most, at 4.43 GB [S: computed].
@@ -791,7 +791,7 @@ void check_object_classes(cudaStream_t stream)
             check(frame_bound_blocks(parameters) < room_of(layout),
                   (what + ": one frame's bound below the room").c_str());
         }
-        const std::string what = std::string(gca::name_of(kind)) + ", final model at 10 m";
+        const std::string what = std::string(gca::name_of(kind)) + ", full model at 10 m";
         const gca::sparse_tsdf_parameters farthest = {p.memory_budget_bytes,
                                                       static_cast<float>(p.full_voxel_size_m),
                                                       method_truncation, gca::farthest_max_depth_m};

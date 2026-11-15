@@ -83,7 +83,7 @@ enum class pose_graph_end
 {
     /// A step under which every node turned by less than ε_ω and moved by less than ε_υ, and the
     /// Gauss-Newton step without damping at the poses it ended with under them too [?: the
-    /// orchestrator's choice, 2026-11-15, option (a) over a refusal of Ω's span].
+    /// user's decision, 2026-11-15, option (a) over a refusal of Ω's span].
     converged,
     iterations_used_up, ///< max_iterations steps without such a pair of steps
     /// The graph has no edge, or a node no chain of edges joins to node 0; nothing was solved.

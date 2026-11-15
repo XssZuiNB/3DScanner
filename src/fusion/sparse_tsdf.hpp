@@ -201,7 +201,7 @@ struct truncation_parameters
 /// The sparse TSDF's parameters: its memory, its one length, its truncation distance and the far
 /// depth of the frames it takes. Its operations all take them from the sparse TSDF, which keeps
 /// them from its request. The scan fills them: the budget, the voxel size and the far depth from
-/// the object class (scan/object_class.hpp), the live model's voxel size or the final models'.
+/// the object class (scan/object_class.hpp), the live model's voxel size or the full model's.
 struct sparse_tsdf_parameters
 {
     std::uint64_t memory_budget_bytes; ///< all of the sparse TSDF's device memory, in bytes;
@@ -368,9 +368,9 @@ private:
 /// Each level comes with its intrinsics, the cast's divided by 2^l. These are the images the
 /// registration takes as the surface at each level (registration/registration.hpp,
 /// organized_surface), so that the cast hands over all of the pyramid's levels; it gives no RGB
-/// color, the registration being its one reader [?: a choice; a reader that needs the cast's colors
-/// adds them]. Besides, for the cast's own use, an image of the depths each tile of
-/// depth_tile_px x depth_tile_px pixels of level 0 sees the held blocks at
+/// color, the registration being its one reader [?: the user's decision, 2026-11-15; a reader that
+/// needs the cast's colors adds them]. Besides, for the cast's own use, an image of the depths each
+/// tile of depth_tile_px x depth_tile_px pixels of level 0 sees the held blocks at
 /// (docs/methods/sparse-tsdf.md, "The ray cast", "The depth interval"). The images' memory comes
 /// from the pool that closes. Move-only. Not synchronized: one thread at a time uses one.
 class model_surface

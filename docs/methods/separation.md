@@ -62,7 +62,8 @@ lies along the box's longer side in the plane, of either sign. A point q of the 
 
 The models' frame is the first camera's, so the support plane lies at any tilt in it and no axis of
 it is up. **The camera is hand-held and held roughly upright** [?: a choice, the orchestrator's,
-2026-11-15, for the user to confirm]: its x axis lies level up to its roll, at any pitch, and its y
+2026-11-15; the user decided the same day that up comes from the camera's IMU gravity, and
+`separation-up-from-gravity` replaces this assumption]: its x axis lies level up to its roll, at any pitch, and its y
 axis points down, leaning back by the pitch θ, y = -cos θ up - sin θ f, f the level direction it
 looks along [S: computed]. So the mean of the cameras' up axes,
 

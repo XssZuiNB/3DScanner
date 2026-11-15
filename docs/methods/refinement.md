@@ -184,7 +184,7 @@ Each iteration factorizes and solves once and judges its step. The solve ends:
 * **converged** at the first step, accepted or not, under which every node turns by less than ε_ω =
   1e-6 rad and moves by less than ε_υ = 1e-6 m, a thousandth of a depth unit [?: initial], when the
   Gauss-Newton step without damping, taken at the poses the solve would end with, lies under them
-  too [?: the orchestrator's choice, 2026-11-15, option (a) over a refusal of Ω's span]; an accepted
+  too [?: the user's decision, 2026-11-15, option (a) over a refusal of Ω's span]; an accepted
   step is applied. When the undamped step is not small, the solve goes on with its damping as it
   was. A small step that is not accepted comes after rejected steps have grown the damping; with
   exact derivatives that means the objective has no decrease left within double's rounding, since

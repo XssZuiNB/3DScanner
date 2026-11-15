@@ -83,7 +83,7 @@ constexpr const char *unusable_pose = "the pose cannot be used: its position and
 static_assert(sizeof(unsigned long long) == sizeof(std::uint64_t), "a key is one 64-bit word");
 
 /// Gives the slots of the hash for a number of blocks: four times as many, so that the room once
-/// the pool is used up holds one frame of the object classes' final models
+/// the pool is used up holds one frame of the object classes' full models' TSDFs
 /// (docs/methods/sparse-tsdf.md, "One frame's blocks").
 /// @param blocks [in] the blocks, from 1 to max_blocks.
 /// @return the least power of two >= 4 blocks.

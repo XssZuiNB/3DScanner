@@ -50,15 +50,15 @@ struct model_case
 /// sparse TSDF's far depth the class's or nearer.
 /// @param name [in] the case's name.
 /// @param kind [in] the object class.
-/// @param final_model [in] whether the final models' voxel size, else the live model's.
+/// @param full_model [in] whether the full models' voxel size, else the live model's.
 /// @param nearer_far_m [in] the sparse TSDF's far depth, in m, nearer than the class's; none for
 ///        the class's own.
 /// @return the case.
-inline model_case model_of(const std::string &name, gca::object_class kind, bool final_model,
+inline model_case model_of(const std::string &name, gca::object_class kind, bool full_model,
                            std::optional<double> nearer_far_m = std::nullopt)
 {
     const gca::object_class_parameters p = gca::parameters_of(kind);
-    const double voxel_m = final_model ? p.full_voxel_size_m : p.live_voxel_size_m;
+    const double voxel_m = full_model ? p.full_voxel_size_m : p.live_voxel_size_m;
     return {name,
             {case_budget, static_cast<float>(voxel_m), method_truncation,
              static_cast<float>(nearer_far_m.value_or(p.max_depth_m))},
@@ -121,7 +121,7 @@ inline std::vector<Eigen::Isometry3d> poses_of(const synthetic_walk &walk)
 /// resting on the plane at the world's origin [?: a choice].
 inline constexpr double large_sphere_radius_m = 0.4;
 
-/// The large scene's plane under the sphere: 3 m x 3 m [?: a choice, so that the final model's
+/// The large scene's plane under the sphere: 3 m x 3 m [?: a choice, so that the full model's
 /// blocks stay within the cases' pool: it takes 54285 of the 65536 (M 2026-11-15:
 /// tests/test_sparse_tsdf_fusion.cpp)].
 inline constexpr synthetic_plane large_plane = {1.5, 1.5};

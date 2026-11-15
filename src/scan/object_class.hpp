@@ -29,7 +29,7 @@ enum class object_class
 struct object_class_parameters
 {
     double live_voxel_size_m; ///< the voxel edge of the live model's TSDF, in m
-    double full_voxel_size_m; ///< the voxel edge of the final models, refinement's fusion, in m
+    double full_voxel_size_m; ///< the voxel edge of the full models, refinement's fusion, in m
     double min_depth_m;       ///< the nearest depth a frame contributes, along the camera's z, in m
     double max_depth_m; ///< the farthest depth a frame contributes, along the camera's z, in m
     std::uint64_t memory_budget_bytes; ///< all of the device memory of the scan's sparse TSDF

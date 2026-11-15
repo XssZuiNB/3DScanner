@@ -116,8 +116,10 @@ These rules hold for every file of the tree.
   robust weight. The tests feed the ill-conditioned cases: a
   single plane, points 2 m away [?: a choice], few correspondences, none.
 - **Dependencies** are OrbbecSDK, Eigen and OpenCV, and small libraries for the web page
-  ([ADR-0002](docs/adr/0002-own-reconstruction-code.md)). Each has a permissive license,
-  named in README.md, "License", and a fixed version that `tools/fetch_deps.sh` fetches.
+  ([ADR-0002](docs/adr/0002-own-reconstruction-code.md)). Each has a permissive license, named
+  with its version in README.md, "License"; OrbbecSDK carries libusb and live555 (LGPL) inside its
+  library, accepted in ADR-0002. OpenCV is the board's, from its JetPack; the others
+  are fetched at a fixed version by `tools/fetch_deps.sh`.
 
 ## Tools
 

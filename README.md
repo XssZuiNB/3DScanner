@@ -65,3 +65,13 @@ length, width and height in mm and each face's spread about its plane:
 ([ADR-0002](docs/adr/0002-own-reconstruction-code.md)); the build refuses Eigen's LGPL files
 (CODING_STANDARDS.md, "What the guides leave to this tree"). Except: the workflow skills in
 `.claude/skills/` are MIT (`.claude/skills/LICENSE-mattpocock-skills`).
+
+| dependency | version | license | where it comes from |
+|---|---|---|---|
+| OrbbecSDK | v2.10.6 | MIT, with libusb (LGPL-2.1) and live555 (LGPL) statically inside `libOrbbecSDK.so` [B 2026-11-15: `strings`], accepted in ADR-0002 | `tools/fetch_deps.sh`, linked dynamically, not distributed by the tree |
+| Eigen | 3.4.0 | MPL-2.0 only (`EIGEN_MPL2_ONLY`) | `tools/fetch_deps.sh` |
+| OpenCV | 4.8.0 | Apache-2.0 [S: Ubuntu's copyright file for 4.5.4, which says upstream relicensed to Apache-2.0 from 4.5 on; the board's 4.8.0 package ships no license file [M 2026-11-15: `dpkg -L libopencv`]] | the board's JetPack: `/usr/lib/cmake/opencv4` [M 2026-11-15: the build's CMakeCache] |
+
+The programs load OpenCV 4.8.0 [M 2026-11-15: `ldd build/apps/orbbec_viewer` names
+`/lib/libopencv_core.so.408` and the other `libopencv_*.so.408`]; Ubuntu's libopencv-core4.5d
+4.5.4 is also installed [M 2026-11-15: `dpkg -l`] and no program of the tree loads it.

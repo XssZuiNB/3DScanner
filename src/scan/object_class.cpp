@@ -27,7 +27,7 @@ constexpr std::optional<class_row> row_of(object_class kind) noexcept
         return class_row{
             "tabletop_object",
             {
-                // Coarser than the final model's, so that the live model's TSDF fits the frame
+                // Coarser than the full model's, so that the live model's TSDF fits the frame
                 // time, until the per-frame path's measurement sets it [?: initial, the user's
                 // choice, 2026-11-14].
                 .live_voxel_size_m = 0.002,
@@ -49,7 +49,7 @@ constexpr std::optional<class_row> row_of(object_class kind) noexcept
         return class_row{
             "large_object",
             {
-                // Coarser than the final model's, as the tabletop object's [?: initial, the
+                // Coarser than the full model's, as the tabletop object's [?: initial, the
                 // user's choice, 2026-11-14].
                 .live_voxel_size_m = 0.008,
                 // The voxel size the object class fixes (ADR 0004) [?: initial, the user's

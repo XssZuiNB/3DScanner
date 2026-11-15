@@ -14,7 +14,7 @@
 ///   way, as the weight limited to 64 gives, and the colors at the method's rounded recursion.
 /// - The far depth: a frame half of whose pixels lie beyond it changes nothing there.
 /// - A sphere resting on a plane, fused from a walk of 12 known poses around it, at the voxel sizes
-///   of both object classes, the live model's and the final models': the points' distances from
+///   of both object classes, the live model's and the full models': the points' distances from
 ///   the analytic surface, their median and their largest, the angles of their normals from the
 ///   surface's and the errors of their colors against the texture there, each's median and 99th
 ///   percentile, lie within measured tolerances; every normal is of unit length within the model
@@ -133,7 +133,7 @@ constexpr std::uint32_t wall_border_px = 8;
 /// within 2 voxels of a sample is found.
 constexpr double grid_cell_voxels = 2.0;
 
-/// The far depths of the final models' cases, nearer than their object classes', 0.7 m against
+/// The far depths of the full models' cases, nearer than their object classes', 0.7 m against
 /// 1.0 m and 2.0 m against 3.0 m, so that one frame's bound fits the cases' pool of case_blocks:
 /// about 163000 and 140000 blocks against a room of 196608 [S: computed, docs/methods/
 /// sparse-tsdf.md, "One frame's blocks"], where the classes' far depths give 513102 and 604739.
@@ -448,14 +448,14 @@ struct scene_tolerances
 /// The tabletop object's live model, 2 mm: distances 0.102 / 0.726 / 1.50 mm; angles 3.45 /
 /// 15.1 / 37.0 degrees; color errors 2.11 / 20.6 / 75.7 levels.
 constexpr scene_tolerances tabletop_live_tolerances = {0.15, 2.0, 5.0, 20.0, 3.0, 30.0};
-/// The tabletop object's final model, 1 mm: distances 0.106 / 0.601 / 1.38 mm; angles 6.80 /
+/// The tabletop object's full model, 1 mm: distances 0.106 / 0.601 / 1.38 mm; angles 6.80 /
 /// 30.9 / 95.2 degrees, the depth's millimetre steps showing at a voxel of 1 mm; color errors
 /// 1.71 / 21.7 / 115 levels.
 constexpr scene_tolerances tabletop_final_tolerances = {0.15, 2.0, 9.0, 40.0, 2.5, 30.0};
 /// The large object's live model, 8 mm: distances 0.511 / 4.41 / 13.0 mm; angles 4.16 / 24.3 /
 /// 84.6 degrees; color errors 16.1 / 91.8 / 183 levels.
 constexpr scene_tolerances large_live_tolerances = {0.75, 17.0, 6.0, 32.0, 22.0, 120.0};
-/// The large object's final model, 4 mm: distances 0.414 / 4.97 / 14.9 mm; angles 6.57 / 44.7 /
+/// The large object's full model, 4 mm: distances 0.414 / 4.97 / 14.9 mm; angles 6.57 / 44.7 /
 /// 176 degrees; color errors 7.37 / 98.7 / 199 levels.
 constexpr scene_tolerances large_final_tolerances = {0.6, 19.0, 9.0, 58.0, 10.0, 130.0};
 
@@ -932,14 +932,14 @@ int main()
         tabletop_scene(model_of("tabletop, live model", gca::object_class::tabletop_object, false),
                        tabletop_live_tolerances),
         stream);
-    check_scene(tabletop_scene(model_of("tabletop, final model", gca::object_class::tabletop_object,
+    check_scene(tabletop_scene(model_of("tabletop, full model", gca::object_class::tabletop_object,
                                         true, tabletop_final_far_m),
                                tabletop_final_tolerances),
                 stream);
     check_scene(large_scene(model_of("large, live model", gca::object_class::large_object, false),
                             large_live_tolerances),
                 stream);
-    check_scene(large_scene(model_of("large, final model", gca::object_class::large_object, true,
+    check_scene(large_scene(model_of("large, full model", gca::object_class::large_object, true,
                                      large_final_far_m),
                             large_final_tolerances),
                 stream);

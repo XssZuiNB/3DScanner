@@ -48,13 +48,13 @@ missed surfaces are seen before the scan stops.
 _Avoid_: preview cloud, draft
 
 **Refinement**:
-The work on a scan after the operator's stop that turns its frames into the final model.
+The work on a scan after the operator's stop that turns its frames into the full model.
 _Avoid_: post-processing, offline pass
 
 **Voxel size**:
 The edge of the small cubes the model's space is divided into; nothing smaller than a voxel is
 resolved, in shape or in color. Each object class sets two: the live model's, coarser, and the
-final model's, which refinement uses.
+full model's, which refinement fuses at.
 _Avoid_: resolution, grid size, cell size
 
 **Support plane**:
@@ -81,7 +81,7 @@ _Avoid_: user (the user is the person who owns this repository and decides its r
 
 **Full model**:
 The colored point cloud of everything a scan reconstructed, the background included.
-_Avoid_: scene, raw model, map
+_Avoid_: scene, raw model, map, final model
 
 **Object model**:
 The part of the full model that the separation assigns to the object.
@@ -90,6 +90,12 @@ _Avoid_: result, cropped model
 **Trajectory**:
 The camera's position and orientation at each frame of a scan.
 _Avoid_: path, poses
+
+**Keyframe**:
+A tracked frame the scanner keeps, with its pose and a small signature of its picture, whenever
+the camera has moved far enough since the last one; refinement optimizes the trajectory over the
+keyframes, and relocalization tries them as candidates.
+_Avoid_: key image, anchor frame, reference frame
 
 **Sequence**:
 The color and depth frames of a scan as the camera delivered them, kept so that the scan can
