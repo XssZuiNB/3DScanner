@@ -44,6 +44,7 @@ Once per machine, as root: the Orbbec udev rule, from the SDK
     <repo>/build/apps/orbbec_viewer --list     # device and stream profiles
     <repo>/build/apps/orbbec_viewer            # color | depth | overlay; s saves a PLY, q quits
     <repo>/build/apps/orbbec_viewer --sequence <dir>   # also writes every frame to <dir>/frames.sequence
+    <repo>/build/apps/orbbec_viewer --hold-color       # holds the color exposure and white balance; writes the camera (AGENTS.md §3)
 
 `<dir>` exists and is empty, in the home directory outside the repository and every worktree,
 not under `/tmp`, e.g. `~/3dscanner-sequences/<name>/` (AGENTS.md §3).

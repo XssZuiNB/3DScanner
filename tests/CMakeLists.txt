@@ -35,6 +35,12 @@ add_executable(test_orbbec_imu test_orbbec_imu.cpp)
 target_link_libraries(test_orbbec_imu PRIVATE camera)
 add_test(NAME orbbec_imu COMMAND test_orbbec_imu)
 
+# The hold of the color camera's exposure and white balance, in front of a stand-in camera: the
+# synthetic source's frames and a table of the camera's properties; links no OrbbecSDK.
+add_executable(test_color_hold test_color_hold.cpp)
+target_link_libraries(test_color_hold PRIVATE synthetic_source)
+add_test(NAME color_hold COMMAND test_color_hold)
+
 # The viewer's loop on the synthetic source; links no OrbbecSDK. CUDA's runtime lets the test leave
 # CUDA's last error set, as a failed call would, before a frame.
 add_executable(test_viewer_loop test_viewer_loop.cpp)

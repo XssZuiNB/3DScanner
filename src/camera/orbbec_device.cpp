@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: 0BSD
 /// @file orbbec_device.cpp
 /// The Orbbec camera as a frame source: profile selection, depth-to-color alignment, color
-/// decoding to RGB8, the IMU's sensors feeding their queues, and OrbbecSDK's report turned into
-/// plain data for camera/orbbec_rules.hpp and camera/orbbec_imu.hpp (see orbbec_device.hpp).
+/// decoding to RGB8, the IMU's sensors feeding their queues, OrbbecSDK's report turned into plain
+/// data for camera/orbbec_rules.hpp and camera/orbbec_imu.hpp, and the color camera's run-time
+/// properties read and written (see orbbec_device.hpp).
 
 #include "orbbec_device.hpp"
 
@@ -27,6 +28,17 @@ static_assert(static_cast<int>(OB_EXCEPTION_TYPE_IO) == 7 &&
                   static_cast<int>(OB_EXCEPTION_TYPE_LICENSE_VERIFY_FAILED) == 15,
               "exception_kind() was checked against OrbbecSDK v2.10.6's OBExceptionType, whose "
               "last type is 15 [S: ObTypes.h]; check it again for this OrbbecSDK");
+
+// camera/camera_properties.hpp names the color camera's properties by OrbbecSDK's numbers, which
+// read_property() and write_property() hand to OrbbecSDK as they are.
+static_assert(
+    static_cast<OBPropertyID>(color_property::auto_exposure) == OB_PROP_COLOR_AUTO_EXPOSURE_BOOL &&
+        static_cast<OBPropertyID>(color_property::exposure) == OB_PROP_COLOR_EXPOSURE_INT &&
+        static_cast<OBPropertyID>(color_property::gain) == OB_PROP_COLOR_GAIN_INT &&
+        static_cast<OBPropertyID>(color_property::auto_white_balance) ==
+            OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL &&
+        static_cast<OBPropertyID>(color_property::white_balance) == OB_PROP_COLOR_WHITE_BALANCE_INT,
+    "camera/camera_properties.hpp's numbers differ from OrbbecSDK's OBPropertyID");
 
 namespace
 {
@@ -118,6 +130,14 @@ std::uint64_t host_time_us() noexcept
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
                                           std::chrono::steady_clock::now().time_since_epoch())
                                           .count());
+}
+
+/// Gives OrbbecSDK's identifier of a color property.
+/// @param property [in] the property.
+/// @return its OBPropertyID, the same number (the static_assert above).
+OBPropertyID ob_property(color_property property) noexcept
+{
+    return static_cast<OBPropertyID>(property);
 }
 
 /// Builds a wait that failed.
@@ -645,6 +665,46 @@ void orbbec_device::release() noexcept
     m_pipeline = nullptr;
     m_device = nullptr;
     m_context = nullptr;
+}
+
+property_reading orbbec_device::read_property(color_property property) noexcept
+{
+    if (!m_open)
+        return {std::nullopt, "the camera is not open"};
+    try
+    {
+        const OBPropertyID id = ob_property(property);
+        const std::int32_t value = is_switch(property) ? (m_device->getBoolProperty(id) ? 1 : 0)
+                                                       : m_device->getIntProperty(id);
+        return {value, {}};
+    }
+    catch (const std::exception &e)
+    {
+        // ob::Error, which Error::handle() throws for every failed call [S: OrbbecSDK v2.10.6,
+        // Error.hpp].
+        return {std::nullopt, std::string("OrbbecSDK: ") + e.what()};
+    }
+}
+
+std::optional<std::string> orbbec_device::write_property(color_property property,
+                                                         std::int32_t value) noexcept
+{
+    if (!is_switch(property))
+        return std::string(property_name(property)) + " (" +
+               std::to_string(static_cast<std::uint32_t>(property)) +
+               ") is no switch, which the scanner may not write (AGENTS.md §3)";
+    if (!m_open)
+        return "the camera is not open";
+    try
+    {
+        m_device->setBoolProperty(ob_property(property), value != 0);
+        return std::nullopt;
+    }
+    catch (const std::exception &e)
+    {
+        // ob::Error, as in read_property().
+        return std::string("OrbbecSDK: ") + e.what();
+    }
 }
 
 source_description orbbec_device::describe() const noexcept

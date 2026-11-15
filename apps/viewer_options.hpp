@@ -27,6 +27,9 @@ struct options
     /// (docs/SEQUENCE_FILE.md) in its file sequence_file_name (viewer_loop.hpp); nothing for no
     /// sequence. read_options() gives only an existing, empty directory that can be written.
     std::optional<std::filesystem::path> sequence_directory;
+    /// --hold-color: hold the color camera's exposure and white balance after the settling
+    /// (camera/color_hold.hpp) and print their values; --list ignores it.
+    bool hold_color = false;
 };
 
 /// Builds the usage line, which names every option; read_options() prints it on a refusal.
@@ -34,11 +37,11 @@ struct options
 std::string usage_line();
 
 /// Reads the command line: --list, --headless, --frames N, --width W, --height H and --fps F,
-/// each number read with std::atoi, and --sequence DIR. An argument it does not know, --help
-/// among them, and an option whose value is missing are refused; so is a --sequence directory,
-/// the last one given, that does not exist or is no directory, that holds something already,
-/// or that cannot be read or written, each with the system's message where it has one. It
-/// looks at that directory and changes nothing on disk.
+/// each number read with std::atoi, --sequence DIR and --hold-color. An argument it does not
+/// know, --help among them, and an option whose value is missing are refused; so is a --sequence
+/// directory, the last one given, that does not exist or is no directory, that holds something
+/// already, or that cannot be read or written, each with the system's message where it has one.
+/// It looks at that directory and changes nothing on disk.
 /// @param argc the argument count.
 /// @param argv the arguments, argv[0] the program.
 /// @param headless_default the headless setting without --headless.

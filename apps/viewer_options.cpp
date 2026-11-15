@@ -39,6 +39,7 @@ const option_spec option_table[] = {
     {"--height", "H", [](options &opt, const char *value) { opt.height = std::atoi(value); }},
     {"--fps", "F", [](options &opt, const char *value) { opt.fps = std::atoi(value); }},
     {"--sequence", "DIR", [](options &opt, const char *value) { opt.sequence_directory = value; }},
+    {"--hold-color", nullptr, [](options &opt, const char *) { opt.hold_color = true; }},
 };
 
 /// Finds an option by its name.

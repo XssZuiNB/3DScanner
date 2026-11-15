@@ -5,7 +5,7 @@
 /// behaviours kept from before (a value read with atoi, the last repeat winning, an option's name
 /// taken as a value); each kind of argument the viewer does not know, --help and an empty one
 /// among them, and an option without its value are refused with the reason and the usage line,
-/// which names the seven options. --sequence takes an empty directory that can be written, in a
+/// which names the eight options. --sequence takes an empty directory that can be written, in a
 /// temporary directory the test removes, and refuses one that does not exist, a file, a
 /// directory that holds a sequence, another file or an empty directory, one that cannot be
 /// listed, one that cannot be written and one that cannot be entered, each with its reason and
@@ -66,11 +66,12 @@ struct accepted_case
     int max_frames;                ///< the expected frame limit
     bool headless;                 ///< the expected headless setting
     bool list_only;                ///< whether --list is expected
+    bool hold_color = false;       ///< whether --hold-color is expected
 };
 
 /// Each accepted case gives its options and prints nothing. The defaults, 640x400 at 30 fps, no
 /// frame limit, no list, are the viewer's before this test existed [S: orbbec_viewer.cpp at
-/// 069a61f].
+/// 069a61f]; no hold of the color camera's controls is the viewer's before --hold-color.
 void test_accepted()
 {
     const accepted_case cases[] = {
@@ -78,15 +79,27 @@ void test_accepted()
         {"no argument, no display", {}, true, 640, 400, 30, -1, true, false},
         {"every option",
          {"--list", "--headless", "--frames", "100", "--width", "1280", "--height", "800", "--fps",
-          "15"},
+          "15", "--hold-color"},
          false,
          1280,
          800,
          15,
          100,
          true,
+         true,
          true},
         {"--list alone", {"--list"}, false, 640, 400, 30, -1, false, true},
+        {"--hold-color alone", {"--hold-color"}, false, 640, 400, 30, -1, false, false, true},
+        {"--hold-color before a value",
+         {"--hold-color", "--frames", "100"},
+         false,
+         640,
+         400,
+         30,
+         100,
+         false,
+         false,
+         true},
         {"--headless alone", {"--headless"}, false, 640, 400, 30, -1, true, false},
         {"a flag after a value",
          {"--frames", "5", "--headless"},
@@ -129,14 +142,15 @@ void test_accepted()
     {
         const read_result r = read(c.args, c.headless_default);
         if (r.options)
-            std::printf("%s: %ux%u at %u fps, frames %d, headless %d, list %d\n", c.what,
-                        r.options->width, r.options->height, r.options->fps, r.options->max_frames,
-                        r.options->headless, r.options->list_only);
-        const bool expected = r.options && r.options->width == c.width &&
-                              r.options->height == c.height && r.options->fps == c.fps &&
-                              r.options->max_frames == c.max_frames &&
-                              r.options->headless == c.headless &&
-                              r.options->list_only == c.list_only && !r.options->sequence_directory;
+            std::printf("%s: %ux%u at %u fps, frames %d, headless %d, list %d, hold color %d\n",
+                        c.what, r.options->width, r.options->height, r.options->fps,
+                        r.options->max_frames, r.options->headless, r.options->list_only,
+                        r.options->hold_color);
+        const bool expected =
+            r.options && r.options->width == c.width && r.options->height == c.height &&
+            r.options->fps == c.fps && r.options->max_frames == c.max_frames &&
+            r.options->headless == c.headless && r.options->list_only == c.list_only &&
+            r.options->hold_color == c.hold_color && !r.options->sequence_directory;
         check(expected, (std::string("accepted with the expected options: ") + c.what).c_str());
         check(r.printed.empty(), (std::string("nothing printed: ") + c.what).c_str());
     }
@@ -260,12 +274,13 @@ void test_sequence_directory()
         std::filesystem::permissions(directory, perms::owner_all);
 }
 
-/// The usage line names the seven options and nothing else; --help is no option.
+/// The usage line names the eight options and nothing else; --help is no option.
 void test_usage_line()
 {
     check(gca_viewer::usage_line() == "usage: orbbec_viewer [--list] [--headless] [--frames N] "
-                                      "[--width W] [--height H] [--fps F] [--sequence DIR]",
-          "usage line: the seven options");
+                                      "[--width W] [--height H] [--fps F] [--sequence DIR] "
+                                      "[--hold-color]",
+          "usage line: the eight options");
 }
 } // namespace
 

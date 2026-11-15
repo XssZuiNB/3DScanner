@@ -12,10 +12,13 @@
 /// carries their samples (docs/methods/imu-samples.md); when they cannot be started the camera
 /// opens without them, and its frames carry none. Besides the seam it tells its caller what an
 /// opening read and chose (opening()), the frames it skipped (skips()) and the IMU's readings it
-/// lost (imu_skips()), which orbbec_viewer prints.
+/// lost (imu_skips()), which orbbec_viewer prints, and while it is open it reads and writes the
+/// color camera's run-time properties of camera/camera_properties.hpp, which camera/color_hold.hpp
+/// holds for a scan.
 
 #pragma once
 
+#include "camera/camera_properties.hpp"
 #include "camera/frame.hpp"
 #include "camera/frame_source.hpp"
 #include "camera/orbbec_imu.hpp"
@@ -55,8 +58,8 @@ struct orbbec_opening
     std::string imu_refusal;
 };
 
-/// The Orbbec camera behind the frame source seam.
-class orbbec_device final : public frame_source
+/// The Orbbec camera behind the frame source seam and the seam of its run-time properties.
+class orbbec_device final : public frame_source, public camera_properties
 {
 public:
     /// Prepares a camera; nothing is opened until open().
@@ -142,6 +145,30 @@ public:
     ///         device), and OrbbecSDK's version, major.minor.patch, which is the library's own.
     /// @note Allocates for the strings. One thread at a time.
     source_description describe() const noexcept override;
+
+    /// Reads one of the color camera's properties through OrbbecSDK: a switch with
+    /// getBoolProperty(), the others with getIntProperty().
+    /// @param property [in] the property.
+    /// @return its value, a switch 0 or 1; or nothing with the reason: "the camera is not open",
+    ///         or "OrbbecSDK: <message>" for the exception OrbbecSDK threw.
+    /// @note Allocates inside OrbbecSDK and for a refusal's reason. One thread at a time, the
+    ///       thread that calls next(). Whether a read while the streams run delays a frame is
+    ///       unmeasured [?].
+    property_reading read_property(color_property property) noexcept override;
+
+    /// Writes one of the color camera's switches through OrbbecSDK's setBoolProperty(), at run
+    /// time; every other property is refused before OrbbecSDK sees it, by is_switch(), the rule of
+    /// AGENTS.md §3's list. Whether the camera keeps a written switch in its flash is unverified
+    /// [?: AGENTS.md §3].
+    /// @param property [in] the property, a switch.
+    /// @param value [in] 0 (off) or 1 (on).
+    /// @return nothing when OrbbecSDK took it; otherwise the reason: "<name> (<number>) is no
+    ///         switch, which the scanner may not write (AGENTS.md §3)", "the camera is not open",
+    ///         or "OrbbecSDK: <message>" for the exception OrbbecSDK threw.
+    /// @note Allocates inside OrbbecSDK and for a refusal's reason. One thread at a time, the
+    ///       thread that calls next().
+    std::optional<std::string> write_property(color_property property,
+                                              std::int32_t value) noexcept override;
 
 private:
     /// Picks the color and the depth profile for a stream size with choose_color_profile() and

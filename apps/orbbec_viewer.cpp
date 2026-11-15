@@ -7,13 +7,17 @@
 ///
 /// The options are viewer_options.hpp's, whose usage line lists them: --list prints the device's
 /// stream profiles and exits. --frames N stops after N frames and, headless, saves the last one.
-/// --sequence DIR writes every frame taken into a sequence in DIR (viewer_loop.hpp). A command
-/// line with an argument the viewer does not know, or a directory for the sequence it cannot
-/// use, is refused with the usage line before anything touches the camera, the GPU or a signal
-/// handler. The camera's own lines, its name and link, the streams chosen, the IMU's streams or
-/// why it opened without them, a refusal, and the frames and IMU readings it skipped, come from
-/// console_camera here; the loop's lines from viewer_loop.cpp.
+/// --sequence DIR writes every frame taken into a sequence in DIR (viewer_loop.hpp). --hold-color
+/// holds the color camera's exposure and white balance after the settling and switches both
+/// automatic controls on again at the end, after an exception out of the viewer's loop too
+/// (camera/color_hold.hpp). A command line with an argument the viewer does not know, or a
+/// directory for the sequence it cannot use, is refused with the usage line before anything
+/// touches the camera, the GPU or a signal handler. The camera's own lines, its name and link, the
+/// streams chosen, the IMU's streams or why it opened without them, a refusal, the frames and IMU
+/// readings it skipped and the hold's readings and refusals, come from console_camera here; the
+/// loop's lines from viewer_loop.cpp.
 
+#include "camera/color_hold.hpp"
 #include "camera/frame.hpp"
 #include "camera/frame_source.hpp"
 #include "camera/orbbec_device.hpp"
@@ -25,8 +29,10 @@
 
 #include <atomic>
 #include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -58,28 +64,40 @@ void install_stop_handlers()
         std::signal(signal_number, on_stop_signal);
 }
 
-/// The Orbbec camera with the viewer's console lines about it. It only prints: every call passes
-/// through to the camera unchanged and returns the camera's result unchanged.
+/// The Orbbec camera, with --hold-color behind the hold of its color controls, and the viewer's
+/// console lines about it. It only prints: every call passes through to the camera, or the hold,
+/// unchanged and returns its result unchanged.
 class console_camera final : public gca::frame_source
 {
 public:
     /// Prepares the camera; nothing is opened until open().
     /// @param fps [in] the frame rate of both streams, in frames per second.
-    explicit console_camera(std::uint32_t fps)
+    /// @param hold_color [in] whether the color camera's exposure and white balance are held.
+    console_camera(std::uint32_t fps, bool hold_color)
         : m_camera(fps)
     {
+        if (hold_color)
+            m_hold.emplace(m_camera, m_camera);
+    }
+
+    /// Closes the camera, so that the hold's last reading is printed also when the program ends
+    /// by an exception; the hold, destroyed before the camera, switches the controls on even so.
+    ~console_camera() override
+    {
+        close();
     }
 
     /// Opens the camera and prints what the opening found: "Warning: camera is not connected via
     /// USB3 (<link>). ..." on a slower link, opened or not; then, refused, the refusal and
     /// "Didn't find the camera!"; opened, "Found camera! Name: <name> (SN <serial>, <link>,
-    /// firmware <version>, OrbbecSDK <version>)", the streams chosen, and the IMU's streams or
-    /// "No IMU: <reason>; the frames come without its samples".
+    /// firmware <version>, OrbbecSDK <version>)", the streams chosen, the IMU's streams or "No
+    /// IMU: <reason>; the frames come without its samples", and, with the hold, its first reading
+    /// and the refusals so far.
     /// @param size [in] the stream size, in px.
     /// @return the camera's result.
     gca::open_result open(const gca::frame_size &size) noexcept override
     {
-        const gca::open_result opened = m_camera.open(size);
+        const gca::open_result opened = source().open(size);
         const gca::orbbec_opening &opening = m_camera.opening();
         if (!opening.connection_type.empty() &&
             opening.connection_type.find("USB3") == std::string::npos)
@@ -107,26 +125,32 @@ public:
         else
             std::cout << YELLOW << "No IMU: " << opening.imu_refusal
                       << "; the frames come without its samples" << RESET << std::endl;
+        m_readings_shown = 0;
+        m_refusals_shown = 0;
+        print_hold();
         return opened;
     }
 
     /// Takes the camera's next frame and prints the frames it skipped since the last such line,
-    /// "Skipped <count> frame(s), the last because <reason>", and the IMU's readings it lost,
-    /// "Skipped <count> IMU reading(s), the last because <reason>".
+    /// "Skipped <count> frame(s), the last because <reason>", the IMU's readings it lost,
+    /// "Skipped <count> IMU reading(s), the last because <reason>", and, with the hold, its
+    /// readings and refusals of the hold after the settling.
     /// @param out [out] as the camera's next() fills it.
     /// @return the camera's result.
     gca::next_result next(gca::frame &out) noexcept override
     {
-        const gca::next_result result = m_camera.next(out);
+        const gca::next_result result = source().next(out);
         print_skips("frame(s)", m_camera.skips(), m_skips_shown);
         print_skips("IMU reading(s)", m_camera.imu_skips(), m_imu_skips_shown);
+        print_hold();
         return result;
     }
 
-    /// Closes the camera.
+    /// Closes the camera; with the hold, prints its last reading and the refusals at the end.
     void close() noexcept override
     {
-        m_camera.close();
+        source().close();
+        print_hold();
     }
 
     /// Describes the camera.
@@ -137,6 +161,15 @@ public:
     }
 
 private:
+    /// Gives what the viewer's calls go to.
+    /// @return the hold with --hold-color, else the camera.
+    gca::frame_source &source() noexcept
+    {
+        if (m_hold)
+            return *m_hold;
+        return m_camera;
+    }
+
     /// Prints what the camera skipped since the last such line, when there is more: "Skipped
     /// <count> <what>, the last because <reason>".
     /// @param what [in] what was skipped, "frame(s)" or "IMU reading(s)".
@@ -152,9 +185,27 @@ private:
         shown = skipped.count;
     }
 
+    /// Prints the hold's readings and refusals that are not printed yet, each as its line
+    /// (camera/color_hold.hpp), the refusals in yellow; nothing without the hold.
+    void print_hold() noexcept
+    {
+        if (!m_hold)
+            return;
+        const gca::color_hold_report &report = m_hold->report();
+        for (; m_readings_shown < report.readings.size(); m_readings_shown++)
+            std::cout << gca::reading_line(report.readings[m_readings_shown]) << std::endl;
+        for (; m_refusals_shown < report.refusals.size(); m_refusals_shown++)
+            std::cout << YELLOW << gca::refusal_line(report.refusals[m_refusals_shown]) << RESET
+                      << std::endl;
+    }
+
     gca::orbbec_device m_camera;
+    /// The hold with --hold-color; declared after the camera, so that it is destroyed first.
+    std::optional<gca::color_hold> m_hold;
     std::uint64_t m_skips_shown = 0;     ///< the skipped frames printed since the opening
     std::uint64_t m_imu_skips_shown = 0; ///< the IMU's lost readings printed since the opening
+    std::size_t m_readings_shown = 0;    ///< the hold's readings printed since the opening
+    std::size_t m_refusals_shown = 0;    ///< the hold's refusals printed since the opening
 };
 
 /// Names the sequence --sequence asks for; nothing is created until the loop opens it.
@@ -167,17 +218,41 @@ std::optional<gca_viewer::sequence_file> name_sequence(const gca_viewer::options
         return std::nullopt;
     return std::optional<gca_viewer::sequence_file>(std::in_place, *opt.sequence_directory);
 }
+
+/// Opens the camera and runs the viewer's loop on it, which sets up the GPU from the first frame,
+/// until quit, a stop signal, the frame limit or a failure of the GPU, writing the sequence
+/// --sequence asks for; then closes the camera. An exception passes through, and on its way the
+/// camera's destructor closes it, with --hold-color after switching the controls on again.
+/// @param opt [in] the options.
+/// @return 0 after the loop, 1 when the camera does not open or gives no first frame, the GPU
+///     cannot be set up or a GPU step fails, or the sequence cannot be created or written.
+int run_camera(const gca_viewer::options &opt)
+{
+    install_stop_handlers();
+    console_camera camera(opt.fps, opt.hold_color);
+    if (!camera.open({opt.width, opt.height}).opened)
+        return 1;
+    std::optional<gca_viewer::sequence_file> sequence = name_sequence(opt);
+    const bool ran = gca_viewer::run_viewer(camera, opt,
+                                            {.report_period = gca_viewer::report_period,
+                                             .exit_requested = g_exit_requested,
+                                             .out = std::cout,
+                                             .sequence = sequence ? &*sequence : nullptr});
+    camera.close();
+    return ran ? 0 : 1;
+}
 } // namespace
 
 /// Runs the camera test. Reading the options comes first, before anything touches the camera,
-/// the GPU or a signal handler; then the profiles are listed, or the camera is opened and the
-/// viewer's loop, which sets up the GPU from the first frame, runs until quit, a stop signal, the
-/// frame limit or a failure of the GPU, writing the sequence --sequence asks for.
+/// the GPU or a signal handler; then the profiles are listed, or the camera runs (run_camera()).
+/// An exception out of the camera's run is caught here, so that the stack unwinds and the camera
+/// is closed, its color controls switched on again; without a handler the program could end
+/// without unwinding [S: C++20, [except.handle]].
 /// @param argc the argument count.
 /// @param argv the arguments (viewer_options.hpp).
 /// @return 0 after the list or the loop, 1 when the camera does not open or gives no first frame,
-///     the GPU cannot be set up or a GPU step fails, or the sequence cannot be created or written,
-///     2 when the command line is refused.
+///     the GPU cannot be set up or a GPU step fails, the sequence cannot be created or written, or
+///     an exception ended the run, 2 when the command line is refused.
 int main(int argc, char *argv[])
 {
     const std::optional<gca_viewer::options> opt =
@@ -189,16 +264,18 @@ int main(int argc, char *argv[])
         gca::orbbec_device::print_stream_profiles();
         return 0;
     }
-    install_stop_handlers();
-    console_camera camera(opt->fps);
-    if (!camera.open({opt->width, opt->height}).opened)
-        return 1;
-    std::optional<gca_viewer::sequence_file> sequence = name_sequence(*opt);
-    const bool ran = gca_viewer::run_viewer(camera, *opt,
-                                            {.report_period = gca_viewer::report_period,
-                                             .exit_requested = g_exit_requested,
-                                             .out = std::cout,
-                                             .sequence = sequence ? &*sequence : nullptr});
-    camera.close();
-    return ran ? 0 : 1;
+    try
+    {
+        return run_camera(*opt);
+    }
+    catch (const std::exception &e)
+    {
+        std::cout << RED << "orbbec_viewer: " << e.what() << RESET << std::endl;
+    }
+    catch (...)
+    {
+        std::cout << RED << "orbbec_viewer: an exception that is no std::exception" << RESET
+                  << std::endl;
+    }
+    return 1;
 }

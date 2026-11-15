@@ -25,13 +25,18 @@ target_link_libraries(types INTERFACE Eigen3::Eigen)
 
 # ---------------------------------------------------------------- camera
 # The frame, the frame source seam (camera/frame_source.hpp), the sequence with its writer's
-# thread, the POSIX file calls that scan shares, and the Orbbec camera's decisions that need no
-# camera (camera/orbbec_rules.hpp) with its IMU's queue (camera/orbbec_imu.hpp), built and linked
-# without OrbbecSDK, so that the offline tests and the programs that need no camera load none.
+# thread, the POSIX file calls that scan shares, the Orbbec camera's decisions that need no
+# camera (camera/orbbec_rules.hpp) with its IMU's queue (camera/orbbec_imu.hpp), and the seam of
+# the camera's run-time properties with the hold of the color exposure and white balance
+# (camera/camera_properties.hpp, camera/color_hold.hpp), built and linked without OrbbecSDK, so
+# that the offline tests and the programs that need no camera load none.
 find_package(Threads REQUIRED)
 add_library(
     camera
     STATIC
+    camera/camera_properties.hpp
+    camera/color_hold.cpp
+    camera/color_hold.hpp
     camera/frame.cpp
     camera/frame.hpp
     camera/frame_source.hpp
