@@ -17,7 +17,7 @@ later a mesh and measurements ([GLOSSARY.md](GLOSSARY.md), [docs/adr/](docs/adr/
 | directory | what |
 |---|---|
 | `src/` | one library per directory: `types/` (camera parameters, a frame's description, the camera's pose, a model's point and console colors, header only), `camera/`, `gpu/` (the GPU array and image, the pool that closes, a frame's upload), `geometry/` (a frame's organized points, their normals and the frame's pyramid with the intensity), `registration/` (the registration of a frame against a surface by colored ICP coarse to fine, its normal equations and the SE(3) exponential), `fusion/` (the sparse TSDF: today its hash of blocks, its pool, the allocation of the blocks near a frame's surface, the integration of a frame, the ray cast of the model's surface and the extraction of the surface's points), `refinement/` (today the pose graph of keyframes and its solve, on the host), `separation/` (today the proposal of the support plane and the box from a full model and its trajectory, and the least-squares plane, on the host), `scan/` (the files a scan keeps, the parameters of each object class); `camera/` holds two, so that only the Orbbec camera links OrbbecSDK: `camera` (the frame, the frame source seam, the sequence and the Orbbec camera's rules, which need no camera) and `orbbec_camera` (the Orbbec camera as a frame source) |
-| `apps/` | `orbbec_viewer` (camera test: each frame's organized points live, a snapshot as a model's PLY), its command line, `viewer_options`, and its loop on a frame source, `viewer_loop`; `distortion_check` (whether the aligned frames are distorted, from a snapshot of a checkerboard), its measurement, `checkerboard_measure`, and its command line, `distortion_options`; `box_fit` (the acceptance tool: the edges of the box in an object model), its measurement, `box_measure`, and its command line, `box_fit_options` |
+| `apps/` | `orbbec_viewer` (camera test: each frame's organized points live, a snapshot as a model's PLY), its command line, `viewer_options`, and its loop on a frame source, `viewer_loop`; `distortion_check` (whether the aligned frames are distorted, from a snapshot of a checkerboard), its measurement, `checkerboard_measure`, and its command line, `distortion_options`; `box_fit` (the acceptance tool: the edges of the box in an object model), its measurement, `box_measure`, and its command line, `box_fit_options`; `depth_noise` (the depth noise's c from a sequence taken with the camera at rest), its measurement, `depth_noise_measure`, and its command line, `depth_noise_options` |
 | `tests/` | offline tests, run by ctest; they need the GPU, no camera; the synthetic source that renders their frames; the Orbbec camera's rules fed with plain data; the viewer's loop on the synthetic source |
 | `tools/` | fetch the dependencies, build, verify (AGENTS.md §4) |
 | `docs/` | the hardware, the files a scan keeps, the sequence, the decisions (`adr/`), each stage's method (`methods/`), the workflow's tracker and domain conventions |
@@ -58,6 +58,11 @@ The edges of a box scanned and separated, taken from its object model without th
 length, width and height in mm and each face's spread about its plane:
 
     <repo>/build/apps/box_fit <scan>/<object model>.ply
+
+The depth noise's c, which sets the sparse TSDF's truncation, from a sequence of a plain wall or
+floor seen obliquely by the camera at rest (docs/methods/depth-noise.md), without the camera:
+
+    <repo>/build/apps/depth_noise <dir>      # reads <dir>/frames.sequence
 
 ## License
 

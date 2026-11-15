@@ -97,8 +97,9 @@ section 5]. Here it follows the camera's depth noise at the measured depth z_m:
   datasheet gives a depth accuracy of 2 % or better at 2 m, the RMS distance to a fitted plane
   at 1280x800 (docs/HARDWARE.md), so σ(2 m) <= 40 mm and c <= 40 mm / (2 m)² [S: computed]. It
   is a bound and holds the plane's flatness besides the noise, so μ is likely too large far
-  away; no measurement of the noise on this board exists yet: σ(z) is to be measured on still
-  views of a plane, and c from it. At 640x400 the datasheet gives nothing [?].
+  away; no measurement of the noise on this board exists yet: `depth_noise` takes c from a
+  sequence of a plane seen obliquely by the camera at rest (docs/methods/depth-noise.md), not yet
+  run on the camera. At 640x400 the datasheet gives nothing [?].
 * **k = 3** [?: initial]: three standard deviations, so that the true surface lies inside ±μ of
   a measurement for 99.7 % of the measurements of a Gaussian noise [S: the normal distribution].
 * **μ_min = 4 voxels** [?: initial]: at least one voxel with a distance below the truncation on

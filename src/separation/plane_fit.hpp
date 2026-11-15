@@ -5,8 +5,8 @@
 /// their centred covariance, summed in double [S: K. Pearson, "On Lines and Planes of Closest Fit
 /// to Systems of Points in Space", Philosophical Magazine 2(11), 1901]. Separation fits the
 /// support plane with it (docs/methods/separation.md), distortion_check a checkerboard's corners
-/// (apps/checkerboard_measure.cpp), the acceptance tool a box's faces (apps/box_measure.cpp).
-/// Host only.
+/// (apps/checkerboard_measure.cpp), the acceptance tool a box's faces (apps/box_measure.cpp),
+/// depth_noise the mean frame of a still sequence (apps/depth_noise_measure.cpp). Host only.
 
 #pragma once
 

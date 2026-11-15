@@ -15,6 +15,7 @@
 
 #include "box_measure.hpp"
 #include "check.hpp"
+#include "program_run.hpp"
 #include "scan/model_file.hpp"
 #include "synthetic_source.hpp"
 #include "test_files.hpp"
@@ -33,8 +34,6 @@
 #include <string>
 #include <vector>
 
-#include <sys/wait.h>
-
 #include <Eigen/Geometry>
 
 using gca_test::check;
@@ -42,6 +41,8 @@ using gca_test::check_max_error;
 using gca_test::check_refusal;
 using gca_test::check_summary;
 using gca_test::max_error;
+using gca_test::program_run;
+using gca_test::run_program;
 
 namespace
 {
@@ -548,31 +549,6 @@ void test_report()
     const std::string report = gca::box_report("scan/object_model.ply", m);
     std::printf("the report:\n%s\n", report.c_str());
     check(report == expected, "the report's lines");
-}
-
-/// What a run of the program gave.
-struct program_run
-{
-    int exit_status;    ///< its exit status, or -1 when it did not exit
-    std::string output; ///< what it printed, stdout and stderr together
-};
-
-/// Runs the program on one argument through the shell.
-/// @param program [in] the program's path, without a single quote.
-/// @param argument [in] its argument, without a single quote.
-/// @return its exit status and what it printed.
-program_run run_program(const std::string &program, const std::string &argument)
-{
-    const std::string command = "'" + program + "' '" + argument + "' 2>&1";
-    FILE *pipe = ::popen(command.c_str(), "r");
-    if (pipe == nullptr)
-        return {-1, "popen failed"};
-    std::string output;
-    char buffer[4096];
-    for (std::size_t n; (n = std::fread(buffer, 1, sizeof(buffer), pipe)) > 0;)
-        output.append(buffer, n);
-    const int status = ::pclose(pipe);
-    return {WIFEXITED(status) ? WEXITSTATUS(status) : -1, output};
 }
 
 /// The program on models the test writes (scan/model_file.hpp): a box prints the report of the

@@ -6,6 +6,8 @@
 # measurement checkerboard_measure and its command-line reader distortion_options, which the
 # offline tests drive too; box_fit, the acceptance tool, which fits a box to an object model, its
 # measurement box_measure and its command-line reader box_fit_options, which the offline tests
+# drive too; depth_noise, which takes the depth noise's c from a still sequence, its measurement
+# depth_noise_measure and its command-line reader depth_noise_options, which the offline tests
 # drive too.
 
 # The viewer's command line, host only: built and tested without the camera backend too; camera
@@ -77,6 +79,21 @@ target_include_directories(box_fit_options PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # reads the model.
 add_executable(box_fit box_fit.cpp)
 target_link_libraries(box_fit PRIVATE box_fit_options box_measure scan)
+
+# The depth noise's c from a still sequence, host only: built and tested without the camera
+# backend too; camera reads the sequence, separation gives it the plane fit
+# (separation/plane_fit.hpp, the one copy).
+add_library(depth_noise_measure STATIC depth_noise_measure.cpp depth_noise_measure.hpp)
+target_include_directories(depth_noise_measure PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(depth_noise_measure PUBLIC types PRIVATE camera separation Eigen3::Eigen)
+
+# depth_noise's command line, host only.
+add_library(depth_noise_options STATIC depth_noise_options.cpp depth_noise_options.hpp)
+target_include_directories(depth_noise_options PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+# The depth noise's c from a still sequence; opens no camera and no GPU.
+add_executable(depth_noise depth_noise.cpp)
+target_link_libraries(depth_noise PRIVATE depth_noise_measure depth_noise_options)
 
 # The Orbbec camera test: the viewer's loop on the camera.
 if(GCA_WITH_ORBBEC)

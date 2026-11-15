@@ -18,7 +18,7 @@ written for Intel RealSense (its history ends at 5e568d9).
 
 What the rewrite builds: an operator scans a tabletop object or a large object with the
 hand-held camera and works the scan from a web page the Jetson serves (the terms: GLOSSARY.md;
-the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the libraries below and three
+the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the libraries below and four
 programs, each with its offline tests; tracking, the scan interface, the web page and the
 service are not built yet. The tree began as CUDA_3D cleaned up (dead code, RealSense and PCL
 removed), made to build here and given the Orbbec camera: the rewrite's prototype, whose
@@ -44,14 +44,16 @@ Orbbec camera links OrbbecSDK. Each library links only libraries above it in thi
 | `separation` | the proposal of the support plane and the box from a full model and its trajectory, the least-squares plane, on the host | `types` only, so that the scan can call it |
 | `scan` | the files a scan keeps, the parameters of each object class | `types`, `camera` for the POSIX file calls |
 
-The programs in `apps/` keep their command lines and their work (the viewer's loop, the two
+The programs in `apps/` keep their command lines and their work (the viewer's loop, the three
 measurements) in libraries of their own, which the offline tests drive. `orbbec_viewer` runs its
 loop (`apps/viewer_loop.*`) on the camera as a frame source, and the offline tests run the same
 loop on their synthetic source; the loop makes each frame's organized points on the GPU, saves a
 snapshot's points with their normals as a model's PLY and, with `--sequence`, writes the frames
-it takes into a sequence. `distortion_check` measures the viewer's snapshots of a checkerboard,
-and `box_fit`, the acceptance tool, takes a box's edges from an object model's PLY; neither opens
-the camera. There is no daemon.
+it takes into a sequence. `distortion_check` measures the viewer's snapshots of a checkerboard;
+`box_fit`, the acceptance tool, takes a box's edges from an object model's PLY; `depth_noise`
+takes the depth noise's c, which sets the sparse TSDF's truncation, from a sequence taken with the
+camera at rest (docs/methods/depth-noise.md); none of the three opens the camera. There is no
+daemon.
 
 ## 2. Before you run anything
 
@@ -88,6 +90,7 @@ The left column looks diagnostic and often is not.
 | `tools/fetch_deps.sh` | no hardware access; downloads into `~/.local/share/3dscanner` |
 | `build/apps/distortion_check` | no hardware access: reads a snapshot's two PNG files and prints its numbers; a command line it refuses exits 2 with the reason and the usage [S: distortion_check.cpp; the refusals: ctest `distortion_options`]; links neither OrbbecSDK nor CUDA [M 2026-11-14: `ldd`] |
 | `build/apps/box_fit MODEL.ply` | no hardware access: reads an object model's PLY (docs/SCAN_FILES.md, "Models") and prints the length, width and height of the box fitted to it and each face's spread; a command line it refuses (an argument it does not know, `--help` too, a second path, no path, a path that does not exist) exits 2 with the reason and the usage, a model it cannot read or that is no box exits 1 with the reason [S: box_fit.cpp; the refusals: ctests `box_fit_options` and `box_measure`, which also runs the program for each exit]; links neither OrbbecSDK nor CUDA nor OpenCV [M 2026-11-15: `ldd`] |
+| `build/apps/depth_noise DIR` | no hardware access: reads a sequence taken with the camera at rest, `DIR/frames.sequence` (docs/SEQUENCE_FILE.md), twice, and prints the depth noise's c with these lines (docs/methods/depth-noise.md, "Output"): `depth_noise: <DIR>: <N> frames of <W>x<H>, depth unit <u> mm`, `pixels: <K> of <P> kept, with depth in at least 90 % of the frames and in both halves`, `still: the halves differ by <D> mm rms, <T> times their standard error`, `spatial: <S> mm rms from the plane fitted to the mean frame`, for each depth bin that counts `bin <a> to <b> m: <n> pixels, noise <sigma> mm, spatial <s> mm, c <c_b> /m` or the same ending in `below the rounding`, and last `c: <c> /m, spread <r> /m over <B> bins`; a command line it refuses (an argument it does not know, `--help` too, a second directory, none, one that does not exist) exits 2 with the reason and the usage, a sequence it cannot read or refuses (its depth unit or intrinsics, too few pixels, not still, its noise below the rounding) exits 1 with `depth_noise: ` and the reason [S: depth_noise.cpp; the refusals: ctests `depth_noise_options` and `depth_noise_measure`, which also runs the program for each exit]; links neither OrbbecSDK nor CUDA nor OpenCV [M 2026-11-15: `ldd`] |
 | `build/apps/orbbec_viewer --list` | opens the camera, reads its info and stream profiles, starts no stream [S: orbbec_device.cpp]; prints the firmware's version without the check of the least version that an opening for frames makes (below); what OrbbecSDK sends on open is unverified [?] |
 | `build/apps/orbbec_viewer` with an argument it does not know (`--help` too), an option without its value, or a `--sequence` directory that does not exist, holds something or cannot be read or written | prints the reason and the usage line and exits 2; `main` reads the options, and looks at that directory without changing it, before it opens the camera or the GPU or installs a signal handler [S: orbbec_viewer.cpp, `main`; the refusals: ctest `viewer_options`]. The load-time code of OrbbecSDK, OpenCV and CUDA runs before `main`; what it does is unverified [?] |
 | `build/apps/orbbec_viewer [--frames N]` | opens the camera and refuses it, before any stream starts, when its firmware is older than 1.4.53, OrbbecSDK v2's least for the Gemini 2 L, or its version is not three numbers: prints the reason and `Didn't find the camera!` and exits 1, as for every refusal of the opening (held by another program, no camera, no such stream) [S: orbbec_device.cpp, `open`; orbbec_rules.cpp, `firmware_refusal`; ctest `orbbec_rules`]; otherwise streams color and depth with depth-to-color alignment; sets no option of the camera [S]; makes each frame's organized points on the GPU on a stream of its own, after the first frame has come; `s`, or the last of N frames headless, writes `cloud_NNN.ply`, the frame's points within 0.15 m to 3.0 m that have a normal, in its camera frame, as a model's PLY (docs/SCAN_FILES.md, "Models"), `.color.png`, `.depth.png` into the current directory: run it in a scratch directory. N counts delivered frames: a timeout or a failure of the camera prints its line, counts no frame and the loop goes on; a failure of the GPU prints CUDA's or the pool's reason and ends the run with exit 1, a stop condition as any CUDA error is (below) [S: viewer_loop.cpp; ctest `viewer_loop`] |
@@ -243,12 +246,13 @@ checkers; these are the rules no checker holds.
    | one iteration's normal equations solved on the host: the sums' positions, the centring, the degeneracy test and the damped step, the constants that judge a system | `src/registration/normal_equations.*` |
    | the SE(3) exponential, the registration's and the pose graph's pose update; the check that a transform is rigid; the one copy of each | `src/registration/se3.*` |
    | refinement's pose graph (docs/methods/refinement.md): its nodes and edges, the robust weight, the damped Gauss-Newton on SE(3) on the host in double, the result, the constants that end a solve | `src/refinement/pose_graph.*` |
-   | separation's proposal (docs/methods/separation.md): the trajectory's up and meeting point, the window, the support plane and its conditions, the footprint's pieces, the box, its parameters, result and constants; the orthogonal least-squares plane, which distortion_check's measurement and the acceptance tool's box fit call too | `src/separation/proposal.*`; `src/separation/plane_fit.*` |
+   | separation's proposal (docs/methods/separation.md): the trajectory's up and meeting point, the window, the support plane and its conditions, the footprint's pieces, the box, its parameters, result and constants; the orthogonal least-squares plane, which distortion_check's measurement, the acceptance tool's box fit and depth_noise's measurement call too | `src/separation/proposal.*`; `src/separation/plane_fit.*` |
    | the files a scan keeps (docs/SCAN_FILES.md); the parameters of each object class | `src/scan/` |
    | the acceptance tool's box fit: the box's axes from the normals, its faces, their planes and spreads, its edges, its refusals and the lines the hardware acceptance reads | `apps/box_measure.*` |
+   | `depth_noise`'s measurement of c (docs/methods/depth-noise.md): the sequence read twice, each pixel's sums, the pixels kept, the depth bins, the rounding's share, the drift between the halves, the spatial error from the plane, the fit of c, its refusals and the lines the measurement on the camera reads | `apps/depth_noise_measure.*` |
    | `orbbec_viewer`'s loop on a frame source: the first frame, its GPU path (a stream, the organized points, the snapshot's normals), the report line, the window, the snapshots as a model's PLY, the sequence it writes | `apps/viewer_loop.*` |
    | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, the depth noise from a fixed seed, a point's distance from a known surface, the trajectories it renders along, the Fibonacci lattice the tests sample a sphere on | `tests/synthetic_source.*` |
-   | the tests' checks, counted into the program's summary line and exit status; their files (a temporary directory, a file's bytes, a limit that stands for a full disk); their GPU helpers (a stream, the pool's grant, CUDA's last error, a step's refusal, an image's download); their reader of a model's PLY, apart from the scanner's | `tests/check.hpp`; `tests/test_files.hpp`; `tests/gpu_test_helpers.hpp`; `tests/ply_reader.hpp` |
+   | the tests' checks, counted into the program's summary line and exit status; their files (a temporary directory, a file's bytes, a limit that stands for a full disk); their GPU helpers (a stream, the pool's grant, CUDA's last error, a step's refusal, an image's download); their reader of a model's PLY, apart from the scanner's; their run of a program through the shell, for a program's exits | `tests/check.hpp`; `tests/test_files.hpp`; `tests/gpu_test_helpers.hpp`; `tests/ply_reader.hpp`; `tests/program_run.hpp` |
    | the tests' copy of a frame, to check a source left it as it was | `tests/frame_copy.hpp` |
    | the sparse TSDF tests' lookups of blocks, their readings of the usage, the method's starting truncation, a pose as the sparse TSDF takes it and a frame's buffers on the GPU | `tests/sparse_tsdf_helpers.hpp` |
    | the sparse TSDF tests that fuse frames: a case's budget, an object class's model, the fusion of a frame, walls facing the camera, the scenes of a sphere on a plane with their walks, a point's nearest known surface | `tests/sparse_tsdf_scenes.hpp` |
@@ -280,7 +284,7 @@ checkers; these are the rules no checker holds.
 | `CODING_STANDARDS.md` | the style guides, what they leave to this tree, the rules for the rewrite's code, the checkers |
 | `GLOSSARY.md`, `docs/adr/` | the scanner's terms; the decisions in force and why |
 | `docs/SCAN_FILES.md` | the formats of the files a scan keeps: the models (PLY), the trajectory, the parameters |
-| `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md`, `normals.md`, `frame-pyramid.md`, `registration.md`, `sparse-tsdf.md`, `refinement.md` and `separation.md` |
+| `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md`, `normals.md`, `frame-pyramid.md`, `registration.md`, `sparse-tsdf.md`, `refinement.md` and `separation.md`; besides them the method of a tool's measurement, the depth noise's, `depth-noise.md` |
 | `docs/SEQUENCE_FILE.md` | the format of a sequence: a scan's frames with their poses, which the viewer writes and the scanner and the replay tool are planned to write or read |
 | `docs/agents/` | how the workflow skills in `.claude/skills/` find the tracker and the domain docs |
 

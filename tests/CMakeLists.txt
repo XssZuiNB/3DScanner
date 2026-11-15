@@ -127,6 +127,17 @@ add_executable(test_box_fit_options test_box_fit_options.cpp)
 target_link_libraries(test_box_fit_options PRIVATE box_fit_options)
 add_test(NAME box_fit_options COMMAND test_box_fit_options)
 
+# depth_noise's measurement, on sequences of a plane the test writes through the sequence's writer
+# from the synthetic source with its depth noise of a known c, and the program depth_noise on
+# sequences the test writes.
+add_executable(test_depth_noise_measure test_depth_noise_measure.cpp)
+target_link_libraries(test_depth_noise_measure PRIVATE depth_noise_measure synthetic_source)
+add_test(NAME depth_noise_measure COMMAND test_depth_noise_measure $<TARGET_FILE:depth_noise>)
+
+add_executable(test_depth_noise_options test_depth_noise_options.cpp)
+target_link_libraries(test_depth_noise_options PRIVATE depth_noise_options)
+add_test(NAME depth_noise_options COMMAND test_depth_noise_options)
+
 # The sparse TSDF's ray cast of the model's surface, on sparse TSDFs fused from frames of the
 # synthetic source at their known poses and from built walls, and through the registration of a
 # frame against it; scan gives the object classes' voxel sizes and depth ranges.
