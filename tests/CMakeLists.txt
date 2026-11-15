@@ -132,3 +132,10 @@ add_test(NAME box_measure COMMAND test_box_measure $<TARGET_FILE:box_fit>)
 add_executable(test_box_fit_options test_box_fit_options.cpp)
 target_link_libraries(test_box_fit_options PRIVATE box_fit_options)
 add_test(NAME box_fit_options COMMAND test_box_fit_options)
+
+# The sparse TSDF's ray cast of the model's surface, on sparse TSDFs fused from frames of the
+# synthetic source at their known poses and from built walls, and through the registration of a
+# frame against it; scan gives the object classes' voxel sizes and depth ranges.
+add_executable(test_sparse_tsdf_ray_cast test_sparse_tsdf_ray_cast.cpp)
+target_link_libraries(test_sparse_tsdf_ray_cast PRIVATE fusion registration scan synthetic_source)
+add_test(NAME sparse_tsdf_ray_cast COMMAND test_sparse_tsdf_ray_cast)

@@ -299,6 +299,41 @@ table's order of size and voxel: 1.037, 1.392, 2.416 and 3.048 ms at 24; 1.115, 
 3.037 ms at 96; 1.151, 1.612, 2.614 and 3.384 ms at 384 [M 2026-11-15, 01:47 to 01:51, as the
 table]. So 24 is kept: 0.4 % longer to 8.2 % shorter than 96, 7.6 % to 13.7 % shorter than 384.
 
+**The ray cast** (docs/methods/sparse-tsdf.md, "The ray cast"): `sparse_tsdf::ray_cast()`, its one
+kernel timed by CUDA events, and the host's call, over 20 s per case after 5 s, the same cast again
+and again from the first pose of the walk, into a `model_surface` of the cast's size. The scenes of
+`tests/test_sparse_tsdf_ray_cast.cpp`: the tabletop sphere on its plane fused from its walk of 12
+frames at 640x400 at 2 mm voxels, range 0.30 m to 1.0 m, 6779 blocks; the large sphere on its
+plane of 3 m x 3 m from its walk at 8 mm, 0.4 m to 3.0 m, 11284 blocks; a sparse TSDF of 273 MB,
+65536 blocks [M 2026-11-15, 06:56 to 07:00, MAXN_SUPER by `nvpmodel -q`, under the build lock, a
+scratch program; `/sys/class/devfreq/17000000.gpu/cur_freq` sampled every 16 runs]. Back to back
+the GPU runs at 1020 MHz; paced at 30 fps the governor kept it at 408 and 510 MHz at 640x400 and
+at 1020 MHz at 1280x800, where the cast takes most of a frame's time.
+
+| size | voxel | valid pixels | pace | kernel median / p95 / max | GPU clock | host call median |
+|---|---|---|---|---|---|---|
+| 640x400 | 2 mm | 130678 | 30 fps | 21.064 / 21.120 / 21.170 ms | 408 MHz | 0.010 ms |
+| 640x400 | 2 mm | | back to back | 8.796 / 8.823 / 9.631 ms | 1020 MHz | 0.005 ms |
+| 1280x800 | 2 mm | 523234 | 30 fps | 27.928 / 27.956 / 28.008 ms | 1020 MHz | 0.007 ms |
+| 1280x800 | 2 mm | | back to back | 28.036 / 28.068 / 28.103 ms | 1020 MHz | 0.006 ms |
+| 640x400 | 8 mm | 117477 | 30 fps | 19.656 / 19.726 / 19.788 ms | 510 MHz | 0.013 ms |
+| 640x400 | 8 mm | | back to back | 10.069 / 10.100 / 10.156 ms | 1020 MHz | 0.005 ms |
+| 1280x800 | 8 mm | 470646 | 30 fps | 31.093 / 31.124 / 31.149 ms | 1020 MHz | 0.007 ms |
+| 1280x800 | 8 mm | | back to back | 31.082 / 31.111 / 31.142 ms | 1020 MHz | 0.006 ms |
+
+The ray cast is the per-frame path's longest stage measured so far: at 1280x800 it alone takes
+28 ms to 31 ms at the full clock, near a frame's 33 ms [S: computed, the table]. The same
+measurement before the allocation and the cast shared one copy of the grid traversal gave
+medians within 0.4 % of these, back to back 8.809, 27.982, 10.064 and 30.966 ms [M 2026-11-15,
+06:27 to 06:31]. The march's cache of the last other block a voxel was found in took 11 % to 16 %
+off the back-to-back medians (docs/methods/sparse-tsdf.md, "The ray cast", "On the GPU"). A jump
+over a block without voxels to the first sample past its exit, in place of stepping through its
+samples' indices, made them 7 % to 10 % longer, 9.569, 30.090, 11.118 and 33.717 ms back to back,
+the kernel at 68 registers a thread against 64 [M 2026-11-15, 07:00 to 07:04, as the table;
+B 2026-11-15: `cuobjdump -res-usage`], so it is not kept. How the rest of the time divides between
+the march through empty blocks, the samples in held blocks and the normal's 48 voxels was not
+measured [?].
+
 **The registration of one frame** (docs/methods/registration.md): the host's call of
 `registration::align()` by the full method, both terms coarse to fine with the tabletop object's
 starting values, on the tabletop object's pair of `tests/test_registration.cpp` (a box and a sphere

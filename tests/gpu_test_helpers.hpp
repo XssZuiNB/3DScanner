@@ -1,21 +1,24 @@
 // SPDX-License-Identifier: 0BSD
 /// @file gpu_test_helpers.hpp
 /// The offline tests' GPU helpers, beside check.hpp's: a CUDA stream to queue the work on, what
-/// the pool granted, the check that CUDA's last error is clear, and the check of a GPU step's
-/// refusal. A failure is a failed check, counted by check.hpp. Header only; each test program is
-/// one translation unit.
+/// the pool granted, the check that CUDA's last error is clear, the check of a GPU step's refusal,
+/// and the download of an image after the work queued on its stream. A failure is a failed check,
+/// counted by check.hpp. Header only; each test program is one translation unit.
 
 #pragma once
 
 #include "check.hpp"
+#include "gpu/gpu_image.hpp"
 #include "gpu/gpu_pool.hpp"
 #include "gpu/step_result.hpp"
 
 #include <cuda_runtime_api.h>
 
+#include <cstddef>
 #include <cstdio>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace gca_test
 {
@@ -62,5 +65,21 @@ inline void check_refused(const std::string &what, const gca::step_result &made,
                           const std::string &expected)
 {
     check_refusal(what, !made.done, made.message, made.message.find(expected) != std::string::npos);
+}
+
+/// Copies one image to the host after the work queued on a stream: the copy is queued on the
+/// stream, which is then waited for.
+/// @param image [in] the image.
+/// @param out [out] its pixels, resized to them.
+/// @param stream [in] the stream the image's work was queued on.
+/// @return whether CUDA copied it.
+template <typename Pixel>
+bool download_image(const gca::gpu_image<Pixel> &image, std::vector<Pixel> &out,
+                    cudaStream_t stream)
+{
+    out.resize(static_cast<std::size_t>(image.size().width) * image.size().height);
+    return cudaMemcpyAsync(out.data(), image.data(), image.size_bytes(), cudaMemcpyDeviceToHost,
+                           stream) == cudaSuccess &&
+           cudaStreamSynchronize(stream) == cudaSuccess;
 }
 } // namespace gca_test

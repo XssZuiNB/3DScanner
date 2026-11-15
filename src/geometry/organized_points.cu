@@ -57,20 +57,6 @@ __global__ void __launch_bounds__(picture_block_width *picture_block_height)
     valid[pixel] = is_valid ? 1 : 0;
 }
 
-/// Checks the depth range.
-/// @param parameters [in] the range.
-/// @return empty when it is usable: both limits finite, 0 <= near_m < far_m; else the reason.
-/// @note Allocates for the reason; throws std::bad_alloc when that fails.
-std::string range_refusal(const organized_points_parameters &parameters)
-{
-    const float near_m = parameters.near_m;
-    const float far_m = parameters.far_m;
-    if (std::isfinite(near_m) && std::isfinite(far_m) && near_m >= 0.0f && far_m > near_m)
-        return {};
-    return "the depth range " + std::to_string(near_m) + " m to " + std::to_string(far_m) +
-           " m is not one: both limits finite, 0 <= near < far";
-}
-
 /// Checks the frame's intrinsics and depth unit.
 /// @param description [in] the frame's description.
 /// @return empty when they are usable: fx and fy finite and > 0, cx and cy finite, the depth
@@ -88,6 +74,16 @@ std::string description_refusal(const frame_description &description)
            " m) cannot be used: fx, fy and the unit finite and > 0, cx and cy finite";
 }
 } // namespace
+
+std::string organized_points::range_refusal(const organized_points_parameters &parameters)
+{
+    const float near_m = parameters.near_m;
+    const float far_m = parameters.far_m;
+    if (std::isfinite(near_m) && std::isfinite(far_m) && near_m >= 0.0f && far_m > near_m)
+        return {};
+    return "the depth range " + std::to_string(near_m) + " m to " + std::to_string(far_m) +
+           " m is not one: both limits finite, 0 <= near < far";
+}
 
 request_result<organized_points> organized_points::request(gpu_pool &pool,
                                                            const frame_size &size) noexcept

@@ -30,11 +30,14 @@ prototype").
   convention (`src/types/camera_param.hpp`): for each pixel a point q with its mark, a normal n or
   (0, 0, 0), and an intensity I_q. It comes from a ray cast of the model at a pose
   (docs/methods/sparse-tsdf.md, "The ray cast"), or, in the tests, from the levels of another
-  frame's pyramid. The ray cast's ticket decides how it makes the coarser levels: a cast at each
-  level's intrinsics, or one cast and the pyramid's combining. The registration reads each level
-  through a view of its images and its intrinsics, `gca::organized_surface`; it does not take
-  `gca::organized_points`, whose two writers stay the deprojection of a frame and the pyramid's
-  combining (docs/methods/organized-points.md), so that a ray cast fills images of its own.
+  frame's pyramid. The ray cast gives each level as the cast at K_l = K / 2^l, whose ray at a
+  pixel is level 0's at 2^l times its index, a sample of the model at every pixel, not the
+  pyramid's combining; through the ray cast the registration recovers the tests' known motions at
+  every level as through another frame's pyramid (docs/methods/sparse-tsdf.md, "What the ray cast
+  gives"). The registration reads each level through a view of its images and its intrinsics,
+  `gca::organized_surface`; it does not take `gca::organized_points`, whose two writers stay the
+  deprojection of a frame and the pyramid's combining (docs/methods/organized-points.md), so that
+  a ray cast fills images of its own (`gca::model_surface`).
 * **The initial transform** T_0 = (R_0, t_0), F to S: a point p of the frame lies at R_0 p + t_0 in
   the surface's frame. Tracking passes the identity when the surface is ray cast from the last
   pose.

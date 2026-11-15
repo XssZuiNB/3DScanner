@@ -18,6 +18,7 @@
 #include <cuda_runtime_api.h>
 
 #include <cstdint>
+#include <string>
 
 namespace gca
 {
@@ -71,6 +72,15 @@ public:
     ///       may not request from one pool at once (gpu_pool::request()).
     static request_result<organized_points> request(gpu_pool &pool,
                                                     const frame_size &size) noexcept;
+
+    /// Checks a depth range, as deproject() does before it queues anything, so that a step that
+    /// takes the same range (fusion/sparse_tsdf.hpp, sparse_tsdf::ray_cast()) refuses it by the
+    /// same rule and message.
+    /// @param parameters [in] the range.
+    /// @return empty when it is usable: both limits finite, 0 <= near_m < far_m; else the reason,
+    ///         the message deproject() refuses it with.
+    /// @note Allocates for the reason; throws std::bad_alloc when that fails. Waits for nothing.
+    static std::string range_refusal(const organized_points_parameters &parameters);
 
     /// Organized points are not copied: a copy allocates.
     organized_points(const organized_points &) = delete;

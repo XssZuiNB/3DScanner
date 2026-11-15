@@ -3,8 +3,9 @@
 /// The sparse TSDF's hash of blocks and its pool: the division of the memory budget, the request
 /// with its checks of the parameters and of one frame's bound against the hash's room, the
 /// clearing of the memory, the kernels that insert and find blocks, the allocation of the
-/// blocks near a frame's surface with its traversal of the grid of blocks, and the reading of the
-/// usage (see sparse_tsdf.hpp; the method: docs/methods/sparse-tsdf.md).
+/// blocks near a frame's surface with its traversal of the grid of blocks, the integration, the
+/// ray cast's march and its surface, the extraction, and the reading of the usage (see
+/// sparse_tsdf.hpp; the method: docs/methods/sparse-tsdf.md).
 
 #include "fusion/sparse_tsdf.hpp"
 
@@ -68,6 +69,11 @@ constexpr unsigned int threads_per_block = 256;
 /// Why an empty sparse TSDF refuses every operation.
 constexpr const char *holds_no_memory =
     "the sparse TSDF holds no memory: it was not granted by the pool, or moved from";
+
+/// Why intrinsics are refused (usable_intrinsics()), after the words that name them: "the frame's"
+/// in the integration, "the" in the ray cast.
+constexpr const char *unusable_intrinsics =
+    "intrinsics cannot be used: fx and fy must be finite and > 0, cx and cy finite";
 
 /// Why a pose is refused (float_pose_of()).
 constexpr const char *unusable_pose = "the pose cannot be used: its position and orientation "
@@ -233,6 +239,10 @@ struct axis_walk
 constexpr float lowest_end = static_cast<float>(block_coordinate_min) - 1.0f;
 constexpr float highest_end = static_cast<float>(block_coordinate_max) + 1.0f;
 
+/// A block coordinate no block of a traversal has: a clamped end's block lies within one block of
+/// the hash's range (lowest_end, highest_end), far above the least int.
+constexpr std::int32_t no_cell = std::numeric_limits<std::int32_t>::min();
+
 /// Clamps a segment's end to one block past the hash's range on each side.
 /// @param end [in] the end, in blocks of the models' frame, finite.
 /// @return each coordinate clamped to [lowest_end, highest_end].
@@ -286,6 +296,74 @@ __device__ inline void advance(axis_walk &axis)
     axis.cell += axis.step;
     axis.remaining--;
     axis.t_next = axis.remaining == 0 ? INFINITY : axis.t_next + axis.t_delta;
+}
+
+/// The traversal of the grid of blocks along a segment (Amanatides and Woo 1987;
+/// docs/methods/sparse-tsdf.md, "The allocation near a frame's surface", step 2), the one walk the
+/// allocation and the ray cast take: its three axes and the count of the blocks it visits, from the
+/// start's block to the end's, each step crossing one border.
+struct block_walk
+{
+    axis_walk x;          ///< the walk along the models' x axis
+    axis_walk y;          ///< along its y axis
+    axis_walk z;          ///< along its z axis
+    std::uint32_t blocks; ///< the blocks visited, 1 + the steps of the three axes
+};
+
+/// Starts the walk along a segment: its ends clamped to one block past the hash's range on each
+/// side (clamped()), each axis at the start's block with its steps to the end's (start_axis()).
+/// @param start [in] the segment's start, in blocks of the models' frame.
+/// @param end [in] its end, in blocks of the models' frame.
+/// @param walk [out] the walk at the start's block, when both ends are finite.
+/// @return whether both ends are finite (finite_end()); a segment with an end that is not finite is
+///         not walked.
+/// @note Device code; allocates nothing.
+__device__ inline bool start_walk(const float3 &start, const float3 &end, block_walk &walk)
+{
+    if (!finite_end(start) || !finite_end(end))
+        return false;
+    const float3 from = clamped(start);
+    const float3 to = clamped(end);
+    walk.x = start_axis(from.x, to.x);
+    walk.y = start_axis(from.y, to.y);
+    walk.z = start_axis(from.z, to.z);
+    // Each axis has at most 2^21 + 1 steps, so the sum fits 32 bits.
+    walk.blocks = 1 + walk.x.remaining + walk.y.remaining + walk.z.remaining;
+    return true;
+}
+
+/// Gives the block a walk is in.
+/// @param walk [in] the walk.
+/// @return the block's coordinates, in blocks.
+/// @note Device code; allocates nothing.
+__device__ inline block_coordinate walk_block(const block_walk &walk)
+{
+    return {walk.x.cell, walk.y.cell, walk.z.cell};
+}
+
+/// Gives where a walk leaves its block: the segment's parameter at the first border ahead.
+/// @param walk [in] the walk.
+/// @return t in [0, 1] at that border; 1, the segment's end, in its last block.
+/// @note Device code; allocates nothing.
+__device__ inline float walk_exit(const block_walk &walk)
+{
+    return fminf(fminf(walk.x.t_next, walk.y.t_next), fminf(walk.z.t_next, 1.0f));
+}
+
+/// Steps a walk into the next block: across the border that comes first. An axis without a step
+/// left has t_next infinite and, the ends finite, no t_next is NaN (start_axis(), advance()), so
+/// when neither x nor y is taken, z has a step left; the caller's count of the blocks bounds the
+/// steps whatever the choice.
+/// @param walk [in,out] the walk, with fewer blocks visited than walk.blocks.
+/// @note Device code; allocates nothing.
+__device__ inline void next_block(block_walk &walk)
+{
+    if (walk.x.remaining != 0 && walk.x.t_next <= walk.y.t_next && walk.x.t_next <= walk.z.t_next)
+        advance(walk.x);
+    else if (walk.y.remaining != 0 && walk.y.t_next <= walk.z.t_next)
+        advance(walk.y);
+    else
+        advance(walk.z);
 }
 
 /// Inserts a block the frame's band passes through and lists its slot once for the frame: the
@@ -380,39 +458,17 @@ __global__ void __launch_bounds__(picture_block_width *picture_block_height)
         pose, make_float3(p.x * near_scale, p.y * near_scale, p.z * near_scale), blocks_per_m);
     const float3 far_end = in_blocks(
         pose, make_float3(p.x * far_scale, p.y * far_scale, p.z * far_scale), blocks_per_m);
-    if (!finite_end(near_end) || !finite_end(far_end))
+    block_walk walk;
+    if (!start_walk(near_end, far_end, walk) || walk.blocks > max_blocks_per_ray)
     {
         atomicAdd(&hash.counts->rays_not_walked, 1u);
         return;
     }
-    const float3 from = clamped(near_end);
-    const float3 to = clamped(far_end);
-    axis_walk along_x = start_axis(from.x, to.x);
-    axis_walk along_y = start_axis(from.y, to.y);
-    axis_walk along_z = start_axis(from.z, to.z);
-    // Each axis has at most 2^21 + 1 steps, so the sum fits 32 bits.
-    const std::uint32_t blocks = 1 + along_x.remaining + along_y.remaining + along_z.remaining;
-    if (blocks > max_blocks_per_ray)
+    touch_block(hash, stamps, frame_slots, frame, walk_block(walk));
+    for (std::uint32_t visited = 1; visited < walk.blocks; visited++)
     {
-        atomicAdd(&hash.counts->rays_not_walked, 1u);
-        return;
-    }
-    touch_block(hash, stamps, frame_slots, frame,
-                block_coordinate{along_x.cell, along_y.cell, along_z.cell});
-    for (std::uint32_t visited = 1; visited < blocks; visited++)
-    {
-        // The axis whose border comes first. An axis without a step left has t_next infinite and,
-        // the ends finite, no t_next is NaN (start_axis(), advance()), so when neither x nor y is
-        // taken, z has a step left. The loop's count bounds the steps whatever the choice.
-        if (along_x.remaining != 0 && along_x.t_next <= along_y.t_next &&
-            along_x.t_next <= along_z.t_next)
-            advance(along_x);
-        else if (along_y.remaining != 0 && along_y.t_next <= along_z.t_next)
-            advance(along_y);
-        else
-            advance(along_z);
-        touch_block(hash, stamps, frame_slots, frame,
-                    block_coordinate{along_x.cell, along_y.cell, along_z.cell});
+        next_block(walk);
+        touch_block(hash, stamps, frame_slots, frame, walk_block(walk));
     }
 }
 
@@ -479,6 +535,17 @@ __device__ inline float3 on_grid(const int3 &g, const float3 &offset, float voxe
                        (static_cast<float>(g.z) + 0.5f + offset.z) * voxel_size_m);
 }
 
+/// Turns a direction of the models' frame into the camera frame of a pose: R^T d.
+/// @param pose [in] the pose, camera frame to the models' frame.
+/// @param d [in] the direction, in the models' frame.
+/// @return R^T d, in the camera frame.
+/// @note Device code; allocates nothing.
+__device__ inline float3 turned_into_camera(const float_pose &pose, const float3 &d)
+{
+    // R^T d is the sum of R's rows, each times d's component of its index.
+    return d.x * pose.row_x + d.y * pose.row_y + d.z * pose.row_z;
+}
+
 /// Carries a point of the models' frame into the camera frame of a pose: q = R^T (p - t).
 /// @param pose [in] the pose, camera frame to the models' frame.
 /// @param p [in] the point, in the models' frame, in m.
@@ -486,9 +553,7 @@ __device__ inline float3 on_grid(const int3 &g, const float3 &offset, float voxe
 /// @note Device code; allocates nothing.
 __device__ inline float3 into_camera(const float_pose &pose, const float3 &p)
 {
-    // R^T d is the sum of R's rows, each times d's component of its index.
-    const float3 d = p - pose.translation;
-    return d.x * pose.row_x + d.y * pose.row_y + d.z * pose.row_z;
+    return turned_into_camera(pose, p - pose.translation);
 }
 
 /// A frame as the integration observes it: its points, marks and colors on the GPU, with its size
@@ -611,24 +676,55 @@ struct voxel_lookup
     const voxel *voxels;  ///< the pool's voxels
 };
 
+/// Says whether two blocks' coordinates are the same.
+/// @param a [in] one.
+/// @param b [in] the other.
+/// @return whether x, y and z are equal.
+/// @note Device code; allocates nothing.
+__device__ inline bool same_block(const block_coordinate &a, const block_coordinate &b)
+{
+    return a.x == b.x && a.y == b.y && a.z == b.z;
+}
+
+/// Gives the block a voxel lies in.
+/// @param g [in] the voxel, in voxels of the models' frame.
+/// @return floor(g / 8) on each axis, in blocks.
+/// @note Device code; allocates nothing. Arithmetic shifts: g >> 3 is floor(g / 8) for a negative
+///       g too [S: C++20, two's complement].
+__device__ inline block_coordinate block_of_voxel(const int3 &g)
+{
+    return {g.x >> 3, g.y >> 3, g.z >> 3};
+}
+
+/// Gives a voxel in its block, once the block's number is found.
+/// @param tsdf [in] the hash and the voxels.
+/// @param number [in] the number of the block the voxel lies in (block_of_voxel()), or no_block.
+/// @param g [in] the voxel, in voxels of the models' frame.
+/// @return the voxel in the pool, at its place g & 7 in the block (pool_index()); nullptr when the
+///         number is no_block.
+/// @note Device code; allocates nothing. Masks: g & 7 is g's remainder after floor(g / 8) for a
+///       negative g too [S: C++20, two's complement].
+__device__ inline const voxel *voxel_in_pool(const voxel_lookup &tsdf, std::uint32_t number,
+                                             const int3 &g)
+{
+    if (number == no_block)
+        return nullptr;
+    return &tsdf.voxels[pool_index(number, make_int3(g.x & 7, g.y & 7, g.z & 7))];
+}
+
 /// Finds a voxel by its coordinates: in the block at hand without the hash, in another block
 /// through it (find_block()).
 /// @param tsdf [in] the hash and the voxels.
 /// @param g [in] the voxel, in voxels of the models' frame.
 /// @param own [in] the block at hand, with a number.
 /// @return the voxel; nullptr when its block has no number.
-/// @note Device code; allocates nothing. Arithmetic shifts and masks: g >> 3 is floor(g / 8) and
-///       g & 7 its remainder for a negative g too [S: C++20, two's complement].
+/// @note Device code; allocates nothing.
 __device__ inline const voxel *voxel_at(const voxel_lookup &tsdf, const int3 &g,
                                         const held_block &own)
 {
-    const block_coordinate b{g.x >> 3, g.y >> 3, g.z >> 3};
-    const bool at_hand =
-        b.x == own.coordinate.x && b.y == own.coordinate.y && b.z == own.coordinate.z;
-    const std::uint32_t number = at_hand ? own.number : find_block(tsdf.hash, b);
-    if (number == no_block)
-        return nullptr;
-    return &tsdf.voxels[pool_index(number, make_int3(g.x & 7, g.y & 7, g.z & 7))];
+    const block_coordinate b = block_of_voxel(g);
+    return voxel_in_pool(tsdf,
+                         same_block(b, own.coordinate) ? own.number : find_block(tsdf.hash, b), g);
 }
 
 /// Reads an observed voxel's distance.
@@ -756,6 +852,341 @@ __global__ void __launch_bounds__(voxels_per_block)
     }
 }
 
+/// The blocks a ray's lookups of voxels last found: the block the march is in and the last other
+/// block a voxel was found in, so that a sample's 8 voxels and a normal's 48, which lie in one or a
+/// few blocks, look each block up about once.
+struct block_cache
+{
+    held_block at_hand; ///< the march's block, its number no_block when the hash holds none
+    held_block other;   ///< the last other block looked up, its number no_block when none
+};
+
+/// Finds a voxel by its coordinates for the ray cast: in the block at hand or the cached other one
+/// without the hash, in any other block through it (find_block()), which then becomes the cached
+/// other one.
+/// @param tsdf [in] the hash and the voxels.
+/// @param g [in] the voxel, in voxels of the models' frame.
+/// @param cache [in,out] the blocks found last.
+/// @return the voxel; nullptr when its block has no number.
+/// @note Device code; allocates nothing.
+__device__ inline const voxel *cast_voxel(const voxel_lookup &tsdf, const int3 &g,
+                                          block_cache &cache)
+{
+    const block_coordinate b = block_of_voxel(g);
+    std::uint32_t number;
+    if (same_block(b, cache.at_hand.coordinate))
+        number = cache.at_hand.number;
+    else if (same_block(b, cache.other.coordinate))
+        number = cache.other.number;
+    else
+    {
+        number = find_block(tsdf.hash, b);
+        cache.other = {b, number};
+    }
+    return voxel_in_pool(tsdf, number, g);
+}
+
+/// Interpolates the 8 voxels whose centres surround a point trilinearly, each weighed by the
+/// product of its fractions along the three axes: the distance, and the color when asked for.
+/// @param tsdf [in] the hash and the voxels.
+/// @param g [in] the point on the grid of the voxels' centres, in voxels: p / v - 1/2 for the point
+///        p of the models' frame, so that voxel g's centre lies at g.
+/// @param cache [in,out] the blocks found last (cast_voxel()).
+/// @param distance [out] the interpolated distance, in voxels, when all 8 voxels are observed.
+/// @param color [out] when not nullptr, the interpolated red, green and blue, 0 to 255, unrounded,
+///        when all 8 voxels are observed.
+/// @return whether all 8 voxels exist and are observed (weight > 0): a sample, or none.
+/// @note Device code; allocates nothing. A point beyond float's whole numbers converts to an int
+///       that saturates; its block then lies outside the hash's range and is found missing.
+__device__ inline bool interpolate(const voxel_lookup &tsdf, const float3 &g, block_cache &cache,
+                                   float &distance, float3 *color)
+{
+    const float3 base = make_float3(floorf(g.x), floorf(g.y), floorf(g.z));
+    const int3 g0 =
+        make_int3(__float2int_rd(base.x), __float2int_rd(base.y), __float2int_rd(base.z));
+    const float3 f = g - base;
+    float sum = 0.0f;
+    float3 rgb = make_float3(0.0f, 0.0f, 0.0f);
+#pragma unroll
+    for (int c = 0; c < 8; c++)
+    {
+        const int i = c & 1;
+        const int j = (c >> 1) & 1;
+        const int k = c >> 2;
+        const voxel *corner = cast_voxel(tsdf, make_int3(g0.x + i, g0.y + j, g0.z + k), cache);
+        if (corner == nullptr)
+            return false;
+        const voxel held = *corner;
+        if (held.weight == 0)
+            return false;
+        const float w =
+            (i != 0 ? f.x : 1.0f - f.x) * (j != 0 ? f.y : 1.0f - f.y) * (k != 0 ? f.z : 1.0f - f.z);
+        sum += w * __half2float(held.distance);
+        if (color != nullptr)
+            rgb =
+                rgb + w * make_float3(static_cast<float>(held.red), static_cast<float>(held.green),
+                                      static_cast<float>(held.blue));
+    }
+    distance = sum;
+    if (color != nullptr)
+        *color = rgb;
+    return true;
+}
+
+/// Gives the gradient of the distance at a point by central differences of one voxel along each
+/// axis, each end interpolated trilinearly: the same as the trilinear interpolation of the
+/// voxels' own central differences, the interpolation being linear in the voxels' values and the
+/// same at every shift of the grid [S].
+/// @param tsdf [in] the hash and the voxels.
+/// @param g [in] the point on the grid of the voxels' centres, in voxels (interpolate()).
+/// @param cache [in,out] the blocks found last (cast_voxel()).
+/// @param gradient [out] ((D(g + x) - D(g - x)) / 2, ...), in voxels per voxel, in the models'
+///        frame, when every one of the six ends is a sample.
+/// @return whether every one of the six ends is a sample (interpolate()).
+/// @note Device code; allocates nothing.
+__device__ inline bool interpolated_gradient(const voxel_lookup &tsdf, const float3 &g,
+                                             block_cache &cache, float3 &gradient)
+{
+    float x_after, x_before, y_after, y_before, z_after, z_before;
+    if (!interpolate(tsdf, make_float3(g.x + 1.0f, g.y, g.z), cache, x_after, nullptr) ||
+        !interpolate(tsdf, make_float3(g.x - 1.0f, g.y, g.z), cache, x_before, nullptr) ||
+        !interpolate(tsdf, make_float3(g.x, g.y + 1.0f, g.z), cache, y_after, nullptr) ||
+        !interpolate(tsdf, make_float3(g.x, g.y - 1.0f, g.z), cache, y_before, nullptr) ||
+        !interpolate(tsdf, make_float3(g.x, g.y, g.z + 1.0f), cache, z_after, nullptr) ||
+        !interpolate(tsdf, make_float3(g.x, g.y, g.z - 1.0f), cache, z_before, nullptr))
+        return false;
+    gradient = make_float3(0.5f * (x_after - x_before), 0.5f * (y_after - y_before),
+                           0.5f * (z_after - z_before));
+    return true;
+}
+
+/// What a ray found where it meets the surface.
+struct ray_hit
+{
+    float depth_m;   ///< the surface's depth along the camera's z, in m
+    float3 normal;   ///< the unit normal, in the camera frame; (0, 0, 0) for none
+    float intensity; ///< the Rec. 709 luma of the interpolated color, in [0, 1]
+};
+
+/// The ray cast's march along one ray (docs/methods/sparse-tsdf.md, "The ray cast"), in the frame
+/// of a camera ray r of z = 1: the point at depth z is t + z R r.
+struct ray_march
+{
+    float3 origin;      ///< t, the camera's centre in the models' frame, in m
+    float3 direction;   ///< R r, the ray turned into the models' frame, |R r| = |r| >= 1
+    float near_m;       ///< the depth the march starts at, along the camera's z, in m
+    float far_m;        ///< the deepest crossing taken, along the camera's z, in m
+    float step_z;       ///< the samples' step along the camera's z, in m: mu_min v / 2 / |r|
+    float voxels_per_m; ///< 1 / v
+};
+
+/// Gives the depth of a sample of a march: the lattice near_m + i step_z along the whole ray.
+/// @param march [in] the ray.
+/// @param i [in] the sample's index on the lattice.
+/// @return its depth along the camera's z, in m.
+/// @note Device code; allocates nothing.
+__device__ inline float sample_depth(const ray_march &march, std::uint32_t i)
+{
+    return march.near_m + static_cast<float>(i) * march.step_z;
+}
+
+/// Gives the point at a depth along a march's ray on the grid of the voxels' centres.
+/// @param march [in] the ray.
+/// @param z [in] the depth along the camera's z, in m.
+/// @return (t + z R r) / v - 1/2, in voxels (interpolate()).
+/// @note Device code; allocates nothing.
+__device__ inline float3 on_voxel_grid(const ray_march &march, float z)
+{
+    const float3 p = march.origin + z * march.direction;
+    return make_float3(p.x * march.voxels_per_m - 0.5f, p.y * march.voxels_per_m - 0.5f,
+                       p.z * march.voxels_per_m - 0.5f);
+}
+
+/// Gives the surface where two consecutive samples hold it: the depth where their linear
+/// interpolation is 0, its normal and its intensity.
+/// @param tsdf [in] the hash and the voxels.
+/// @param pose [in] the camera's pose, for the normal's turn into the camera frame.
+/// @param march [in] the ray.
+/// @param cache [in,out] the blocks found last, the later sample's at hand (cast_voxel()).
+/// @param z [in] the earlier sample's depth, in m.
+/// @param before [in] its distance, >= 0, in voxels.
+/// @param after [in] the later sample's distance, at z + step_z, < 0, in voxels.
+/// @param hit [out] the surface, when there is one.
+/// @return whether the crossing lies no deeper than the far limit and its own 8 voxels are all
+///         observed, for its intensity; else no surface.
+/// @note Device code; allocates nothing.
+__device__ inline bool surface_between(const voxel_lookup &tsdf, const float_pose &pose,
+                                       const ray_march &march, block_cache &cache, float z,
+                                       float before, float after, ray_hit &hit)
+{
+    // KinectFusion's equation 15: the linear interpolation of the two samples.
+    const float depth = z + march.step_z * before / (before - after);
+    if (!(depth <= march.far_m))
+        return false;
+    const float3 g = on_voxel_grid(march, depth);
+    float at_surface;
+    float3 color;
+    if (!interpolate(tsdf, g, cache, at_surface, &color))
+        return false;
+    hit.depth_m = depth;
+    hit.intensity = frame_pyramid::intensity_of(color.x, color.y, color.z);
+    hit.normal = make_float3(0.0f, 0.0f, 0.0f);
+    float3 gradient;
+    if (interpolated_gradient(tsdf, g, cache, gradient))
+    {
+        const float3 turned = turned_into_camera(pose, gradient);
+        const float length = norm(turned);
+        if (length > 0.0f && isfinite(length))
+            hit.normal = turned / length;
+    }
+    return true;
+}
+
+/// Marches one ray through the sparse TSDF to its surface (docs/methods/sparse-tsdf.md, "The ray
+/// cast"): the grid traversal of the allocation (block_walk) visits the blocks its segment from the
+/// near limit to one step past the far limit crosses, in order, one lookup each; in a block the
+/// hash holds no voxels for, every sample is none, without a voxel read, and ends the pair (the
+/// lattice's indices stepped through, faster than a jump to the block's exit, which took 7 % to
+/// 10 % longer [M 2026-11-15: docs/HARDWARE.md, "The ray cast"]); in a block it holds,
+/// the samples at the depths near_m + i step_z, one lattice along the whole ray, each the
+/// trilinear interpolation of 8 observed voxels or none, which also ends the pair. The first two
+/// consecutive samples from >= 0 to < 0 hold the surface (surface_between()); a change from < 0 to
+/// >= 0 before it is a back face, and the ray has none.
+/// @param tsdf [in] the hash and the voxels.
+/// @param pose [in] the camera's pose.
+/// @param march [in] the ray.
+/// @param hit [out] the surface, when there is one.
+/// @return whether the ray meets the surface, from the front, within the range.
+/// @note Device code; allocates nothing. The thread visits the blocks the segment crosses, one
+///       lookup each, and a block's samples, 8 voxels each.
+__device__ inline bool march_to_surface(const voxel_lookup &tsdf, const float_pose &pose,
+                                        const ray_march &march, ray_hit &hit)
+{
+    // One step past the far limit, so that a crossing at the far limit has its later sample.
+    const float end_z = march.far_m + march.step_z;
+    const float blocks_per_m = march.voxels_per_m / 8.0f;
+    block_walk walk;
+    if (!start_walk((march.origin + march.near_m * march.direction) * blocks_per_m,
+                    (march.origin + end_z * march.direction) * blocks_per_m, walk))
+        return false;
+    const float span = end_z - march.near_m;
+    // Before the first block, the cache holds no block of the walk, so that each is looked up.
+    block_cache cache{{{no_cell, no_cell, no_cell}, no_block},
+                      {{no_cell, no_cell, no_cell}, no_block}};
+    bool paired = false; // whether the last sample is the one before the next
+    float before = 0.0f; // the last sample's distance, in voxels
+    std::uint32_t i = 0; // the next sample's index on the lattice
+    for (std::uint32_t visited = 0; visited < walk.blocks; visited++)
+    {
+        if (visited > 0)
+            next_block(walk);
+        const float exit_z = march.near_m + walk_exit(walk) * span;
+        const block_coordinate b = walk_block(walk);
+        if (same_block(b, cache.other.coordinate))
+        {
+            const held_block left = cache.at_hand;
+            cache.at_hand = cache.other;
+            cache.other = left;
+        }
+        else
+            cache.at_hand = {b, find_block(tsdf.hash, b)};
+        for (;; i++)
+        {
+            const float z = sample_depth(march, i);
+            if (!(z < exit_z))
+                break;
+            float after;
+            // In a block without voxels each sample is none, without a voxel read.
+            if (cache.at_hand.number == no_block ||
+                !interpolate(tsdf, on_voxel_grid(march, z), cache, after, nullptr))
+            {
+                paired = false;
+                continue;
+            }
+            if (paired && before >= 0.0f && after < 0.0f)
+                return surface_between(tsdf, pose, march, cache, z - march.step_z, before, after,
+                                       hit);
+            if (paired && before < 0.0f && after >= 0.0f)
+                return false;
+            before = after;
+            paired = true;
+        }
+    }
+    return false;
+}
+
+/// The images a ray cast writes at one level of the model's surface (model_surface).
+struct cast_level
+{
+    float3 *points;      ///< the level's points, rows dense
+    std::uint8_t *valid; ///< its marks
+    float3 *normals;     ///< its normals
+    float *intensity;    ///< its intensity
+    frame_size size;     ///< its width and height, in px
+};
+
+/// The images of every level a ray cast writes, by value as the kernel's argument.
+struct cast_images
+{
+    cast_level levels[frame_pyramid::level_count]; ///< element l: level l
+};
+
+/// Ray casts the model's surface, one thread for each pixel of level 0
+/// (docs/methods/sparse-tsdf.md, "The ray cast"; march_to_surface()). A pixel whose ray meets the
+/// surface gets the point at the surface's depth on its ray, in the camera frame, its mark 1, the
+/// normal or (0, 0, 0) and the intensity; any other pixel all 0. Pixel (u, v) of level l is the
+/// cast at K / 2^l, whose ray is level 0's at (2^l u, 2^l v) [S: (u - cx / 2^l) / (fx / 2^l) =
+/// (2^l u - cx) / fx]: that pixel's thread writes it too.
+/// @param tsdf [in] the hash and the voxels; device memory owned by the sparse TSDF, which holds
+///        it until the kernel has run.
+/// @param out [out] every level's images; owned by the caller's surface, which holds them until
+///        the kernel has run.
+/// @param k [in] level 0's intrinsics, in px, usable.
+/// @param pose [in] the camera's pose, camera frame to the models' frame.
+/// @param near_m [in] the depth the march starts at, in m, >= 0.
+/// @param far_m [in] the deepest crossing taken, in m, > near_m.
+/// @param voxel_size_m [in] v, in m, > 0.
+/// @param step_m [in] the samples' step along the ray, mu_min v / 2, in m, > 0.
+/// @note Runs on the stream of its launch, sparse_tsdf::ray_cast()'s, after the integrations it is
+///       to see. A thread outside level 0 writes nothing. Reads the hash and the voxels and writes
+///       only out. Allocates nothing.
+__global__ void __launch_bounds__(picture_block_width *picture_block_height)
+    ray_cast_kernel(voxel_lookup tsdf, cast_images out, intrinsics k, float_pose pose, float near_m,
+                    float far_m, float voxel_size_m, float step_m)
+{
+    const std::uint32_t u = blockIdx.x * blockDim.x + threadIdx.x;
+    const std::uint32_t v = blockIdx.y * blockDim.y + threadIdx.y;
+    const frame_size size = out.levels[0].size;
+    if (u >= size.width || v >= size.height)
+        return;
+    const float3 ray = make_float3((static_cast<float>(u) - k.cx) / k.fx,
+                                   (static_cast<float>(v) - k.cy) / k.fy, 1.0f);
+    const ray_march march{
+        pose.translation,
+        make_float3(dot(pose.row_x, ray), dot(pose.row_y, ray), dot(pose.row_z, ray)),
+        near_m,
+        far_m,
+        step_m / norm(ray),
+        1.0f / voxel_size_m};
+    ray_hit hit{0.0f, make_float3(0.0f, 0.0f, 0.0f), 0.0f};
+    const bool found = march_to_surface(tsdf, pose, march, hit);
+    const float3 point = found ? hit.depth_m * ray : make_float3(0.0f, 0.0f, 0.0f);
+    for (std::uint32_t level = 0; level < frame_pyramid::level_count; level++)
+    {
+        const std::uint32_t stride = 1u << level;
+        if (u % stride != 0 || v % stride != 0)
+            break;
+        const cast_level &images = out.levels[level];
+        // u / stride < ceil(width / stride), the level's width, as u < width; so for the rows.
+        const std::size_t pixel =
+            static_cast<std::size_t>(v / stride) * images.size.width + u / stride;
+        images.points[pixel] = point;
+        images.valid[pixel] = found ? 1 : 0;
+        images.normals[pixel] = hit.normal;
+        images.intensity[pixel] = hit.intensity;
+    }
+}
+
 /// Says whether a value lies in a range; a NaN lies in none.
 /// @param value [in] the value.
 /// @param low [in] the range's least value.
@@ -868,6 +1299,65 @@ std::uint32_t surface_points::capacity() const noexcept
 const gpu_array<surface_point> &surface_points::points() const noexcept
 {
     return m_points;
+}
+
+request_result<model_surface> model_surface::request(gpu_pool &pool,
+                                                     const frame_size &size) noexcept
+{
+    request_result<model_surface> result;
+    for (std::size_t level = 0; level < frame_pyramid::level_count; level++)
+    {
+        const frame_size sized = frame_pyramid::level_size(size, level);
+        request_result<gpu_image<float3>> points = pool.request<float3>(sized);
+        if (points.status != request_status::granted)
+            return refused_as<model_surface>(points);
+        request_result<gpu_image<std::uint8_t>> valid = pool.request<std::uint8_t>(sized);
+        if (valid.status != request_status::granted)
+            return refused_as<model_surface>(valid);
+        request_result<gpu_image<float3>> normals = pool.request<float3>(sized);
+        if (normals.status != request_status::granted)
+            return refused_as<model_surface>(normals);
+        request_result<gpu_image<float>> intensity = pool.request<float>(sized);
+        if (intensity.status != request_status::granted)
+            return refused_as<model_surface>(intensity);
+        level_images &granted = result.granted.m_levels[level];
+        granted.points = std::move(points.granted);
+        granted.valid = std::move(valid.granted);
+        granted.normals = std::move(normals.granted);
+        granted.intensity = std::move(intensity.granted);
+    }
+    result.status = request_status::granted;
+    return result;
+}
+
+frame_size model_surface::size(std::size_t level) const noexcept
+{
+    return m_levels.at(level).points.size();
+}
+
+const gpu_image<float3> &model_surface::points(std::size_t level) const noexcept
+{
+    return m_levels.at(level).points;
+}
+
+const gpu_image<std::uint8_t> &model_surface::validity_mask(std::size_t level) const noexcept
+{
+    return m_levels.at(level).valid;
+}
+
+const gpu_image<float3> &model_surface::normals(std::size_t level) const noexcept
+{
+    return m_levels.at(level).normals;
+}
+
+const gpu_image<float> &model_surface::intensity(std::size_t level) const noexcept
+{
+    return m_levels.at(level).intensity;
+}
+
+gca::intrinsics model_surface::level_intrinsics(std::size_t level) const noexcept
+{
+    return m_levels.at(level).intrinsics;
 }
 
 request_result<sparse_tsdf> sparse_tsdf::request(gpu_pool &pool,
@@ -1087,8 +1577,7 @@ step_result sparse_tsdf::integrate(const gpu_frame &frame, const organized_point
         return {false, "the frame is " + size_text(description.size) + ", the organized points " +
                            size_text(points.size())};
     if (!usable_intrinsics(description.intrinsics))
-        return {false, "the frame's intrinsics cannot be used: fx and fy must be finite and > 0, "
-                       "cx and cy finite"};
+        return {false, std::string("the frame's ") + unusable_intrinsics};
     const std::optional<float_pose> rounded = float_pose_of(pose);
     if (!rounded)
         return {false, unusable_pose};
@@ -1101,6 +1590,45 @@ step_result sparse_tsdf::integrate(const gpu_frame &frame, const organized_point
                          dim3(voxels_per_block), stream, hash_view(), m_frame_slots.data(),
                          m_voxels.data(), observed, *rounded, m_parameters.voxel_size_m,
                          m_parameters.max_depth_m, rule_of(m_parameters));
+}
+
+step_result sparse_tsdf::ray_cast(const camera_pose &pose, const gca::intrinsics &k,
+                                  const organized_points_parameters &range, model_surface &out,
+                                  cudaStream_t stream) const noexcept
+{
+    if (m_keys.empty())
+        return {false, holds_no_memory};
+    if (out.m_levels[0].points.empty())
+        return {false, "the model's surface holds no images: it was not granted by the pool, or "
+                       "moved from"};
+    if (!usable_intrinsics(k))
+        return {false, std::string("the ") + unusable_intrinsics};
+    std::string refusal = organized_points::range_refusal(range);
+    if (!refusal.empty())
+        return {false, std::move(refusal)};
+    const std::optional<float_pose> rounded = float_pose_of(pose);
+    if (!rounded)
+        return {false, unusable_pose};
+    cast_images images{};
+    for (std::size_t level = 0; level < frame_pyramid::level_count; level++)
+    {
+        model_surface::level_images &l = out.m_levels[level];
+        images.levels[level] = {l.points.data(), l.valid.data(), l.normals.data(),
+                                l.intensity.data(), l.points.size()};
+    }
+    const dim3 block = picture_block();
+    const truncation_parameters &t = m_parameters.truncation;
+    const step_result launched = launch_kernel(
+        "the ray cast's kernel", &ray_cast_kernel, grid_for(out.m_levels[0].points.size(), block),
+        block, stream, voxel_lookup{hash_view(), m_voxels.data()}, images, k, *rounded,
+        range.near_m, range.far_m, m_parameters.voxel_size_m,
+        0.5f * t.min_voxels * m_parameters.voxel_size_m);
+    if (launched.done)
+    {
+        for (std::size_t level = 0; level < frame_pyramid::level_count; level++)
+            out.m_levels[level].intrinsics = frame_pyramid::intrinsics_at_level(k, level);
+    }
+    return launched;
 }
 
 extraction_result sparse_tsdf::extract(surface_points &out, cudaStream_t stream) const noexcept

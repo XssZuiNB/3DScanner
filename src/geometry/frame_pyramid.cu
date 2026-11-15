@@ -48,11 +48,10 @@ __global__ void __launch_bounds__(picture_block_width *picture_block_height)
         return;
     }
     const uchar3 c = color[pixel];
-    // Rec. 709 luma [S: ITU-R BT.709-6]: three products and two sums of numbers below 256, then
-    // the division, each rounded once, a few float steps of 1 [S: float32 ulp].
-    const float luma = 0.2126f * static_cast<float>(c.x) + 0.7152f * static_cast<float>(c.y) +
-                       0.0722f * static_cast<float>(c.z);
-    intensity[pixel] = luma / 255.0f;
+    // Three products and two sums of numbers below 256, then the division, each rounded once, a
+    // few float steps of 1 [S: float32 ulp].
+    intensity[pixel] = frame_pyramid::intensity_of(static_cast<float>(c.x), static_cast<float>(c.y),
+                                                   static_cast<float>(c.z));
 }
 
 /// Combines every pixel of a coarser level from the level before (docs/methods/frame-pyramid.md,
@@ -160,6 +159,13 @@ frame_size frame_pyramid::level_size(const frame_size &size, std::size_t level) 
     return halved;
 }
 
+gca::intrinsics frame_pyramid::intrinsics_at_level(const gca::intrinsics &k,
+                                                   std::size_t level) noexcept
+{
+    const float scale = std::ldexp(1.0f, -static_cast<int>(level));
+    return {k.fx * scale, k.fy * scale, k.cx * scale, k.cy * scale};
+}
+
 request_result<frame_pyramid> frame_pyramid::request(gpu_pool &pool,
                                                      const frame_size &size) noexcept
 {
@@ -198,12 +204,8 @@ step_result frame_pyramid::build(const gpu_frame &frame, const frame_pyramid_par
     step_result made = frame_level.points.deproject(frame, parameters.range, stream);
     if (!made.done)
         return made;
-    const gca::intrinsics &k = frame.description().intrinsics;
     for (std::size_t level = 0; level < level_count; level++)
-    {
-        const float scale = std::ldexp(1.0f, -static_cast<int>(level));
-        m_levels[level].intrinsics = {k.fx * scale, k.fy * scale, k.cx * scale, k.cy * scale};
-    }
+        m_levels[level].intrinsics = intrinsics_at_level(frame.description().intrinsics, level);
     const dim3 block = picture_block();
     made =
         launch_kernel("the intensity's kernel", &intensity_kernel, grid_for(size(0), block), block,

@@ -59,6 +59,33 @@ public:
     /// @note Host only; allocates nothing.
     static frame_size level_size(const frame_size &size, std::size_t level) noexcept;
 
+    /// Gives the intrinsics of a level of the pyramid of frames with given intrinsics: each of fx,
+    /// fy, cx, cy divided by 2^level, exact in float (docs/methods/frame-pyramid.md, "The
+    /// intrinsics of a level"), the one copy the pyramid's build() and the sparse TSDF's ray cast
+    /// (fusion/sparse_tsdf.hpp) take a level's intrinsics from.
+    /// @param k [in] level 0's intrinsics, in px.
+    /// @param level [in] the level, any value below 127, so that 2^-level is a float.
+    /// @return the level's intrinsics, in px of the level, pixel centres at whole numbers.
+    /// @note Host only; allocates nothing.
+    static gca::intrinsics intrinsics_at_level(const gca::intrinsics &k,
+                                               std::size_t level) noexcept;
+
+    /// Gives the intensity of a color: its Rec. 709 luma, scaled to [0, 1]
+    /// (docs/methods/frame-pyramid.md, "The intensity"), in float: three products and two sums,
+    /// then the division by 255. The one copy that the pyramid's level 0 and the sparse TSDF's ray
+    /// cast (fusion/sparse_tsdf.hpp) take an intensity from.
+    /// @param red [in] the red channel, 0 to 255; a ray cast's interpolated channel need not be a
+    ///        whole number.
+    /// @param green [in] the green channel, 0 to 255.
+    /// @param blue [in] the blue channel, 0 to 255.
+    /// @return (0.2126 red + 0.7152 green + 0.0722 blue) / 255, in [0, 1] up to float's rounding
+    ///         [S: ITU-R BT.709-6, the luminance signal's coefficients].
+    /// @note Host and device code; allocates nothing.
+    __host__ __device__ static float intensity_of(float red, float green, float blue) noexcept
+    {
+        return (0.2126f * red + 0.7152f * green + 0.0722f * blue) / 255.0f;
+    }
+
     /// An empty pyramid: no levels; build() into it is refused.
     frame_pyramid() noexcept = default;
 

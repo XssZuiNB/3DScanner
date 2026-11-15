@@ -13,8 +13,8 @@ Built so far: the hash of blocks and the pool they come from (`src/fusion/sparse
 test `tests/test_sparse_tsdf_blocks.cpp`), the allocation near a frame's surface (its test
 `tests/test_sparse_tsdf_allocation.cpp`), and the integration of a frame and the extraction of the
 surface's points (`sparse_tsdf::integrate()` and `sparse_tsdf::extract()`, their test
-`tests/test_sparse_tsdf_fusion.cpp`). The ray cast is not built yet; this document is its method,
-written before its code.
+`tests/test_sparse_tsdf_fusion.cpp`), and the ray cast (`sparse_tsdf::ray_cast()` into a
+`gca::model_surface`, its test `tests/test_sparse_tsdf_ray_cast.cpp`).
 
 The method is the volumetric fusion of Curless and Levoy [S: B. Curless, M. Levoy, "A
 Volumetric Method for Building Complex Models from Range Images", SIGGRAPH 1996], in the
@@ -464,28 +464,135 @@ surface [M 2026-11-14].
 
 ## The ray cast
 
-The model's surface as a pose sees it, for each pixel of a camera of given intrinsics and size,
-as organized points, normals and colors with a validity mask, the surface the registration
-takes [S: Newcombe et al. 2011, section 3.4]:
+The model's surface as a pose sees it, the surface the registration takes at each level of the
+frame's pyramid (docs/methods/registration.md, "Input"): KinectFusion's surface prediction
+[S: Newcombe et al. 2011, section 3.4] on the hash of blocks [S: Nießner et al. 2013, section 7]
+(`sparse_tsdf::ray_cast()`, into the images of a `gca::model_surface`). It takes a pose, the
+intrinsics K of level 0's picture and a depth range, and gives for each pixel of each level a point
+in the camera frame of the pose with its validity mark, a normal or none, and an intensity.
 
-* **The ray** of pixel (u, v), r = R ((u - cx) / fx, (v - cy) / fy, 1), from the camera's centre
-  t, the point t + z r at depth z, from the object class's nearest depth to its farthest.
-* **Empty space**: the grid traversal on blocks [S: Amanatides and Woo 1987]; a block the hash
-  does not hold is crossed in one step, to its exit.
-* **In a block that it holds**: D at the point by trilinear interpolation of the 8 voxel centres
-  around it, each found through the hash, also across a block's border [S: Nießner et al. 2013,
-  section 7, which looks up neighbouring voxels through the hash]. A sample with an unobserved
-  voxel among the 8 is no sample. The step is half the smallest truncation, μ_min / 2 = 2 voxels
-  [?: initial; Nießner et al. 2013, section 7: "we skip a predefined interval (half the minimum
-  truncation value)"; KinectFusion marches in "steps with size < µ" [S: 2011, section 3.4]].
-* **The surface** is the first sign change from + to - between two samples z and z + Δz, at
-  z* = z + Δz D(z) / (D(z) - D(z + Δz)), the linear interpolation of KinectFusion [S: 2011,
-  equation 15]. Its normal is the gradient of D there by central differences of one voxel,
-  normalized [S: equation 14]; its color the trilinear interpolation of the voxels' colors. A
-  sign change from - to +, a back face, or no change before the farthest depth gives an invalid
-  pixel [S: section 3.4].
-* **Thin surfaces**: a surface whose negative distances, seen from both sides, are thinner than
-  the step can be stepped over; at μ_min / 2 that is an object thinner than about 2 voxels.
+* **The ray** of pixel (u, v) is r = ((u - cx) / fx, (v - cy) / fy, 1) in the camera frame, by the
+  one pinhole convention, and the point at depth z, along the camera's z, is t + z R r in the
+  models' frame, (R, t) the pose rounded to float as the allocation rounds it.
+* **The depth range** is the caller's, the object class's, the one the frame's organized points
+  are made with (`gca::organized_points_parameters`, refused as the organized points refuse it)
+  [?: a choice]: the march starts at its near limit and runs one step past its far limit, and a
+  crossing deeper than the far limit is not taken, so that the surface covers the depths the
+  frame's points do.
+* **Empty space**: the allocation's grid traversal on blocks ("The allocation near a frame's
+  surface", step 2; the one copy, `block_walk` in `src/fusion/sparse_tsdf.cu`) visits the blocks the
+  ray's segment between those depths crosses, in order, one lookup each [S: Amanatides and Woo
+  1987]; in a block the hash holds no voxels for, every sample is none, without a voxel read. The
+  march steps through those samples' indices: a jump to the block's exit, computed from the
+  lattice, took 7 % to 10 % longer back to back, the kernel at 68 registers a thread against 64
+  [M 2026-11-15: docs/HARDWARE.md, "The ray cast"; B: `cuobjdump -res-usage`], and is not built.
+  A segment of length L visits at most sqrt(3) L / (8 v) + 4 blocks:
+  125 at the tabletop object's live model, 0.30 m to 1.0 m at 2 mm voxels, and 116 at the large
+  object's, 0.4 m to 3.0 m at 8 mm, along the camera's longest ray, |r| = 1.590 at either stream
+  size [S: computed]. No cap: the range is the object class's, and the time follows it.
+* **In a block it holds**: samples at the depths near + i Δz, one lattice along the whole ray, with
+  Δz = μ_min v / (2 |r|), so that the step is half the least truncation along the ray in space, 2
+  voxels at μ_min = 4 [?: initial; Nießner et al. 2013, section 7: "we skip a predefined interval
+  (half the minimum truncation value)"; KinectFusion marches in "steps with size < µ" (S: 2011,
+  section 3.4)]. The distance at a sample is the trilinear interpolation of the 8 voxels whose
+  centres surround it, each found through the hash when it lies in another block
+  [S: Nießner et al. 2013, section 7]; a sample with an unobserved or missing voxel among the 8 is
+  none. A sample that is none, and a block the hash holds no voxels for, end the pair of samples.
+* **The surface** lies between the first two consecutive samples whose distance changes from >= 0
+  to < 0, at z* = z + Δz D(z) / (D(z) - D(z + Δz)), their linear interpolation [S: KinectFusion's
+  equation 15]; the pixel's point is z* r, on its own ray in the camera frame. Its intensity is the
+  Rec. 709 luma of the trilinear interpolation of the 8 voxels' colors there, unrounded, by the
+  pyramid's one function (docs/methods/frame-pyramid.md, "The intensity"); a crossing whose own 8
+  voxels are not all observed gives an invalid pixel. Its normal is the gradient of the distance
+  there by central differences of one voxel, each end interpolated trilinearly, which is the
+  trilinear interpolation of the voxels' own central differences [S: the interpolation is linear in
+  the voxels' values and the same at every shift of the grid], turned into the camera frame and
+  normalized [S: equation 14]. A pixel whose differences need a voxel that is unobserved or
+  missing, any of the 48, or whose gradient is 0, is valid without a normal. A change from < 0 to
+  >= 0 first, a back face, or no change gives an invalid pixel [S: section 3.4]: its point, normal
+  and intensity 0 and its mark 0, as the organized points' invalid pixel.
+* **The coarser levels** [?: a choice]: level l is the cast at K_l = K / 2^l
+  (`frame_pyramid::intrinsics_at_level()`; docs/methods/frame-pyramid.md, "The intrinsics of a
+  level"), of the pyramid's level size. Its ray at pixel (u, v) is level 0's at (2^l u, 2^l v)
+  [S: (u - cx / 2^l) / (fx / 2^l) = (2^l u - cx) / fx, the halving exact in float], so the thread
+  of that pixel of level 0 writes it too: three levels for the cost of one, each pixel a sample of
+  the model at its own ray, not the pyramid's combining of the finer level. Through the
+  registration they do what the frame's pyramid's levels do ("What the ray cast gives"); a
+  combining is built only on a measured need.
+* **No color** [?: a choice]: the cast gives the intensity alone, the registration being its one
+  reader; a reader that needs the cast's colors adds them. The full model's colors come from the
+  extraction.
+* **No depth edges** [?: a choice]: the normals do not mark depth edges as the normals stage's do,
+  so the registration's gradient fit may take an intensity from across an edge, which was measured
+  to lose nothing (docs/methods/registration.md, "The color term").
+* **The thinnest surface kept**: a ray keeps a surface when one of its samples falls behind the
+  zero crossing among the negative distances whose 8 voxels are all observed; a band of those
+  longer along the ray than the step, μ_min v / 2, is never stepped over. A surface fused head-on
+  at a depth where μ = μ_min holds negative distances μ_min = 4 voxels deep, the voxels with
+  η >= -μ, and a sample there has its 8 voxels observed over 3.5 of them, the last voxel's half
+  lacking an observed voxel beyond [S: the integration's rule, step 2]: 1.75 steps. Twice the step,
+  μ_min v, steps over that band on 6860 of the 239616 pixels 8 or more inside the picture of such
+  a wall, 500 mm away at 2 mm voxels [M 2026-11-15: the doubled step as a mutant of
+  `tests/test_sparse_tsdf_ray_cast.cpp`]. An object thinner than about 2 voxels can be stepped
+  over, as can a surface fused only at a slant and cast head-on, whose band along the cast's ray is
+  thinner by the ratio of the two incidences' cosines [S: geometry].
+
+**What the ray cast gives** [M 2026-11-15: `tests/test_sparse_tsdf_ray_cast.cpp`, the frames at
+640x400 with the camera's intrinsics, depth unit 1 mm, the method's starting values]:
+
+* **A wall** facing the camera at 500 mm, fused once at 2 mm voxels, where μ = μ_min: cast from its
+  pose, every pixel 8 or more inside the picture holds the wall, its depth within 0.12 µm, its
+  normal within 2e-6° of -z and its intensity within 1e-7 of the color's luma; cast from behind it,
+  and from its pose looking back at no block, no pixel is valid.
+* **Every cast**: each coarser level's pixel is level 0's at its centre bit for bit, with the
+  intrinsics K / 2^l; every valid point projects within 7.1e-5 px of its own pixel's centre.
+* **A sphere on a plane**, the scenes of "The extraction" fused from their walks of 12 frames at the
+  live models' voxel sizes, cast from the walk's first pose, from a pose halfway to the next and from
+  one a hand's step off the first (1.5° and 10.8 mm for the tabletop, 0.5° and 14.1 mm for the large
+  object), each at 640x400 and 1280x800. The distance of a valid point from the analytic surface,
+  its normal's angle from the surface's normal and its intensity's difference from the luma of the
+  texture there, the worst median / 99th percentile / largest of the six casts:
+
+| model | voxel | distance, mm | normal, deg | intensity | pixels that see the scene valid | without a normal |
+|---|---|---|---|---|---|---|
+| tabletop, live | 2 mm | 0.057 / 0.86 / 1.83 | 2.04 / 8.36 / 32.4 | 0.0028 / 0.020 / 0.18 | 99.69 % or more | 0.43 % to 0.50 % |
+| large, live | 8 mm | 0.24 / 4.71 / 10.8 | 2.14 / 14.0 / 75.2 | 0.028 / 0.104 / 0.48 | 99.60 % or more | 0.33 % to 0.36 % |
+
+  (The pixels that see the scene: those whose ray meets it within the depth range. Without a
+  normal: of the valid pixels.) The cast's points lie nearer the surface than the extraction's at
+  the median, 0.057 mm against 0.10 mm and 0.24 mm against 0.51 mm ("The extraction"); the largest
+  distances and angles lie where the band of a surface reaches past another's silhouette, as the
+  extraction's do. A valid pixel whose ray meets nothing lies at the plane's border, where a voxel
+  past the edge takes its nearest pixel's depth: 0 to 14 pixels of a cast at 2 mm and 73 to 312 at
+  8 mm, within 0.57 and 0.91 voxels of the plane. A view of space the walk never saw has no valid
+  pixel.
+* **Through the registration**: a frame seen from A Δ, Δ the registration's known motions
+  (docs/methods/registration.md, "Accuracy"), registered by the full method from the identity against
+  the cast from A, A fused last after 4 frames each Δ before it; with the levels the registration
+  ran, its systems and the error from Δ; at 640x400, the live models' voxel sizes:
+
+| case | level 0 alone | levels 1 and 0 | all three | all three, frame A's pyramid as the surface |
+|---|---|---|---|---|
+| tabletop object, 0.5 m, 2 mm | 5, 0.0092°, 0.077 mm | 8, 0.0093°, 0.077 mm | 12, 0.0093°, 0.077 mm | 15, 0.0062°, 0.059 mm |
+| large object, 2.7 m, 8 mm | 6, 0.0195°, 0.96 mm | 12, 0.0196°, 0.96 mm | 21, 0.0196°, 0.96 mm | 20, 0.0136°, 0.67 mm |
+| large box turned by 1.5°, 8 mm | iterations used up, 0.69°, 84 mm | 16, 0.0022°, 0.083 mm | 18, 0.0021°, 0.080 mm | 19, 0.0024°, 0.096 mm |
+
+  Every one converged but the large box's level 0 alone, which the pyramid's levels recover as the
+  frame's own pyramid does: the coarser levels as samples of the cast do their part, and no
+  combining is built. The large object lies 0.96 mm off through the cast against 0.67 mm against
+  the frame's pyramid: the 8 mm voxels blur the box's texture, whose waves span 5 to 9 pixels of
+  8.8 mm there (docs/methods/registration.md, "Accuracy"), and the color term's minimum moves with
+  it; the tabletop object 0.077 mm against 0.059 mm.
+
+**On the GPU**: one kernel, one thread for each pixel of level 0 in the stages' block of 32 x 8,
+which reads the hash and the voxels and writes only the surface; it allocates nothing, waits for
+nothing and reads nothing back. A ray keeps the block it marches in and the last other block it
+found a voxel in, so that a sample's 8 voxels and a normal's 48, which lie in one or a few blocks,
+look each block up about once: back to back 11 % to 16 % shorter than one lookup for every voxel
+outside the march's block [M 2026-11-15: 9.945, 31.711, 12.044 and 36.772 ms against 8.809, 27.982,
+10.064 and 30.966 ms, the cases of docs/HARDWARE.md, "The ray cast"]. The kernel uses 64 registers
+a thread and 24 bytes of stack [B 2026-11-15: `cuobjdump -res-usage`]. Its time stands in
+docs/HARDWARE.md, "The ray cast".
 
 ## The extraction
 

@@ -147,11 +147,11 @@ add_library(
 target_link_libraries(registration PUBLIC geometry Eigen3::Eigen)
 
 # ---------------------------------------------------------------- fusion
-# The sparse TSDF (docs/methods/sparse-tsdf.md): today its hash of blocks, its pool and the
-# allocation of the blocks near a frame's surface.
+# The sparse TSDF (docs/methods/sparse-tsdf.md): its hash of blocks, its pool, the allocation of the
+# blocks near a frame's surface, the integration, the ray cast and the extraction.
 add_library(fusion STATIC fusion/block_hash.cuh fusion/sparse_tsdf.cu fusion/sparse_tsdf.hpp)
-# PUBLIC: the header holds gpu's arrays, its pool, CUDA's half float, geometry's organized points
-# and the camera's pose of types.
+# PUBLIC: the header holds gpu's arrays, images and pool, CUDA's half float, geometry's organized
+# points and frame pyramid, and the camera's pose and intrinsics of types.
 target_link_libraries(fusion PUBLIC geometry)
 
 # ---------------------------------------------------------------- refinement

@@ -83,6 +83,7 @@ using gca_test::check_refused;
 using gca_test::check_within;
 using gca_test::create_stream;
 using gca_test::distance_from;
+using gca_test::download_image;
 using gca_test::granted;
 using gca_test::grey;
 using gca_test::index_of;
@@ -240,18 +241,6 @@ bool run_stage(const std::string &name, const gca::frame &host, stage_buffers &s
     return up.done && built.done;
 }
 
-/// Copies one image from the GPU.
-/// @param image [in] the image.
-/// @param out [out] its pixels, resized to them.
-/// @return whether CUDA copied it.
-template <typename Pixel>
-bool download_image(const gca::gpu_image<Pixel> &image, std::vector<Pixel> &out)
-{
-    out.resize(static_cast<std::size_t>(image.size().width) * image.size().height);
-    return cudaMemcpy(out.data(), image.data(), image.size_bytes(), cudaMemcpyDeviceToHost) ==
-           cudaSuccess;
-}
-
 /// Downloads every level: waits for the stream's work, then copies them.
 /// @param name [in] the case, named in the check line.
 /// @param stage [in] the pyramid and the stream.
@@ -265,10 +254,11 @@ pyramid_picture download(const std::string &name, const stage_buffers &stage)
         level_picture &got = result[level];
         got.size = stage.pyramid.size(level);
         got.k = stage.pyramid.level_intrinsics(level);
-        copied = download_image(stage.pyramid.points(level).points(), got.points) &&
-                 download_image(stage.pyramid.points(level).validity_mask(), got.mask) &&
-                 download_image(stage.pyramid.normals(level).normals(), got.normals) &&
-                 download_image(stage.pyramid.intensity(level), got.intensity);
+        copied =
+            download_image(stage.pyramid.points(level).points(), got.points, stage.stream) &&
+            download_image(stage.pyramid.points(level).validity_mask(), got.mask, stage.stream) &&
+            download_image(stage.pyramid.normals(level).normals(), got.normals, stage.stream) &&
+            download_image(stage.pyramid.intensity(level), got.intensity, stage.stream);
     }
     check(copied, (name + ": downloaded").c_str());
     return copied ? std::move(result) : pyramid_picture{};

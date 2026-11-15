@@ -25,8 +25,9 @@ frame's upload (`src/gpu/`); the organized points from a frame's depth
 frame's pyramid of them with the intensity (`src/geometry/frame_pyramid.*`); the registration of
 a frame against a surface by colored ICP, coarse to fine over the pyramid
 (`src/registration/registration.*`); the sparse TSDF's hash of blocks, its pool, the allocation
-of the blocks near a frame's surface, the integration of a frame and the extraction of the
-surface's colored points with normals (`src/fusion/`); refinement's pose graph of keyframes and its
+of the blocks near a frame's surface, the integration of a frame, the ray cast of the model's
+surface as a pose sees it, at each level of the pyramid, and the extraction of the surface's
+colored points with normals (`src/fusion/`); refinement's pose graph of keyframes and its
 solve (`src/refinement/pose_graph.*`); separation's proposal of the support plane and the box from
 a full model and its trajectory (`src/separation/`); the files a scan keeps and the parameters of
 each object class (`src/scan/`). The tree is CUDA_3D cleaned up (dead code, RealSense and PCL
@@ -232,8 +233,8 @@ checkers; these are the rules no checker holds.
    | the prototype's frames and camera parameters on the GPU, CUDA helpers, GPU checks | `src/gpu/` |
    | organized points from a frame's depth, their validity mask | `src/geometry/organized_points.*` |
    | the organized points' normals in image space | `src/geometry/organized_normals.*` |
-   | the frame's pyramid: the intensity, the coarser levels, their sizes and their intrinsics; the rule of one surface the stages share | `src/geometry/frame_pyramid.*`; `src/geometry/one_surface.cuh` |
-   | the sparse TSDF (docs/methods/sparse-tsdf.md): its voxel, its parameters (the voxel size, the truncation's rule, the far depth) and their check against one frame's bound, its hash of blocks, its pool and the division of the memory budget, the allocation of the blocks near a frame's surface, the integration of a frame, the extraction of the surface's points with its buffer and result; the hash's insertion, lookup and the block a slot holds as device code, which every fusion kernel calls | `src/fusion/sparse_tsdf.*`; `src/fusion/block_hash.cuh` |
+   | the frame's pyramid: the number of levels, the intensity of a color, the coarser levels, their sizes and their intrinsics; the ray cast takes the number of levels, the intensity of a color (`frame_pyramid::intensity_of()`), a level's size (`level_size()`) and its intrinsics (`intrinsics_at_level()`) from there too; the rule of one surface the stages share | `src/geometry/frame_pyramid.*`; `src/geometry/one_surface.cuh` |
+   | the sparse TSDF (docs/methods/sparse-tsdf.md): its voxel, its parameters (the voxel size, the truncation's rule, the far depth) and their check against one frame's bound, its hash of blocks, its pool and the division of the memory budget, the allocation of the blocks near a frame's surface, the integration of a frame, the ray cast with the model's surface it writes at each level, the extraction of the surface's points with its buffer and result; the hash's insertion, lookup and the block a slot holds as device code, which every fusion kernel calls | `src/fusion/sparse_tsdf.*`; `src/fusion/block_hash.cuh` |
    | point clouds: creation, filters, normals, search; the 3x3 eigensolver, `float3` arithmetic and its Eigen conversion | `src/geometry/` |
    | the registration of a frame against a surface (docs/methods/registration.md): the surface's view at each level, the parameters, the result, the surface's intensity gradient, the association and the system of both terms on the GPU, the levels coarse to fine | `src/registration/registration.*` |
    | one iteration's normal equations solved on the host: the sums' positions, the centring, the degeneracy test and the damped step, the constants that judge a system | `src/registration/normal_equations.*` |
@@ -247,6 +248,8 @@ checkers; these are the rules no checker holds.
    | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, a mesh's frames (the colored-ICP fixture's), the depth noise from a fixed seed, a point's distance from a known surface, the trajectories it renders along, the Fibonacci lattice the tests sample a sphere on | `tests/synthetic_source.*` |
    | the tests' copy of a frame, to check a source left it as it was | `tests/frame_copy.hpp` |
    | the sparse TSDF tests' lookups of blocks, their readings of the usage, the method's starting truncation, a pose as the sparse TSDF takes it and a frame's buffers on the GPU | `tests/sparse_tsdf_helpers.hpp` |
+   | the sparse TSDF tests that fuse frames: a case's budget, an object class's model, the fusion of a frame, walls facing the camera, the scenes of a sphere on a plane with their walks, a point's nearest known surface | `tests/sparse_tsdf_scenes.hpp` |
+   | the tests that register frames: the normals' parameters, the object classes' ranges and starting values of the registration, the tabletop object's and the large object's scenes, poses and known motions, a pyramid's levels as a surface, a result's printing and its check against the known motion | `tests/registration_cases.hpp` |
    | the stages' test frames: the camera's stream sizes and intrinsics, the tabletop sphere, a scene's frames rendered, with depth noise or without, frames built from functions of the pixel | `tests/stage_frames.hpp` |
    | the stages' tests' checks of an organized picture: a pixel's index, a float3 in double, the zero mark, angles, medians, the rule of one surface in double with its margin | `tests/stage_checks.hpp` |
    | the tests' rigid transforms in double: one built from an axis, an angle and a shift, how far one lies from a known one, its tolerance and check | `tests/transform_checks.hpp` |

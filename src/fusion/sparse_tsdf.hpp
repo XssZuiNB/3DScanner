@@ -2,32 +2,41 @@
 /// @file sparse_tsdf.hpp
 /// The sparse TSDF (docs/adr/0004-sparse-tsdf-model.md): blocks of 8 x 8 x 8 voxels near the
 /// surfaces, found by their coordinates through a hash on the GPU, taken from a pool; all of its
-/// device memory together is the scan's memory budget. Built so far: the hash of blocks, the pool,
-/// the allocation of the blocks near a frame's surface at its pose, the integration of a frame into
-/// the voxels of those blocks, and the extraction of the surface's colored points with normals. A
-/// block is inserted and found by its coordinates, many at once from many threads; a frame's
-/// organized points at a pose insert every block their band of the truncation distance passes
-/// through and list them for the frame; the integration updates each voxel of the listed blocks
-/// with the frame's depth and color; the extraction places a point on every edge of the voxel grid
-/// whose two voxels' distances differ in sign. A pool too small says so in its usage, a buffer of
-/// points too small in the extraction's result, both values. The device side of the hash, which
-/// every kernel of the module calls, is fusion/block_hash.cuh. The method, its rules and their
-/// sources stand in docs/methods/sparse-tsdf.md. All its memory comes from the pool that closes
-/// (gpu/gpu_pool.hpp) before a scan starts; its operations allocate nothing.
+/// device memory together is the scan's memory budget. Its operations: the allocation of the blocks
+/// near a frame's surface at its pose, the integration of a frame into the voxels of those blocks,
+/// the ray cast of the model's surface as a pose sees it, and the extraction of the surface's
+/// colored points with normals. A block is inserted and found by its coordinates, many at once
+/// from many threads; a frame's organized points at a pose insert every block their band of the
+/// truncation distance passes through and list them for the frame; the integration updates each
+/// voxel of the listed blocks with the frame's depth and color; the ray cast marches each pixel's
+/// ray through the blocks to the first crossing of the distance from positive to negative and
+/// gives the surface the registration takes, at each level of the frame's pyramid; the extraction
+/// places a point on every edge of the voxel grid whose two voxels' distances differ in sign. A
+/// pool too small says so in its usage, a buffer of points too small in the extraction's result,
+/// both values. The device side of the hash, which every kernel of the module calls, is
+/// fusion/block_hash.cuh. The method, its rules and their sources stand in
+/// docs/methods/sparse-tsdf.md. All its memory comes from the pool that closes (gpu/gpu_pool.hpp)
+/// before a scan starts; its operations allocate nothing.
 
 #pragma once
 
+#include "geometry/frame_pyramid.hpp"
 #include "geometry/organized_points.hpp"
 #include "gpu/gpu_array.hpp"
 #include "gpu/gpu_frame.hpp"
+#include "gpu/gpu_image.hpp"
 #include "gpu/gpu_pool.hpp"
 #include "gpu/pinned_buffer.hpp"
 #include "gpu/step_result.hpp"
+#include "types/camera_param.hpp"
 #include "types/camera_pose.hpp"
+#include "types/frame_description.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime_api.h>
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -344,6 +353,125 @@ private:
     pinned_buffer m_count_on_host;     ///< the count as the last extraction read it back
 };
 
+/// The model's surface as a pose sees it, the ray cast's images on the GPU
+/// (sparse_tsdf::ray_cast(), docs/methods/sparse-tsdf.md, "The ray cast"): at each level of the
+/// frame's pyramid (geometry/frame_pyramid.hpp), level 0 of the size it was requested with and each
+/// next level of half the rows and columns, rounded up, for each pixel at index v * width + u a
+/// point in the camera frame of the cast's pose (x right, y down, z forward, in m) and its validity
+/// mark, a unit normal toward the camera or (0, 0, 0) for none, and an intensity, the Rec. 709 luma
+/// in [0, 1]; at an invalid pixel the point, the normal and the intensity are 0 and the mark is 0.
+/// Each level comes with its intrinsics, the cast's divided by 2^l. These are the images the
+/// registration takes as the surface at each level (registration/registration.hpp,
+/// organized_surface), so that the cast hands over all of the pyramid's levels; it gives no RGB
+/// color, the registration being its one reader [?: a choice; a reader that needs the cast's colors
+/// adds them]. The images' memory comes from the pool that closes. Move-only. Not synchronized: one
+/// thread at a time uses one.
+class model_surface
+{
+public:
+    /// An empty surface: no images; a ray cast into it is refused.
+    model_surface() noexcept = default;
+
+    /// Requests every level's images from the pool: the points, the marks, the normals and the
+    /// intensity.
+    /// @param pool [in,out] the pool; open, else the request is refused as closed.
+    /// @param size [in] level 0's size, the picture the ray cast fills, in px, each > 0.
+    /// @return granted, with a surface whose images and intrinsics are not set until the first ray
+    ///         cast; or the first of its requests that was refused, with its status and message
+    ///         (gpu_pool::request()), a size of 0 among them.
+    /// @note Allocates device memory (cudaMalloc, four times per level: 29 bytes per pixel of the
+    ///       level [S: 12 for a point, 1 for a mark, 12 for a normal, 4 for an intensity]), so it
+    ///       is called before the pool is closed; whether cudaMalloc waits for the GPU is not
+    ///       stated by CUDA [?]. Allocates for the message when refused; a failed allocation ends
+    ///       the program (std::terminate): the function is noexcept. Two threads may not request
+    ///       from one pool at once.
+    static request_result<model_surface> request(gpu_pool &pool, const frame_size &size) noexcept;
+
+    /// A surface is not copied: a copy allocates.
+    model_surface(const model_surface &) = delete;
+    model_surface &operator=(const model_surface &) = delete;
+
+    /// Takes over another surface's images without allocating.
+    /// @param other [in,out] the surface moved from; left empty.
+    /// @note Allocates nothing and waits for nothing.
+    model_surface(model_surface &&other) noexcept = default;
+
+    /// Takes over another surface's images; this one's are freed first.
+    /// @param other [in,out] the surface moved from; left empty. Moving onto itself changes
+    ///        nothing.
+    /// @return this surface.
+    /// @pre No work queued on the GPU uses this one's images any more (gpu_image's move
+    ///      assignment says what happens when some does).
+    /// @note Frees with cudaFree, which may wait for the GPU (gpu/gpu_image.hpp). Allocates
+    ///       nothing.
+    model_surface &operator=(model_surface &&other) noexcept = default;
+
+    /// Frees the images.
+    /// @pre No work queued on the GPU uses them any more (as for the move assignment).
+    /// @note Frees with cudaFree, which may wait for the GPU (gpu/gpu_image.hpp).
+    ~model_surface() = default;
+
+    /// Gives a level's size.
+    /// @param level [in] the level.
+    /// @return its width and height, in px; 0 x 0 when the surface is empty.
+    /// @pre level < frame_pyramid::level_count; another level ends the program (std::terminate):
+    ///      the function is noexcept. The same holds for every accessor of a level below.
+    frame_size size(std::size_t level) const noexcept;
+
+    /// Gives a level's points for the GPU to read.
+    /// @param level [in] the level.
+    /// @return the image of the points, in the camera frame of the last cast's pose, in m;
+    ///         (0, 0, 0) at an invalid pixel; empty when the surface is. Valid as long as the
+    ///         surface holds it.
+    /// @pre level < frame_pyramid::level_count, as for size().
+    const gpu_image<float3> &points(std::size_t level) const noexcept;
+
+    /// Gives a level's validity mask for the GPU to read.
+    /// @param level [in] the level.
+    /// @return the image of the marks, 1 for a valid pixel and 0 for an invalid one; empty when
+    ///         the surface is. Valid as long as the surface holds it.
+    /// @pre level < frame_pyramid::level_count, as for size().
+    const gpu_image<std::uint8_t> &validity_mask(std::size_t level) const noexcept;
+
+    /// Gives a level's normals for the GPU to read.
+    /// @param level [in] the level.
+    /// @return the image of the normals, unit vectors in the camera frame of the last cast's pose,
+    ///         or (0, 0, 0) for none; empty when the surface is. Valid as long as the surface holds
+    ///         it.
+    /// @pre level < frame_pyramid::level_count, as for size().
+    const gpu_image<float3> &normals(std::size_t level) const noexcept;
+
+    /// Gives a level's intensity for the GPU to read.
+    /// @param level [in] the level.
+    /// @return the image of the intensity, the Rec. 709 luma in [0, 1] at a valid pixel and 0 at an
+    ///         invalid one; empty when the surface is. Valid as long as the surface holds it.
+    /// @pre level < frame_pyramid::level_count, as for size().
+    const gpu_image<float> &intensity(std::size_t level) const noexcept;
+
+    /// Gives a level's intrinsics: those of the last ray cast, each divided by 2^level
+    /// (frame_pyramid::intrinsics_at_level()).
+    /// @param level [in] the level.
+    /// @return fx, fy, cx, cy in px of the level, pixel centres at whole numbers; zero before the
+    ///         first ray cast.
+    /// @pre level < frame_pyramid::level_count, as for size().
+    gca::intrinsics level_intrinsics(std::size_t level) const noexcept;
+
+private:
+    friend class sparse_tsdf; ///< the ray cast writes the images and the intrinsics
+
+    /// One level: its images and its intrinsics.
+    struct level_images
+    {
+        gpu_image<float3> points;      ///< the points
+        gpu_image<std::uint8_t> valid; ///< the marks
+        gpu_image<float3> normals;     ///< the normals
+        gpu_image<float> intensity;    ///< the intensity
+        gca::intrinsics intrinsics{};  ///< the intrinsics, in px; zero before the first cast
+    };
+
+    std::array<level_images, frame_pyramid::level_count> m_levels;
+};
+
 /// What an extraction gave: the points it found and wrote, or why not.
 struct extraction_result
 {
@@ -356,11 +484,11 @@ struct extraction_result
 
 /// The sparse TSDF's hash of blocks and its pool, on the GPU, with its parameters. Its memory comes
 /// from the pool that closes when it is requested, before a scan; its insertions, lookups,
-/// allocations near a frame's surface, integrations, extractions and readings of the usage
-/// allocate nothing. One exists at a time (docs/methods/sparse-tsdf.md, "The pool and the memory
-/// budget"). Move-only. Not synchronized: each member function's note says whether two threads may
-/// call it at once; the work it queues goes to one stream at a time, the stream the request queued
-/// its clearing on or one ordered after it.
+/// allocations near a frame's surface, integrations, ray casts, extractions and readings of the
+/// usage allocate nothing. One exists at a time (docs/methods/sparse-tsdf.md, "The pool and the
+/// memory budget"). Move-only. Not synchronized: each member function's note says whether two
+/// threads may call it at once; the work it queues goes to one stream at a time, the stream the
+/// request queued its clearing on or one ordered after it.
 class sparse_tsdf
 {
 public:
@@ -573,6 +701,63 @@ public:
     ///       function is noexcept. Not while another thread uses this sparse TSDF.
     step_result integrate(const gpu_frame &frame, const organized_points &points,
                           const camera_pose &pose, cudaStream_t stream) noexcept;
+
+    /// Ray casts the model's surface as a pose sees it (docs/methods/sparse-tsdf.md, "The ray
+    /// cast"), one GPU thread for each pixel of level 0: pixel (u, v)'s ray from the camera's
+    /// centre, r = R ((u - cx) / fx, (v - cy) / fy, 1), is followed from the depth range's near
+    /// limit on, block by block through the hash: a block the hash holds no voxels for is looked
+    /// up once and its samples are none, without a voxel read; in a block it holds, the distance
+    /// is sampled every half of the least
+    /// truncation, mu_min v / 2 along the ray, by the trilinear interpolation of the 8 voxels
+    /// around the sample, found through the hash across a block's border; a sample with an
+    /// unobserved or missing voxel among them is none. The first two consecutive samples whose
+    /// distance changes from >= 0 to < 0 hold the surface, at the depth where their linear
+    /// interpolation is 0: the pixel's point lies there on its ray, in the camera frame; its normal
+    /// is the distance's gradient by central differences of one voxel, turned into the camera frame
+    /// and normalized, or none when a voxel it needs is unobserved or missing or the gradient is 0;
+    /// its intensity the Rec. 709 luma of the voxels' colors interpolated there. A change from < 0
+    /// to >= 0 first (a back face), no change, a crossing beyond the far limit, or a crossing whose
+    /// own 8 voxels are not all observed leaves the pixel invalid. Each coarser level is the cast
+    /// at K / 2^l, whose ray at pixel (u, v) is level 0's at (2^l u, 2^l v): the thread of that
+    /// pixel writes it.
+    /// @param pose [in] the camera's pose, camera frame to the models' frame, as
+    ///        allocate_near_surface() takes it: its position finite and in m, its orientation a
+    ///        finite quaternion, not zero, normalized here; both rounded to float.
+    /// @param k [in] the intrinsics of level 0's picture, in px, by the one pinhole convention
+    ///        (types/camera_param.hpp); fx and fy finite and > 0, cx and cy finite.
+    /// @param range [in] the depth range the surface is sought in, along the camera's z, in m: the
+    ///        object class's, which the frame's organized points are made with; a crossing deeper
+    ///        than far_m is not taken, and the march starts at near_m. The organized points' struct
+    ///        and its check (organized_points::range_refusal()), so that the range the frame's
+    ///        pyramid is built with (frame_pyramid_parameters::range) is passed as it is and
+    ///        refused by the same rule.
+    /// @param out [in,out] the surface written: every pixel of every level, and the levels'
+    ///        intrinsics; owned by the caller, which holds it until the work queued here has run.
+    /// @param stream [in] the CUDA stream of the current device the work is queued on, ordered
+    ///        after the integrations it is to see; owned by the caller. Work queued on it later
+    ///        sees the surface.
+    /// @return done when the work is queued, and the levels' intrinsics are k divided by 2^l; not
+    ///         done with the reason when refused before it, with nothing queued and the surface
+    ///         left as it was: this sparse TSDF is empty, the surface is, the intrinsics cannot be
+    ///         used (usable_intrinsics()), the depth range is refused
+    ///         (organized_points::range_refusal()), or the pose rounded to float is not finite or
+    ///         its orientation is zero. Not done with CUDA's error, which is then cleared: when
+    ///         CUDA's last error is set before the launch, by an earlier call, with nothing queued;
+    ///         when CUDA refuses the launch, for a picture whose rows need more than 65535 blocks
+    ///         of 8 rows, with the surface's images then unspecified.
+    /// @note One kernel on stream, in the stages' block of 32 x 8 threads (gpu/kernel_launch.cuh),
+    ///       which reads the hash and the voxels and writes only the surface. A thread walks the
+    ///       blocks its ray crosses between the range's depths, at most sqrt(3) L / (8 v) + 4 for a
+    ///       ray of length L there [S: the grid traversal, docs/methods/sparse-tsdf.md, "The
+    ///       allocation near a frame's surface"], so its time grows with the range: the object
+    ///       class's is the one it is made for. Waits for nothing: cudaPeekAtLastError before and
+    ///       cudaGetLastError after ask only whether an error is set. Allocates nothing when done;
+    ///       allocates for the message when not, and a failed allocation ends the program
+    ///       (std::terminate): the function is noexcept. Two threads may call it at once only with
+    ///       different surfaces, and while no thread inserts, allocates or integrates.
+    step_result ray_cast(const camera_pose &pose, const gca::intrinsics &k,
+                         const organized_points_parameters &range, model_surface &out,
+                         cudaStream_t stream) const noexcept;
 
     /// Extracts the surface's colored points with normals (docs/methods/sparse-tsdf.md, "The
     /// extraction"): for every block the hash holds, each voxel g and each of its neighbours
