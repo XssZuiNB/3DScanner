@@ -17,26 +17,37 @@ reads first. What outlives them is in GLOSSARY.md, docs/adr/ 0002 to 0004 and
 CODING_STANDARDS.md, "The rewrite's code".
 
 The user agreed on 2026-11-14 to the choices the spec marks (spec) and to the breakdown into
-tickets, and asked for `ray-cast-faster-by-measurement` on 2026-11-15. 26 of 54 tickets are
-done (git log, `Ticket ...`), 22 are `ready-for-agent` and 6 `ready-for-human` [M 2026-11-15: a
-script over the tickets' Status and Blocked-by lines]. The frontier, the open tickets with no
-open blocker:
+tickets, asked for `ray-cast-faster-by-measurement` on 2026-11-15 and, after an experiment that
+measured it, for `ray-cast-normal-reads-once`. 27 of 61 tickets are done (git log,
+`Ticket ...`), 27 are `ready-for-agent` and 7 `ready-for-human` [M 2026-11-15: a script over the
+tickets' Status and Blocked-by lines]. The frontier, the open tickets with no open blocker:
 
-* `track-frames-against-the-model` (agent): its plan and the draft of its method document wait
-  in its Comments for a fresh implementer.
-* `ray-cast-faster-by-measurement` (agent): `per-stage-times-from-replay` waits for it, so that
-  the stream size is decided on the faster cast.
-* `hold-color-exposure-and-white-balance` (agent): waits for the user's answer on the camera's
-  flash (its Comments; step 2).
+* `track-frames-against-the-model` (agent): its plan, the draft of its method document and the
+  orchestrator's plan check wait in its Comments for a fresh implementer; tracking's starting
+  inlier RMSE threshold is the user's, 5 mm and 30 mm (`.scratch/rewrite/brief.md`, §7, 17).
+* `ray-cast-normal-reads-once` (agent): the ray cast's normal reads each voxel once, measured in
+  scratch at 19 % to 28 % shorter back to back, bit for bit (its Comments).
+* `imu-samples-with-the-frames` (agent): the IMU's samples in the frame source and the sequence,
+  before `hardware-check-orbbec-on-seam` records sequences; `separation-up-from-gravity` follows.
+* `hold-color-exposure-and-white-balance` (agent): written offline; whether writing the
+  properties keeps anything in the camera's flash is checked first in
+  `first-trial-of-held-exposure` (brief §7, 16).
+* `depth-noise-from-a-still-sequence` (agent): the tool that fits the depth noise's c, which
+  `measure-depth-noise-on-the-camera` (hardware) runs on still sequences.
+* `kernels-under-compute-sanitizer` (agent): the GPU tests under memcheck and initcheck in
+  verify; two mutants of the sparse TSDF's integration wait for it.
+* `glossary-and-dependency-licenses` (agent, sonnet): Keyframe in the glossary, "final model"
+  renamed to "full model", the dependencies' licenses.
 * `measure-aligned-frame-distortion` (hardware: the checkerboard of step 2 and the user's go).
 
-The other 19 tickets for an agent and 5 for the user wait on one of these or on a ticket after
-it: tracking leads to the scan interface and everything after it; the checkerboard's measurement
-leads to the hardware check of the camera on the seam, whose sequences the replay's measurements
-need; the held exposure leads to its first trial on the camera and to the service. The hash's
-design is decided by a measurement that replays the cast `ray-cast-faster-by-measurement`
-leaves; no ticket holds it yet (`.scratch/rewrite/brief.md`, §8). Done when
-`accept-the-colored-model` is done.
+The other tickets wait on one of these or on a ticket after it: tracking leads to the scan
+interface and everything after it, and the shortest way to a first scan of a recorded sequence
+is tracking, `scan-interface-first-whole-scan` and `replay-tool`; the checkerboard's
+measurement leads to the hardware check of the camera on the seam, whose sequences the replay's
+measurements need; the held exposure leads to its first trial on the camera and to the service.
+The stream size (`per-stage-times-from-replay`) is decided on the cast both ray cast tickets
+leave. The hash's design is compared later on real scans of objects (brief §7, 22); no ticket
+holds it yet. Done when `accept-the-colored-model` is done.
 
 ## 2. What the first phase needs from the user (hardware, decision)
 
@@ -52,17 +63,9 @@ leaves; no ticket holds it yet (`.scratch/rewrite/brief.md`, §8). Done when
   off a homography at 1280x800, centred 0.2 px rms and 0.5 px at most, and a small board near a
   corner only 0.02 to 0.05 px, below the 0.04 px rms (0.12 px at most) the corner finder leaves
   on a synthetic pinhole picture [M 2026-11-14: `tests/test_checkerboard_measure.cpp`].
-* The go for each `ready-for-human` ticket.
-* The answers the tickets wait for, each in the ticket's Comments: whether writing the color
-  camera's auto exposure and auto white balance persists anything in its flash
-  (`hold-color-exposure-and-white-balance`); tracking's starting threshold of the inlier RMSE
-  (`track-frames-against-the-model`); and the orchestrator's choices of 2026-11-15, to confirm or
-  overturn (`.scratch/rewrite/brief.md`, §8).
-* Optional, root: the user in group `debug`, so that `compute-sanitizer` can check the GPU's
-  kernels; today it prints "GPU debugging features are disabled", because the debugger's
-  devices (`/dev/nvhost-dbg-gpu`, `/dev/nvgpu/igpu0/dbg`) are `root:debug` 0660
-  [M 2026-11-14]. Two mutants of the sparse TSDF's integration wait for it
-  (`.scratch/rewrite/brief.md`, §8).
+* The go for each `ready-for-human` ticket, among them the still sequences of
+  `measure-depth-noise-on-the-camera`: 300 frames at each stream size, aimed obliquely at a wall
+  or the floor (its ticket).
 * Optional, root: `sudo apt install earlyoom`, a guard against a frozen board (a build of six
   jobs froze it once, AGENTS.md §4).
 
@@ -79,3 +82,7 @@ named holds the reason.
   which the user asked about on 2026-11-14 (`.scratch/rewrite/brief.md`, §8).
 * The frames between two keyframes following an interpolation of their corrections
   (docs/methods/refinement.md, "How the other frames follow their keyframes").
+* The gyroscope as tracking's prior, once the sequences hold the IMU's samples
+  (`.scratch/rewrite/brief.md`, §7, 13).
+* The hash's design against the bucketed hash of Nießner et al. 2013, compared on real scans of
+  objects (`.scratch/rewrite/brief.md`, §7, 22 and §8).
