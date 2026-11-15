@@ -191,8 +191,7 @@ void sample_rectangle(built_model &model, const synthetic_surface &surface, doub
 }
 
 /// Samples the part of a sphere above the plane z = 0 at about one point per square of the spacing,
-/// on a Fibonacci lattice [S: computed: the golden angle between consecutive points, heights evenly
-/// spaced].
+/// on a Fibonacci lattice (synthetic_source.hpp, sphere_lattice_direction()).
 /// @param model [in,out] the model.
 /// @param ball [in] the sphere.
 /// @param spacing_m [in] the squares' edge, in m.
@@ -203,14 +202,11 @@ void sample_sphere(built_model &model, const synthetic_sphere &ball, double spac
                    std::normal_distribution<double> &noise, std::mt19937_64 &generator)
 {
     const double r = ball.radius_m;
-    const auto count = static_cast<long>(4.0 * std::numbers::pi * r * r / (spacing_m * spacing_m));
-    const double golden = std::numbers::pi * (3.0 - std::sqrt(5.0));
-    for (long k = 0; k < count; k++)
+    const auto count =
+        static_cast<std::size_t>(4.0 * std::numbers::pi * r * r / (spacing_m * spacing_m));
+    for (std::size_t k = 0; k < count; k++)
     {
-        const double z = 1.0 - 2.0 * (static_cast<double>(k) + 0.5) / static_cast<double>(count);
-        const double ring = std::sqrt(1.0 - z * z);
-        const double turn = golden * static_cast<double>(k);
-        const Eigen::Vector3d direction(ring * std::cos(turn), ring * std::sin(turn), z);
+        const Eigen::Vector3d direction = gca_test::sphere_lattice_direction(k, count);
         const Eigen::Vector3d world = ball.centre_m + r * direction;
         if (world.z() <= 0.0)
             continue;

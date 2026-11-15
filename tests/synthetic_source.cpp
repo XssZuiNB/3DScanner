@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <random>
 #include <span>
@@ -385,6 +386,15 @@ double distance_from(const synthetic_surface &surface, const Eigen::Vector3d &wo
     const double ds = std::abs(s) - std::min(std::abs(s), surface.half_u_m);
     const double dt = std::abs(t) - std::min(std::abs(t), surface.half_v_m);
     return std::sqrt(ds * ds + dt * dt + h * h);
+}
+
+Eigen::Vector3d sphere_lattice_direction(std::size_t k, std::size_t count)
+{
+    const double golden = std::numbers::pi * (3.0 - std::sqrt(5.0));
+    const double z = 1.0 - 2.0 * (static_cast<double>(k) + 0.5) / static_cast<double>(count);
+    const double ring = std::sqrt(1.0 - z * z);
+    const double turn = golden * static_cast<double>(k);
+    return {ring * std::cos(turn), ring * std::sin(turn), z};
 }
 
 std::optional<synthetic_hit> first_hit(const std::vector<synthetic_surface> &surfaces,

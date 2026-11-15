@@ -17,7 +17,7 @@ later a mesh and measurements ([GLOSSARY.md](GLOSSARY.md), [docs/adr/](docs/adr/
 | directory | what |
 |---|---|
 | `src/` | one library per directory: `types/` (camera parameters, a frame's description, the camera's pose, a model's point and console colors, header only), `camera/`, `gpu/`, `geometry/` (a frame's organized points, their normals and the frame's pyramid with the intensity; the prototype's point clouds), `registration/` (the registration of a frame against a surface by colored ICP coarse to fine, its normal equations and the SE(3) exponential; the prototype's colored ICP), `fusion/` (the sparse TSDF: today its hash of blocks, its pool, the allocation of the blocks near a frame's surface, the integration of a frame and the extraction of the surface's points), `refinement/` (today the pose graph of keyframes and its solve, on the host), `separation/` (today the proposal of the support plane and the box from a full model and its trajectory, and the least-squares plane, on the host), `scan/` (the files a scan keeps, the parameters of each object class); `camera/` holds two, so that only the Orbbec camera links OrbbecSDK: `camera` (the frame, the frame source seam, the sequence and the Orbbec camera's rules, which need no camera) and `orbbec_camera` (the Orbbec camera as a frame source) |
-| `apps/` | `orbbec_viewer` (camera test, live point cloud), its command line, `viewer_options`, and its loop on a frame source, `viewer_loop`; `distortion_check` (whether the aligned frames are distorted, from a snapshot of a checkerboard), its measurement, `checkerboard_measure`, and its command line, `distortion_options` |
+| `apps/` | `orbbec_viewer` (camera test, live point cloud), its command line, `viewer_options`, and its loop on a frame source, `viewer_loop`; `distortion_check` (whether the aligned frames are distorted, from a snapshot of a checkerboard), its measurement, `checkerboard_measure`, and its command line, `distortion_options`; `box_fit` (the acceptance tool: the edges of the box in an object model), its measurement, `box_measure`, and its command line, `box_fit_options` |
 | `tests/` | offline tests, run by ctest; they need the GPU, no camera; the synthetic source that renders their frames; the Orbbec camera's rules fed with plain data; the viewer's loop on the synthetic source |
 | `tools/` | fetch the dependencies, build, verify (AGENTS.md §4) |
 | `data/` | the two colored-ICP fragments, `frag_115.ply` and `frag_116.ply` |
@@ -54,6 +54,11 @@ scale are the ones the viewer prints at that stream size:
 
     <repo>/build/apps/distortion_check --fx 612.369 --fy 612.286 --cx 635.814 --cy 398.267 \
         --depth-scale 0.001 --square-mm 30 --corners 11x7 cloud_000.ply.color.png cloud_000.ply.depth.png
+
+The edges of a box scanned and separated, taken from its object model without the camera: its
+length, width and height in mm and each face's spread about its plane:
+
+    <repo>/build/apps/box_fit <scan>/<object model>.ply
 
 ## License
 

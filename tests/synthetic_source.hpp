@@ -144,6 +144,14 @@ Eigen::Vector3d pixel_ray(const gca::intrinsics &k, double u, double v);
 /// @return the distance, in m.
 double distance_from(const synthetic_surface &surface, const Eigen::Vector3d &world);
 
+/// Gives one direction of a Fibonacci lattice on the unit sphere, on which the tests sample a
+/// sphere's surface at about even spacing [S: computed: heights evenly spaced, the golden angle
+/// between consecutive points].
+/// @param k [in] the direction's index, 0 to count - 1.
+/// @param count [in] the lattice's directions, at least 1.
+/// @return the unit direction: z = 1 - 2 (k + 0.5) / count, turned by k golden angles about z.
+Eigen::Vector3d sphere_lattice_direction(std::size_t k, std::size_t count);
+
 /// Where a ray first meets a scene in front of its origin.
 struct synthetic_hit
 {

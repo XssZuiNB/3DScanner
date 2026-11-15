@@ -48,8 +48,9 @@ aligned to color, so the GPU code sees one resolution and one set of intrinsics.
 `orbbec_viewer` in `apps/` runs its loop (`apps/viewer_loop.*`) on the camera as a frame source,
 and the offline tests run the same loop on their synthetic source; the loop turns each frame's
 color to BGR8 for the prototype's GPU code and, with `--sequence`, writes the frames it takes
-into a sequence. `distortion_check` reads the viewer's snapshots without the camera; there is no
-daemon.
+into a sequence. `distortion_check` reads the viewer's snapshots without the camera, and
+`box_fit`, the acceptance tool, takes a box's edges from an object model's PLY without the camera;
+there is no daemon.
 
 ## 2. Before you run anything
 
@@ -85,6 +86,7 @@ The left column looks diagnostic and often is not.
 | `tools/build.sh`, `tools/verify.sh`, `tools/run_mutant.sh` | no hardware access |
 | `tools/fetch_deps.sh` | no hardware access; downloads into `~/.local/share/3dscanner` |
 | `build/apps/distortion_check` | no hardware access: reads a snapshot's two PNG files and prints its numbers; a command line it refuses exits 2 with the reason and the usage [S: distortion_check.cpp; the refusals: ctest `distortion_options`]; links neither OrbbecSDK nor CUDA [M 2026-11-14: `ldd`] |
+| `build/apps/box_fit MODEL.ply` | no hardware access: reads an object model's PLY (docs/SCAN_FILES.md, "Models") and prints the length, width and height of the box fitted to it and each face's spread; a command line it refuses (an argument it does not know, `--help` too, a second path, no path, a path that does not exist) exits 2 with the reason and the usage, a model it cannot read or that is no box exits 1 with the reason [S: box_fit.cpp; the refusals: ctests `box_fit_options` and `box_measure`, which also runs the program for each exit]; links neither OrbbecSDK nor CUDA nor OpenCV [M 2026-11-15: `ldd`] |
 | `build/apps/orbbec_viewer --list` | opens the camera, reads its info and stream profiles, starts no stream [S: orbbec_device.cpp]; what OrbbecSDK sends on open is unverified [?] |
 | `build/apps/orbbec_viewer` with an argument it does not know (`--help` too), an option without its value, or a `--sequence` directory that does not exist, holds something or cannot be read or written | prints the reason and the usage line and exits 2; `main` reads the options, and looks at that directory without changing it, before it opens the camera or the GPU or installs a signal handler [S: orbbec_viewer.cpp, `main`; the refusals: ctest `viewer_options`]. The load-time code of OrbbecSDK, OpenCV and CUDA runs before `main`; what it does is unverified [?] |
 | `build/apps/orbbec_viewer [--frames N]` | streams color and depth with depth-to-color alignment; sets no option of the camera [S]; `s`, or the last of N frames headless, writes `cloud_NNN.ply`, `.color.png`, `.depth.png` into the current directory: run it in a scratch directory. N counts delivered frames: a timeout or a failure prints its line, counts no frame and the loop goes on [S: viewer_loop.cpp; ctest `viewer_loop`] |
@@ -238,10 +240,11 @@ checkers; these are the rules no checker holds.
    | the SE(3) exponential, the registration's and the pose graph's pose update; the check that a transform is rigid; the one copy of each | `src/registration/se3.*` |
    | the prototype's colored ICP, the oracle until it is retired; the 3x3 LDLT solve | `src/registration/` |
    | refinement's pose graph (docs/methods/refinement.md): its nodes and edges, the robust weight, the damped Gauss-Newton on SE(3) on the host in double, the result, the constants that end a solve | `src/refinement/pose_graph.*` |
-   | separation's proposal (docs/methods/separation.md): the trajectory's up and meeting point, the window, the support plane and its conditions, the footprint's pieces, the box, its parameters, result and constants; the orthogonal least-squares plane, which distortion_check's measurement calls too | `src/separation/proposal.*`; `src/separation/plane_fit.*` |
+   | separation's proposal (docs/methods/separation.md): the trajectory's up and meeting point, the window, the support plane and its conditions, the footprint's pieces, the box, its parameters, result and constants; the orthogonal least-squares plane, which distortion_check's measurement and the acceptance tool's box fit call too | `src/separation/proposal.*`; `src/separation/plane_fit.*` |
    | the files a scan keeps (docs/SCAN_FILES.md); the parameters of each object class | `src/scan/` |
+   | the acceptance tool's box fit: the box's axes from the normals, its faces, their planes and spreads, its edges, its refusals and the lines the hardware acceptance reads | `apps/box_measure.*` |
    | `orbbec_viewer`'s loop on a frame source: the first frame, the report line, the window, the snapshots, the sequence it writes | `apps/viewer_loop.*` |
-   | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, a mesh's frames (the colored-ICP fixture's), the depth noise from a fixed seed, a point's distance from a known surface, the trajectories it renders along | `tests/synthetic_source.*` |
+   | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, a mesh's frames (the colored-ICP fixture's), the depth noise from a fixed seed, a point's distance from a known surface, the trajectories it renders along, the Fibonacci lattice the tests sample a sphere on | `tests/synthetic_source.*` |
    | the tests' copy of a frame, to check a source left it as it was | `tests/frame_copy.hpp` |
    | the sparse TSDF tests' lookups of blocks, their readings of the usage, the method's starting truncation, a pose as the sparse TSDF takes it and a frame's buffers on the GPU | `tests/sparse_tsdf_helpers.hpp` |
    | the stages' test frames: the camera's stream sizes and intrinsics, the tabletop sphere, a scene's frames rendered, with depth noise or without, frames built from functions of the pixel | `tests/stage_frames.hpp` |

@@ -120,3 +120,15 @@ add_test(NAME separation COMMAND test_separation)
 add_executable(test_pose_graph test_pose_graph.cpp)
 target_link_libraries(test_pose_graph PRIVATE refinement registration synthetic_source)
 add_test(NAME pose_graph COMMAND test_pose_graph)
+
+# The acceptance tool's box fit, on object models the test builds: boxes of both object classes'
+# sizes in several orientations with noise from a fixed seed, a remnant of the support plane, and
+# models that are no box; and the program box_fit on models the test writes. The synthetic source
+# gives the sphere's lattice, scan writes the models.
+add_executable(test_box_measure test_box_measure.cpp)
+target_link_libraries(test_box_measure PRIVATE box_measure scan synthetic_source Eigen3::Eigen)
+add_test(NAME box_measure COMMAND test_box_measure $<TARGET_FILE:box_fit>)
+
+add_executable(test_box_fit_options test_box_fit_options.cpp)
+target_link_libraries(test_box_fit_options PRIVATE box_fit_options)
+add_test(NAME box_fit_options COMMAND test_box_fit_options)
