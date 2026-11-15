@@ -20,6 +20,12 @@
 ///   wall 2.5 mm away; the wall cast through a model with a patch in front of it, whose blocks
 ///   widen tiles' intervals, and through one without, every pixel out of the patch's reach the same
 ///   bit for bit in both.
+/// - The normal, whose six ends read each of their voxels once (docs/methods/sparse-tsdf.md, "The
+///   ray cast"): a wall fused at a slant, so that its distances change along every axis, cast at
+///   both stream sizes, every pixel whose ray meets the fused part of the wall holding it at its
+///   depth with its normal within measured tolerances; among them the column and the row through
+///   the principal point, where float's rounding puts the end one voxel before every crossing into
+///   the crossing's own cell, so that the normal takes its six interpolations there.
 /// - A sphere resting on a plane, fused from a walk of 12 known poses, at the live voxel sizes of
 ///   both object classes: cast from a pose of the walk, from one between two of its poses and from
 ///   one a hand's step away from it, at both stream sizes, every valid point lies within measured
@@ -339,7 +345,7 @@ double luma_of(const std::array<double, 3> &color)
     return (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]) / 255.0;
 }
 
-/// The tabletop object's live model fused from frames at the identity, the walls' cases' model: its
+/// The tabletop object's live model fused from frames at one pose, the walls' cases' model: its
 /// pool, closed once the buffers, the sparse TSDF and a surface at each stream size are granted.
 /// Not copied and not moved, as its pool is not.
 struct fused_wall
@@ -351,12 +357,14 @@ struct fused_wall
     std::array<gca::model_surface, 2> surfaces; ///< the surfaces at 640x400 and 1280x800
 
     /// Requests the buffers, the sparse TSDF and the surfaces, closes the pool and fuses the
-    /// frames, each at the identity.
+    /// frames, each at the same pose.
     /// @param name [in] the case, named in the check lines.
     /// @param frames [in] the frames, 640x400 with the camera's intrinsics; owned by the caller.
     /// @param stream [in] the stream.
+    /// @param fused_from [in] the frames' pose, camera frame to the models' frame.
     fused_wall(const std::string &name, std::initializer_list<const gca::frame *> frames,
-               cudaStream_t stream)
+               cudaStream_t stream,
+               const Eigen::Isometry3d &fused_from = Eigen::Isometry3d::Identity())
         : m(model_of(name, gca::object_class::tabletop_object, false))
         , buffers(request_buffers(pool, small_description.size, name))
         , tsdf(granted(name + ": the sparse TSDF", gca::sparse_tsdf::request(pool, m.tsdf, stream)))
@@ -367,7 +375,7 @@ struct fused_wall
     {
         pool.close();
         for (const gca::frame *frame : frames)
-            fuse(tsdf, buffers, *frame, m.range, Eigen::Isometry3d::Identity(), stream, name);
+            fuse(tsdf, buffers, *frame, m.range, fused_from, stream, name);
     }
 
     fused_wall(const fused_wall &) = delete;
@@ -511,14 +519,15 @@ void check_half_wall(cudaStream_t stream)
     check(w.pool.refused_while_closed() == 0, "half wall: the closed pool asked for nothing");
 }
 
-/// What a cast of a wall fused from the identity gives at one pixel, where its ray meets the wall's
-/// plane inside the part the fused frame saw.
+/// What a cast of a wall gives at one pixel, where its ray meets the wall's plane inside the part
+/// the fused frame saw.
 struct wall_expectation
 {
     bool sees = false; ///< whether the ray meets the plane wall_border_px or more inside the frame,
                        ///< within the depth range
     double depth_m = 0.0;   ///< the depth of that point along the cast's camera z, in m
-    Eigen::Vector3d normal; ///< the wall's normal, -z of the world, in the cast's camera frame
+    Eigen::Vector3d normal; ///< the wall's normal, -z of the fused frame's camera, in the cast's
+                            ///< camera frame
 };
 
 /// The margin a wall's expected point keeps from the depth range's limits: 1 mm, so that float's
@@ -526,10 +535,11 @@ struct wall_expectation
 constexpr double range_margin_m = 1e-3;
 
 /// Gives what a pixel of a cast of the wall sees: its ray from the cast's pose meets the plane
-/// z = wall_mm of the world; the point counts when its depth lies within the depth range,
-/// range_margin_m from either limit, and it projects into the fused frame, the identity's at
-/// 640x400, wall_border_px or more inside its border.
-/// @param pose [in] the cast's pose, camera frame to the world frame.
+/// z = wall_mm of the camera the wall was fused from; the point counts when its depth lies within
+/// the depth range, range_margin_m from either limit, and it projects into the fused frame, 640x400
+/// with the camera's intrinsics, wall_border_px or more inside its border.
+/// @param pose [in] the cast's pose, camera frame to the frame of the camera the wall was fused
+///        from: the world frame for a wall fused at the identity.
 /// @param k [in] the cast's intrinsics.
 /// @param range [in] the cast's depth range.
 /// @param u [in] the pixel's column.
@@ -556,6 +566,79 @@ wall_expectation wall_seen(const Eigen::Isometry3d &pose, const gca::intrinsics 
     e.depth_m = s;
     e.normal = pose.linear().transpose() * Eigen::Vector3d(0.0, 0.0, -1.0);
     return e;
+}
+
+/// A cast's level 0 against the wall it sees, over the pixels taken whose ray meets the part of the
+/// wall the frame saw (wall_seen()).
+struct wall_comparison
+{
+    std::size_t seen = 0; ///< those pixels
+    int missed = 0;       ///< of them, those invalid or without a normal
+    max_error depth;      ///< the largest error of the others' depths, in m
+    max_error normal;     ///< the largest angle of their normals from the wall's, in degrees
+};
+
+/// Compares a cast's level 0 with the wall pixel by pixel.
+/// @param p [in] the level.
+/// @param pose [in] the cast's pose in the frame of the camera the wall was fused from
+///        (wall_seen()).
+/// @param range [in] the cast's depth range.
+/// @param taken [in] which pixels to compare: called with the column and the row, true for those.
+/// @return the comparison.
+template <typename Pixels>
+wall_comparison compare_with_wall(const cast_picture &p, const Eigen::Isometry3d &pose,
+                                  const gca::organized_points_parameters &range, Pixels taken)
+{
+    wall_comparison c;
+    for (std::uint32_t v = 0; v < p.size.height && !p.valid.empty(); v++)
+        for (std::uint32_t u = 0; u < p.size.width; u++)
+        {
+            if (!taken(u, v))
+                continue;
+            const wall_expectation e = wall_seen(pose, p.k, range, u, v);
+            if (!e.sees)
+                continue;
+            c.seen++;
+            const std::size_t i = gca_test::index_of(p.size, u, v);
+            if (p.valid[i] == 0 || gca_test::is_zero(p.normals[i]))
+            {
+                c.missed++;
+                continue;
+            }
+            c.depth.add(std::abs(double{p.points[i].z} - e.depth_m));
+            c.normal.add(angle_deg(to_double(p.normals[i]), e.normal));
+        }
+    return c;
+}
+
+/// Takes every pixel (compare_with_wall()).
+/// @param u [in] the pixel's column.
+/// @param v [in] its row.
+/// @return true.
+bool every_pixel(std::uint32_t u, std::uint32_t v)
+{
+    static_cast<void>(u);
+    static_cast<void>(v);
+    return true;
+}
+
+/// Prints how many pixels see the wall and checks a comparison: at least a number of pixels see
+/// it, each holds the wall and its normal, its depth and its normal within their tolerances.
+/// @param what [in] the pixels compared, printed and named in the check lines.
+/// @param c [in] the comparison.
+/// @param least_seen [in] the fewest pixels that must see the wall.
+/// @param depth_tolerance_m [in] the largest depth's error that passes, in m.
+/// @param normal_tolerance_deg [in] the largest normal's angle that passes, in degrees.
+void check_wall_comparison(const std::string &what, const wall_comparison &c,
+                           std::size_t least_seen, double depth_tolerance_m,
+                           double normal_tolerance_deg)
+{
+    std::printf("%s: %zu pixels see the fused wall\n", what.c_str(), c.seen);
+    check(c.seen >= least_seen, (what + ": enough pixels see the wall").c_str());
+    check_within((what + ": pixels that see the wall without it or its normal").c_str(), c.missed,
+                 0.0);
+    gca_test::check_max_error(what + ": depth's error, m", c.depth, depth_tolerance_m);
+    gca_test::check_max_error(what + ": normal's angle, deg", c.normal, normal_tolerance_deg);
 }
 
 /// The wall fused once from the identity, cast from poses turned and shifted from it, at both
@@ -592,36 +675,124 @@ void check_wall_turned(cudaStream_t stream)
                 cast(w.tsdf, pose, sizes[s].intrinsics, m.range, w.surfaces[s], stream, what);
             check_levels(what, pictures, sizes[s].intrinsics, m.range);
             const cast_picture &p = pictures[0];
-            std::size_t seen = 0;
-            int missed = 0;
-            max_error depth;
-            max_error normal;
-            for (std::uint32_t v = 0; v < p.size.height && !p.valid.empty(); v++)
-                for (std::uint32_t u = 0; u < p.size.width; u++)
-                {
-                    const wall_expectation e = wall_seen(pose, p.k, m.range, u, v);
-                    if (!e.sees)
-                        continue;
-                    seen++;
-                    const std::size_t i = gca_test::index_of(p.size, u, v);
-                    if (p.valid[i] == 0 || gca_test::is_zero(p.normals[i]))
-                    {
-                        missed++;
-                        continue;
-                    }
-                    depth.add(std::abs(double{p.points[i].z} - e.depth_m));
-                    normal.add(angle_deg(to_double(p.normals[i]), e.normal));
-                }
-            std::printf("%s: %zu pixels see the fused wall\n", what.c_str(), seen);
-            check(seen > p.valid.size() / 4,
-                  (what + ": a quarter of the picture sees the wall").c_str());
-            check_within((what + ": pixels that see the wall without it or its normal").c_str(),
-                         missed, 0.0);
-            gca_test::check_max_error(what + ": depth's error, m", depth, wall_depth_tolerance_m);
-            gca_test::check_max_error(what + ": normal's angle, deg", normal,
-                                      wall_normal_tolerance_deg);
+            // More than a quarter of the picture sees the wall.
+            check_wall_comparison(what, compare_with_wall(p, pose, m.range, every_pixel),
+                                  p.valid.size() / 4 + 1, wall_depth_tolerance_m,
+                                  wall_normal_tolerance_deg);
         }
     check(w.pool.refused_while_closed() == 0, "turned wall: the closed pool asked for nothing");
+}
+
+/// A coordinate of a cast's position, in m, which every crossing on a picture line whose rays keep
+/// that coordinate shares, and where the normal's end one voxel after the crossing rounds into
+/// another cell than the crossing's moved by one: at the tabletop object's live 2 mm voxels,
+/// 1 / v = 499.99997 in float, g = fma(0.003000000026077032, 1 / v, -1/2) = 1 - 2^-24 on the grid
+/// of the voxels' centres, where g + 1 rounds to 2, a tie to the even one. The cast's g is one fma
+/// [B 2026-11-15: `cuobjdump -sass`, FFMA with -0.5]; with the product rounded first it would be
+/// 1 - 2^-23, and the line would take no fallback [S: computed in exact rationals and float32].
+constexpr double slanted_after_m = 0.003000000026077032;
+
+/// Likewise for the end one voxel before the crossing: g = -3 - 2^-22, where g - 1 rounds to -4, a
+/// tie to the even one, so that the cell before is the crossing's own moved by 0, not 1; with the
+/// fma or without [S: computed in exact rationals and float32].
+constexpr double slanted_before_m = -0.005000000819563866;
+
+/// The slanted wall's tolerances: 1.65 to 1.96 times the largest errors over its three
+/// orientations, 0.510 to 0.593 µm and 0.0119 to 0.0121 degrees at 640x400 and 1280x800, its
+/// distances rounded to half floats; on the column and the row through the principal point 0.456 to
+/// 0.461 µm and 0.0117 to 0.0120 degrees [M 2026-11-15: this test; the same pixels as the cast that
+/// interpolated the six ends, bit for bit (docs/methods/sparse-tsdf.md, "On the GPU")].
+constexpr double slanted_depth_tolerance_m = 1e-6;
+constexpr double slanted_normal_tolerance_deg = 0.02;
+
+/// The least number of pixels of the column and the row through the principal point that see the
+/// slanted wall at 640x400, twice as many at 1280x800 [?: a choice, below the 798 and 1595
+/// measured in each orientation (M 2026-11-15: this test)].
+constexpr std::size_t slanted_least_on_lines = 700;
+
+/// Gives a stream size's intrinsics with the principal point at the picture's centre, a whole
+/// pixel.
+/// @param d [in] the stream size and its intrinsics.
+/// @return the intrinsics with cx = width / 2 and cy = height / 2, in px.
+gca::intrinsics centred(const gca::frame_description &d)
+{
+    gca::intrinsics k = d.intrinsics;
+    k.cx = static_cast<float>(d.size.width / 2);
+    k.cy = static_cast<float>(d.size.height / 2);
+    return k;
+}
+
+/// An orientation of the slanted wall's case: the turn of the camera that casts it, and of the
+/// camera that fused it with it, and the models' axes that the rays of the column and of the row
+/// through the principal point keep, a ray of the column having x = 0 and one of the row y = 0 in
+/// the camera frame [S: (u - cx) / fx].
+struct slanted_view
+{
+    std::string name;        ///< the orientation, named in the check lines
+    Eigen::Quaterniond turn; ///< camera frame to the models' frame; its matrix exact in float
+    int column_axis;         ///< the models' axis the column's rays keep: 0, 1 or 2
+    int row_axis;            ///< the models' axis the row's rays keep, another
+};
+
+/// The wall fused once from a pose turned by 20 degrees about (1, -1, 0) at the tabletop object's
+/// live voxel size, so that its distances change along every axis of the models' frame, in three
+/// orientations of the scene, each with its own model: the camera looking along the models' z, x
+/// and y, turned by the identity and by 120 degrees about (1, 1, 1) either way, whose matrices hold
+/// only 0 and 1 [S: the quaternions (1/2, 1/2, 1/2, 1/2) and (1/2, -1/2, -1/2, -1/2)]. Each is cast
+/// from its turn at a position whose column axis is slanted_after_m and whose row axis is
+/// slanted_before_m, at both stream sizes with the principal point at the picture's centre
+/// [?: a choice], so that every crossing on the column takes the six interpolations of the normal's
+/// ends for the end after it and every crossing on the row for the end before it, along x and y,
+/// y and z, z and x: all six of the fallback's conditions. Every pixel whose ray meets the part of
+/// the wall the frame saw, away from its border, holds the wall at the depth along its ray, its
+/// normal the wall's, each within its tolerance; and so the column and the row.
+/// @param stream [in] the stream.
+void check_slanted_wall(cudaStream_t stream)
+{
+    const gca::frame wall = flat_wall(wall_mm, wall_color);
+    const Eigen::Isometry3d slant =
+        make_transform(Eigen::Vector3d(1.0, -1.0, 0.0), 20.0, Eigen::Vector3d::Zero());
+    const std::array<slanted_view, 3> views = {
+        slanted_view{"looking along z", Eigen::Quaterniond::Identity(), 0, 1},
+        slanted_view{"looking along x", Eigen::Quaterniond(0.5, 0.5, 0.5, 0.5), 1, 2},
+        slanted_view{"looking along y", Eigen::Quaterniond(0.5, -0.5, -0.5, -0.5), 2, 0}};
+    const std::array<gca::frame_description, 2> sizes = {small_description, large_description};
+    for (const slanted_view &view : views)
+    {
+        const Eigen::Isometry3d turned(view.turn);
+        const Eigen::Isometry3d fused_from = turned * slant;
+        fused_wall w("slanted wall, " + view.name, {&wall}, stream, fused_from);
+        const model_case &m = w.m;
+        Eigen::Vector3d position = Eigen::Vector3d::Zero();
+        position[view.column_axis] = slanted_after_m;
+        position[view.row_axis] = slanted_before_m;
+        const Eigen::Isometry3d pose = Eigen::Translation3d(position) * turned;
+        const Eigen::Isometry3d in_wall = fused_from.inverse() * pose;
+        for (std::size_t s = 0; s < sizes.size(); s++)
+        {
+            const std::string what = m.name + ", " + gca::size_text(sizes[s].size);
+            const gca::intrinsics k = centred(sizes[s]);
+            const cast_pictures pictures =
+                cast(w.tsdf, pose, k, m.range, w.surfaces[s], stream, what);
+            check_levels(what, pictures, k, m.range);
+            const cast_picture &p = pictures[0];
+            const std::uint32_t column = sizes[s].size.width / 2;
+            const std::uint32_t row = sizes[s].size.height / 2;
+            check_wall_comparison(what, compare_with_wall(p, in_wall, m.range, every_pixel),
+                                  p.valid.size() / 4 + 1, slanted_depth_tolerance_m,
+                                  slanted_normal_tolerance_deg);
+            check_wall_comparison(
+                what + ", the column and the row through the principal point",
+                compare_with_wall(p, in_wall, m.range,
+                                  [column, row](std::uint32_t u, std::uint32_t v) {
+                                      return u == column || v == row;
+                                  }),
+                slanted_least_on_lines << s, slanted_depth_tolerance_m,
+                slanted_normal_tolerance_deg);
+        }
+        check(w.pool.refused_while_closed() == 0,
+              (m.name + ": the closed pool asked for nothing").c_str());
+    }
 }
 
 /// The patch's depth in front of the wall, and its pixels in the fused frame: columns 250 to 389
@@ -1259,6 +1430,7 @@ int main()
     check_wall(stream);
     check_half_wall(stream);
     check_wall_turned(stream);
+    check_slanted_wall(stream);
     check_patch_before_wall(stream);
     check_inside_band(stream);
     check_widened_tiles(stream);

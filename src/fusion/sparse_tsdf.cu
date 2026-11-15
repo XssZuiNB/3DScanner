@@ -853,8 +853,8 @@ __global__ void __launch_bounds__(voxels_per_block)
 }
 
 /// The blocks a ray's lookups of voxels last found: the block the march is in and the last other
-/// block a voxel was found in, so that a sample's 8 voxels and a normal's 48, which lie in one or a
-/// few blocks, look each block up about once.
+/// block a voxel was found in, so that a sample's 8 voxels and a normal's 24 more, which lie in one
+/// or a few blocks, look each block up about once.
 struct block_cache
 {
     held_block at_hand; ///< the march's block, its number no_block when the hash holds none
@@ -886,6 +886,59 @@ __device__ inline const voxel *cast_voxel(const voxel_lookup &tsdf, const int3 &
     return voxel_in_pool(tsdf, number, g);
 }
 
+/// Reads an observed voxel's distance for the ray cast, the whole voxel in one read of 8 bytes, as
+/// interpolate() reads its 8; interpolate() reads them inline, as the cast with one function that
+/// hands an observed voxel out to both took 7.6 % to 8.4 % longer back to back [M 2026-11-15:
+/// docs/methods/sparse-tsdf.md, "The ray cast"].
+/// @param tsdf [in] the hash and the voxels.
+/// @param g [in] the voxel, in voxels of the models' frame.
+/// @param cache [in,out] the blocks found last (cast_voxel()).
+/// @param distance [out] its distance, in voxels, when observed.
+/// @return whether the voxel exists and is observed (weight > 0).
+/// @note Device code; allocates nothing.
+__device__ inline bool cast_distance(const voxel_lookup &tsdf, const int3 &g, block_cache &cache,
+                                     float &distance)
+{
+    const voxel *cell = cast_voxel(tsdf, g, cache);
+    if (cell == nullptr)
+        return false;
+    const voxel held = *cell;
+    if (held.weight == 0)
+        return false;
+    distance = __half2float(held.distance);
+    return true;
+}
+
+/// The distances of a cell's 8 voxels, which the normal's ends reuse from the crossing's
+/// interpolation (crossing_gradient()): corner c is voxel cell_corner(g0, c) of the cell's lower
+/// corner g0, in interpolate()'s order.
+struct cell_distances
+{
+    float corner[8]; ///< each corner's distance, in voxels
+};
+
+/// Gives a corner of a cell.
+/// @param g0 [in] the cell's lower corner, in voxels of the models' frame.
+/// @param c [in] the corner, 0 to 7.
+/// @return g0 + (c & 1, (c >> 1) & 1, c >> 2), in voxels.
+/// @note Device code; allocates nothing.
+__device__ inline int3 cell_corner(const int3 &g0, int c)
+{
+    return make_int3(g0.x + (c & 1), g0.y + ((c >> 1) & 1), g0.z + (c >> 2));
+}
+
+/// Gives a corner's weight in a cell's trilinear interpolation: the product of its fractions along
+/// the three axes, f on the cell's upper side and 1 - f on its lower.
+/// @param c [in] the corner, 0 to 7 (cell_corner()).
+/// @param f [in] the point's fractions in the cell along x, y and z, each in [0, 1].
+/// @return the weight, in [0, 1].
+/// @note Device code; allocates nothing.
+__device__ inline float corner_weight(int c, const float3 &f)
+{
+    return ((c & 1) != 0 ? f.x : 1.0f - f.x) * (((c >> 1) & 1) != 0 ? f.y : 1.0f - f.y) *
+           ((c >> 2) != 0 ? f.z : 1.0f - f.z);
+}
+
 /// Interpolates the 8 voxels whose centres surround a point trilinearly, each weighed by the
 /// product of its fractions along the three axes: the distance, and the color when asked for.
 /// @param tsdf [in] the hash and the voxels.
@@ -895,11 +948,15 @@ __device__ inline const voxel *cast_voxel(const voxel_lookup &tsdf, const int3 &
 /// @param distance [out] the interpolated distance, in voxels, when all 8 voxels are observed.
 /// @param color [out] when not nullptr, the interpolated red, green and blue, 0 to 255, unrounded,
 ///        when all 8 voxels are observed.
+/// @param kept [out] when not nullptr, the 8 voxels' distances, when all 8 are observed.
 /// @return whether all 8 voxels exist and are observed (weight > 0): a sample, or none.
 /// @note Device code; allocates nothing. A point beyond float's whole numbers converts to an int
 ///       that saturates; its block then lies outside the hash's range and is found missing.
+///       trilinear_sum() repeats this sum's operations in its order, so that the normal's ends
+///       summed from held distances are these interpolations' bit for bit (crossing_gradient()):
+///       a change to the weights or the sum here is made there too.
 __device__ inline bool interpolate(const voxel_lookup &tsdf, const float3 &g, block_cache &cache,
-                                   float &distance, float3 *color)
+                                   float &distance, float3 *color, cell_distances *kept = nullptr)
 {
     const float3 base = make_float3(floorf(g.x), floorf(g.y), floorf(g.z));
     const int3 g0 =
@@ -910,18 +967,17 @@ __device__ inline bool interpolate(const voxel_lookup &tsdf, const float3 &g, bl
 #pragma unroll
     for (int c = 0; c < 8; c++)
     {
-        const int i = c & 1;
-        const int j = (c >> 1) & 1;
-        const int k = c >> 2;
-        const voxel *corner = cast_voxel(tsdf, make_int3(g0.x + i, g0.y + j, g0.z + k), cache);
+        const voxel *corner = cast_voxel(tsdf, cell_corner(g0, c), cache);
         if (corner == nullptr)
             return false;
         const voxel held = *corner;
         if (held.weight == 0)
             return false;
-        const float w =
-            (i != 0 ? f.x : 1.0f - f.x) * (j != 0 ? f.y : 1.0f - f.y) * (k != 0 ? f.z : 1.0f - f.z);
-        sum += w * __half2float(held.distance);
+        const float w = corner_weight(c, f);
+        const float d = __half2float(held.distance);
+        sum += w * d;
+        if (kept != nullptr)
+            kept->corner[c] = d;
         if (color != nullptr)
             rgb =
                 rgb + w * make_float3(static_cast<float>(held.red), static_cast<float>(held.green),
@@ -933,30 +989,173 @@ __device__ inline bool interpolate(const voxel_lookup &tsdf, const float3 &g, bl
     return true;
 }
 
-/// Gives the gradient of the distance at a point by central differences of one voxel along each
-/// axis, each end interpolated trilinearly: the same as the trilinear interpolation of the
-/// voxels' own central differences, the interpolation being linear in the voxels' values and the
-/// same at every shift of the grid [S].
+/// Interpolates a cell's held distances trilinearly at a point, by interpolate()'s operations in
+/// its order, so that the two give the same distance bit for bit.
+/// @param d [in] the cell's 8 distances, in voxels.
+/// @param f [in] the point's fractions in the cell along x, y and z, each in [0, 1].
+/// @return the interpolated distance, in voxels.
+/// @note Device code; allocates nothing.
+__device__ inline float trilinear_sum(const cell_distances &d, const float3 &f)
+{
+    float sum = 0.0f;
+#pragma unroll
+    for (int c = 0; c < 8; c++)
+        sum += corner_weight(c, f) * d.corner[c];
+    return sum;
+}
+
+/// Gives the six ends of the normal's central differences of one voxel along each axis, each
+/// interpolated trilinearly at g + 1 or g - 1 along its axis, rounded to float (interpolate()).
 /// @param tsdf [in] the hash and the voxels.
 /// @param g [in] the point on the grid of the voxels' centres, in voxels (interpolate()).
 /// @param cache [in,out] the blocks found last (cast_voxel()).
+/// @param after [out] (D(g + x), D(g + y), D(g + z)), in voxels, when every end is a sample.
+/// @param before [out] (D(g - x), D(g - y), D(g - z)), in voxels, likewise.
+/// @return whether every one of the six ends is a sample (interpolate()), tried in the order
+///         x after, x before, y after, y before, z after, z before up to the first that is none.
+/// @note Device code; allocates nothing. Reads the 48 voxels of the six ends.
+__device__ inline bool interpolated_ends(const voxel_lookup &tsdf, const float3 &g,
+                                         block_cache &cache, float3 &after, float3 &before)
+{
+    return interpolate(tsdf, make_float3(g.x + 1.0f, g.y, g.z), cache, after.x, nullptr) &&
+           interpolate(tsdf, make_float3(g.x - 1.0f, g.y, g.z), cache, before.x, nullptr) &&
+           interpolate(tsdf, make_float3(g.x, g.y + 1.0f, g.z), cache, after.y, nullptr) &&
+           interpolate(tsdf, make_float3(g.x, g.y - 1.0f, g.z), cache, before.y, nullptr) &&
+           interpolate(tsdf, make_float3(g.x, g.y, g.z + 1.0f), cache, after.z, nullptr) &&
+           interpolate(tsdf, make_float3(g.x, g.y, g.z - 1.0f), cache, before.z, nullptr);
+}
+
+/// Gives an end of the normal's central differences along one axis, g + 1 or g - 1 rounded to
+/// float: its fraction in its cell as interpolate() computes it, and whether that cell is the
+/// crossing's moved by one voxel.
+/// @param end [in] the end's coordinate along the axis, in voxels.
+/// @param cell [in] the crossing's cell's lower corner along the axis moved by one voxel to the
+///        end's side, floor(g) + 1 or floor(g) - 1, in voxels.
+/// @param fraction [out] end - floor(end), in [0, 1].
+/// @return whether floor(end) is cell.
+/// @note Device code; allocates nothing.
+__device__ inline bool end_in_cell(float end, int cell, float &fraction)
+{
+    const float base = floorf(end);
+    fraction = end - base;
+    return __float2int_rd(base) == cell;
+}
+
+/// Gives the two ends of the normal's central differences along one axis, each end's cell the
+/// crossing's moved by one voxel along it: of an end's 8 voxels, the 4 on the crossing's cell's
+/// layer next to the end are the crossing's held distances, and the 4 on the layer beyond the
+/// cell are read, each checked before the next is read; the axis's 8 new voxels, the after end's
+/// first.
+/// @tparam axis 0, 1 or 2: x, y or z.
+/// @param tsdf [in] the hash and the voxels.
+/// @param g0 [in] the crossing's cell's lower corner, in voxels of the models' frame.
+/// @param own [in] the crossing's 8 distances (interpolate()).
+/// @param after_f [in] the after end's fractions in its cell: the crossing's, and along the axis
+///        its own (end_in_cell()).
+/// @param before_f [in] the before end's fractions, likewise.
+/// @param cache [in,out] the blocks found last (cast_voxel()).
+/// @param after [out] the distance at g + 1 along the axis, in voxels, when the 8 new voxels are
+///        observed.
+/// @param before [out] the distance at g - 1 along the axis, in voxels, likewise.
+/// @return whether the axis's 8 new voxels all exist and are observed (cast_distance()).
+/// @note Device code; allocates nothing.
+template <int axis>
+__device__ inline bool ends_along(const voxel_lookup &tsdf, const int3 &g0,
+                                  const cell_distances &own, const float3 &after_f,
+                                  const float3 &before_f, block_cache &cache, float &after,
+                                  float &before)
+{
+    constexpr int bit = 1 << axis;
+    const int3 step = make_int3(axis == 0 ? 1 : 0, axis == 1 ? 1 : 0, axis == 2 ? 1 : 0);
+    cell_distances after_cell;
+    cell_distances before_cell;
+    // The after end's cell is the crossing's moved up by one: its corners on the upper side are
+    // new, those on the lower side the crossing's upper ones.
+#pragma unroll
+    for (int c = 0; c < 8; c++)
+    {
+        if ((c & bit) == 0)
+            continue;
+        const int3 g = cell_corner(g0, c);
+        if (!cast_distance(tsdf, make_int3(g.x + step.x, g.y + step.y, g.z + step.z), cache,
+                           after_cell.corner[c]))
+            return false;
+        before_cell.corner[c] = own.corner[c & ~bit];
+    }
+    // The before end's cell is the crossing's moved down by one: its corners on the lower side are
+    // new, those on the upper side the crossing's lower ones.
+#pragma unroll
+    for (int c = 0; c < 8; c++)
+    {
+        if ((c & bit) != 0)
+            continue;
+        const int3 g = cell_corner(g0, c);
+        if (!cast_distance(tsdf, make_int3(g.x - step.x, g.y - step.y, g.z - step.z), cache,
+                           before_cell.corner[c]))
+            return false;
+        after_cell.corner[c] = own.corner[c | bit];
+    }
+    after = trilinear_sum(after_cell, after_f);
+    before = trilinear_sum(before_cell, before_f);
+    return true;
+}
+
+/// Gives the gradient of the distance at a crossing by central differences of one voxel along each
+/// axis, each end interpolated trilinearly: the same as the trilinear interpolation of the voxels'
+/// own central differences, the interpolation being linear in the voxels' values and the same at
+/// every shift of the grid [S]. Each end's cell is the crossing's moved by one voxel along the
+/// end's axis, so the six ends' 48 voxels are 32 distinct ones, along each axis the 4 layers
+/// floor(g) - 1 to floor(g) + 2 of the crossing's 2 x 2 voxels across it, 8 of them the
+/// crossing's own, which are held [S: the lattice]: each axis reads its 8 new voxels
+/// (ends_along()), and each end is summed from its 8 values in interpolate()'s operations and
+/// order, so the gradient is the six interpolations' bit for bit. Where float's rounding of g + 1
+/// or g - 1 carries it across a whole number into another cell than that, the six interpolations
+/// are taken as they are (interpolated_ends()): g - 1 rounds to -1 at g = -2^-24, g + 1 to 2 at
+/// g = 1 - 2^-24 [S: float32, rounding to the nearest, a tie to the even one]. Both can occur:
+/// nvcc fuses a multiply-add into one fma by default (`--fmad=true` [S: nvcc --help]), and
+/// g = p / v - 1/2 is one, rounded once [B 2026-11-15: `cuobjdump -sass`, FFMA with -0.5], so g
+/// can lie that near a whole number on either side.
+/// @param tsdf [in] the hash and the voxels.
+/// @param g [in] the crossing on the grid of the voxels' centres, in voxels (interpolate()), its 8
+///        voxels observed: so its cell lies in the hash's range of blocks, 2^20 blocks either side
+///        of 0, and floor(g) + 1 and floor(g) - 1 are ints [S: block_coordinate_min and max].
+/// @param own [in] the crossing's 8 distances (interpolate()).
+/// @param cache [in,out] the blocks found last (cast_voxel()).
 /// @param gradient [out] ((D(g + x) - D(g - x)) / 2, ...), in voxels per voxel, in the models'
 ///        frame, when every one of the six ends is a sample.
-/// @return whether every one of the six ends is a sample (interpolate()).
+/// @return whether every one of the six ends is a sample: whether each of their voxels exists and
+///         is observed, the 32 or, where an end's cell is another, the 48.
 /// @note Device code; allocates nothing.
-__device__ inline bool interpolated_gradient(const voxel_lookup &tsdf, const float3 &g,
-                                             block_cache &cache, float3 &gradient)
+__device__ inline bool crossing_gradient(const voxel_lookup &tsdf, const float3 &g,
+                                         const cell_distances &own, block_cache &cache,
+                                         float3 &gradient)
 {
-    float x_after, x_before, y_after, y_before, z_after, z_before;
-    if (!interpolate(tsdf, make_float3(g.x + 1.0f, g.y, g.z), cache, x_after, nullptr) ||
-        !interpolate(tsdf, make_float3(g.x - 1.0f, g.y, g.z), cache, x_before, nullptr) ||
-        !interpolate(tsdf, make_float3(g.x, g.y + 1.0f, g.z), cache, y_after, nullptr) ||
-        !interpolate(tsdf, make_float3(g.x, g.y - 1.0f, g.z), cache, y_before, nullptr) ||
-        !interpolate(tsdf, make_float3(g.x, g.y, g.z + 1.0f), cache, z_after, nullptr) ||
-        !interpolate(tsdf, make_float3(g.x, g.y, g.z - 1.0f), cache, z_before, nullptr))
+    const float3 base = make_float3(floorf(g.x), floorf(g.y), floorf(g.z));
+    const int3 g0 =
+        make_int3(__float2int_rd(base.x), __float2int_rd(base.y), __float2int_rd(base.z));
+    const float3 f = g - base;
+    float3 after_f;
+    float3 before_f;
+    float3 after;
+    float3 before;
+    if (end_in_cell(g.x + 1.0f, g0.x + 1, after_f.x) &&
+        end_in_cell(g.x - 1.0f, g0.x - 1, before_f.x) &&
+        end_in_cell(g.y + 1.0f, g0.y + 1, after_f.y) &&
+        end_in_cell(g.y - 1.0f, g0.y - 1, before_f.y) &&
+        end_in_cell(g.z + 1.0f, g0.z + 1, after_f.z) &&
+        end_in_cell(g.z - 1.0f, g0.z - 1, before_f.z))
+    {
+        if (!ends_along<0>(tsdf, g0, own, make_float3(after_f.x, f.y, f.z),
+                           make_float3(before_f.x, f.y, f.z), cache, after.x, before.x) ||
+            !ends_along<1>(tsdf, g0, own, make_float3(f.x, after_f.y, f.z),
+                           make_float3(f.x, before_f.y, f.z), cache, after.y, before.y) ||
+            !ends_along<2>(tsdf, g0, own, make_float3(f.x, f.y, after_f.z),
+                           make_float3(f.x, f.y, before_f.z), cache, after.z, before.z))
+            return false;
+    }
+    else if (!interpolated_ends(tsdf, g, cache, after, before))
         return false;
-    gradient = make_float3(0.5f * (x_after - x_before), 0.5f * (y_after - y_before),
-                           0.5f * (z_after - z_before));
+    gradient = 0.5f * (after - before);
     return true;
 }
 
@@ -1048,13 +1247,14 @@ __device__ inline bool surface_between(const voxel_lookup &tsdf, const float_pos
     const float3 g = on_voxel_grid(march, depth);
     float at_surface;
     float3 color;
-    if (!interpolate(tsdf, g, cache, at_surface, &color))
+    cell_distances own;
+    if (!interpolate(tsdf, g, cache, at_surface, &color, &own))
         return false;
     hit.depth_m = depth;
     hit.intensity = frame_pyramid::intensity_of(color.x, color.y, color.z);
     hit.normal = make_float3(0.0f, 0.0f, 0.0f);
     float3 gradient;
-    if (interpolated_gradient(tsdf, g, cache, gradient))
+    if (crossing_gradient(tsdf, g, own, cache, gradient))
     {
         const float3 turned = turned_into_camera(pose, gradient);
         const float length = norm(turned);
@@ -1398,6 +1598,14 @@ __global__ void __launch_bounds__(threads_per_block)
             widen_tile(tile_at(view.tiles, x, y), block_near_m, block_far_m);
 }
 
+/// The thread blocks of the ray cast's march a multiprocessor holds at once, at the least: 4 of
+/// 256 threads, which holds the march's kernel at 64 registers a thread, a multiprocessor's 65536
+/// registers over 1024 threads [S: CUDA C++ Programming Guide, compute capability 8.7]. Without it
+/// the kernel takes 74 registers [B 2026-11-15: `cuobjdump -res-usage`], and the normal's voxels
+/// read once take 9.2 % to 17.3 % off the cast back to back instead of 19.5 % to 27.9 %
+/// [M 2026-11-15: docs/methods/sparse-tsdf.md, "The ray cast"].
+constexpr int ray_cast_blocks_per_multiprocessor = 4;
+
 /// Ray casts the model's surface, one thread for each pixel of level 0
 /// (docs/methods/sparse-tsdf.md, "The ray cast"; march_to_surface()). A pixel whose ray meets the
 /// surface gets the point at the surface's depth on its ray, in the camera frame, its mark 1, the
@@ -1420,8 +1628,10 @@ __global__ void __launch_bounds__(threads_per_block)
 /// @note Runs on the stream of its launch, sparse_tsdf::ray_cast()'s, after the integrations it is
 ///       to see and the depth interval's kernel. A thread outside level 0 writes nothing; a thread
 ///       whose tile sees no held block writes its pixel invalid without a march. Reads the tiles,
-///       the hash and the voxels and writes only out. Allocates nothing.
-__global__ void __launch_bounds__(picture_block_width *picture_block_height)
+///       the hash and the voxels and writes only out. Allocates nothing. At most 64 registers a
+///       thread (ray_cast_blocks_per_multiprocessor).
+__global__ void __launch_bounds__(picture_block_width *picture_block_height,
+                                  ray_cast_blocks_per_multiprocessor)
     ray_cast_kernel(voxel_lookup tsdf, cast_images out, intrinsics k, float_pose pose, float near_m,
                     float far_m, float voxel_size_m, float step_m, depth_tiles tiles)
 {

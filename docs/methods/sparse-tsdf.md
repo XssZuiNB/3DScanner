@@ -553,9 +553,29 @@ in the camera frame of the pose with its validity mark, a normal or none, and an
   trilinear interpolation of the voxels' own central differences [S: the interpolation is linear in
   the voxels' values and the same at every shift of the grid], turned into the camera frame and
   normalized [S: equation 14]. A pixel whose differences need a voxel that is unobserved or
-  missing, any of the 48, or whose gradient is 0, is valid without a normal. A change from < 0 to
-  >= 0 first, a back face, or no change gives an invalid pixel [S: section 3.4]: its point, normal
-  and intensity 0 and its mark 0, as the organized points' invalid pixel.
+  missing, or whose gradient is 0, is valid without a normal. A change from < 0 to >= 0 first, a
+  back face, or no change gives an invalid pixel [S: section 3.4]: its point, normal and intensity
+  0 and its mark 0, as the organized points' invalid pixel.
+* **The normal's voxels, each read once**: each end's cell is the crossing's moved by one voxel
+  along the end's axis, so the six ends' 48 voxels are 32 distinct ones, along each axis the 4
+  layers floor(g) - 1 to floor(g) + 2 of the crossing's 2 x 2 voxels across it, 8 of them the
+  crossing's own [S: the lattice]. The cast keeps the crossing's 8 distances from the
+  interpolation of its intensity, reads each axis's 8 new voxels, 24 in all, each checked before
+  the next is read, and sums each end from its 8 values in the interpolation's operations and
+  order, so that every normal is the six interpolations' bit for bit (`crossing_gradient()`;
+  the comparison under "On the GPU"). Where float's rounding carries g + 1 or g - 1 across a whole
+  number into another cell than that, the cast interpolates the six ends as they are: g - 1
+  rounds to -1 at g = -2^-24, g + 1 to 2 at g = 1 - 2^-24 [S: float32, rounding to the nearest, a
+  tie to the even one], and g, p / v - 1/2, is one fma, rounded once [S: nvcc's `--fmad=true`
+  default; B 2026-11-15: `cuobjdump -sass`], so it can lie that near a whole number on either
+  side. The voxels whose absence leaves a pixel without a normal are the six interpolations' own:
+  the 32, or the 48 where an end's cell is another. A gap of the tests: a mistake that moves the
+  same corner of all three axes' ends alike, such as corner 7 of each end after the crossing read
+  from the crossing's own layer, scales the gradient's three components by about the same factor
+  on a plane, 1 - f_x f_y f_z / 2 for the crossing's fractions f [S: the ends' fractions differ
+  from the crossing's by float's rounding only], so the normal's direction stays, and its
+  second-order effect on the spheres lies within their tolerances: it survived
+  `tools/run_mutant.sh` [M 2026-11-15], while the same mistake on one axis is caught.
 * **The coarser levels** [?: a choice]: level l is the cast at K_l = K / 2^l
   (`frame_pyramid::intrinsics_at_level()`; docs/methods/frame-pyramid.md, "The intrinsics of a
   level"), of the pyramid's level size. Its ray at pixel (u, v) is level 0's at (2^l u, 2^l v)
@@ -589,6 +609,18 @@ in the camera frame of the pose with its validity mark, a normal or none, and an
   pose, every pixel 8 or more inside the picture holds the wall, its depth within 0.12 µm, its
   normal within 2e-6° of -z and its intensity within 1e-7 of the color's luma; cast from behind it,
   and from its pose looking back at no block, no pixel is valid.
+* **A wall fused at a slant**, 500 mm in front of a camera turned by 20° about (1, -1, 0), at 2 mm
+  voxels, in three orientations, the camera looking along the models' z, x and y (turns whose
+  matrices hold only 0 and 1), and cast at both stream sizes with the principal point at the
+  picture's centre from a position whose coordinate along the axis the column's rays keep is
+  0.003000000026077032 m and along the axis the row's rays keep -0.005000000819563866 m: every
+  crossing on the column lies at g = 1 - 2^-24 on that axis, where g + 1 rounds to 2 (through the
+  fma), every crossing on the row at g = -3 - 2^-22, where g - 1 rounds to -4, so that the normals
+  there take the six interpolations ("The normal's voxels, each read once"), for the end after along
+  x, y and z and the end before along y, z and x [S: computed in exact rationals and float32]. Every
+  pixel whose ray meets the fused part of the wall holds it within 0.59 µm of its depth and its
+  normal within 0.0121° of the wall's, the column and the row as the rest; its distances are rounded
+  to half floats.
 * **Every cast**: each coarser level's pixel is level 0's at its centre bit for bit, with the
   intrinsics K / 2^l; every valid point projects within 7.1e-5 px of its own pixel's centre.
 * **A sphere on a plane**, the scenes of "The extraction" fused from their walks of 12 frames at the
@@ -635,13 +667,21 @@ tiles, and the march's kernel, one thread for each pixel of level 0 in the stage
 which reads the tiles, the hash and the voxels and writes only the surface; they allocate nothing,
 wait for nothing and read nothing back, and the tiles come from the pool with the surface. A ray
 keeps the block it marches in and the last other block it found a voxel in, so that a sample's 8
-voxels and a normal's 48, which lie in one or a few blocks, look each block up about once: back to
-back 11 % to 16 % shorter than one lookup for every voxel outside the march's block [M 2026-11-15:
-9.945, 31.711, 12.044 and 36.772 ms against 8.809, 27.982, 10.064 and 30.966 ms, the cases of
-docs/HARDWARE.md, "The ray cast", before the depth interval]. The depth interval took 23 % to 36 %
-off the back-to-back medians [M 2026-11-15: docs/HARDWARE.md, "The ray cast"]. The march's kernel
-uses 64 registers a thread and 32 bytes of stack, the depth interval's 43 registers
-[B 2026-11-15: `cuobjdump -res-usage`]. Its time stands in docs/HARDWARE.md, "The ray cast".
+voxels and a normal's 24 more, which lie in one or a few blocks, look each block up about once: back
+to back 11 % to 16 % shorter than one lookup for every voxel outside the march's block, when the
+normal still read 48 [M 2026-11-15: 9.945, 31.711, 12.044 and 36.772 ms against 8.809, 27.982,
+10.064 and 30.966 ms, the cases of docs/HARDWARE.md, "The ray cast", before the depth interval]. The
+depth interval took 23 % to 36 % off the back-to-back medians, and the normal's voxels read once
+19.5 % to 27.9 % more [M 2026-11-15: docs/HARDWARE.md, "The ray cast"]. The march's kernel uses 64
+registers a thread and 16 bytes of stack, held at 64 by its launch bounds, 4 thread blocks of 256 a
+multiprocessor (74 registers and no stack without them), the depth interval's 43 registers
+[B 2026-11-15: `cuobjdump -res-usage`]. The normal's voxels read once keep every pixel the six
+interpolations' [M 2026-11-15: the 1272 casts of "The depth interval", 96 of a wall fused at a slant
+at 2^-9 m voxels from poses that pin the column and the row at g = -2^-24, and 108 of the wall fused
+at a slant of "What the ray cast gives" in its three orientations, all four images of all three
+levels against the cast that interpolated the six ends, none differed; 50 of the 1272 casts'
+313,336,357 normals and 39,773 of the slanted walls' took the six interpolations, counted in a
+scratch copy]. Its time stands in docs/HARDWARE.md, "The ray cast".
 
 **Where the time goes, and what was measured and not built** (`ray-cast-faster-by-measurement`;
 back-to-back medians at 640x400 and 1280x800, 2 mm then 8 mm, in the scenes of docs/HARDWARE.md,
@@ -652,12 +692,30 @@ back-to-back medians at 640x400 and 1280x800, 2 mm then 8 mm, in the scenes of d
   held block and after its last, took 25 %, 33 %, 20 % and 28 % of the cast, the part the interval
   takes out: about half the pixels of the scenes see no surface and walked 78 to 89 blocks, nearly
   all without a held one, and 86 % to 88 % of a cast's lookups found no block.
-* With the depth interval, the normal's 48 voxels take 48 %, 48 %, 37 % and 36 % of the cast
-  (3.302, 9.347, 4.883 and 13.733 ms without them, against 6.354, 17.966, 7.747 and 21.402), and
-  the samples before the crossing's pair within the held blocks 24 %, 23 %, 33 % and 33 % of a
-  cast whose rays start at their first held block (each ray started at that pair instead). Each
-  voxel's read is followed by its check before the next voxel's read [B 2026-11-15: `cuobjdump
-  -sass`].
+* With the depth interval, while the normal read its 48 voxels, they took 48 %, 48 %, 37 % and
+  36 % of the cast (3.302, 9.347, 4.883 and 13.733 ms without them, against 6.354, 17.966, 7.747
+  and 21.402), and the samples before the crossing's pair within the held blocks 24 %, 23 %, 33 %
+  and 33 % of a cast whose rays start at their first held block (each ray started at that pair
+  instead). Each voxel's read is followed by its check before the next voxel's read [B 2026-11-15:
+  `cuobjdump -sass`].
+* Built since (`ray-cast-normal-reads-once`): the normal's voxels each read once ("The normal's
+  voxels, each read once"), the march's kernel held at 64 registers by its launch bounds: 27.9 %,
+  26.9 %, 20.9 % and 19.5 % shorter back to back, 4.550, 13.126, 6.115 and 17.237 ms against
+  6.314, 17.967, 7.735 and 21.402 ms [M 2026-11-15, 22:30 to 22:49: docs/HARDWARE.md, "The ray
+  cast"]. The same session: the launch bounds alone on the cast before, -0.3 % to +0.1 %; the
+  reads once without them, at 74 registers, 17.2 %, 17.3 %, 9.2 % and 9.6 % shorter, under 10 % at
+  8 mm. That the rest is the occupancy 64 registers allow, 4 thread blocks of 256 a multiprocessor
+  against 3 [S: CUDA C++ Programming Guide, compute capability 8.7, 65536 registers a
+  multiprocessor], is inferred, not measured [?].
+* Measured and not built, with the reads once: one function that hands an observed voxel out to
+  the interpolation and to the 24 new reads, 7.6 % to 8.4 % longer than the reads written in each
+  (4.898, 14.162, 6.593 and 18.684 ms, the same session); with that function, the crossing's cell
+  corner and fractions handed to the normal rather than computed again, within 0.1 %, and the six
+  interpolations' gradient computed apart from the 24 reads', 0.3 % to 0.8 % longer [M 2026-11-15,
+  21:32 to 21:39, back to back]; on the cast before `ray-cast-faster-by-measurement`'s review fixes,
+  an axis's 8 loads issued before their checks, 80 registers a thread, 16.0 % to 8.3 % shorter, less
+  than the reads checked one by one [M 2026-11-15, 12:10 to 12:20; B 2026-11-15: `cuobjdump
+  -res-usage`].
 * Not built, as none shortens the cast by more than 10 % at both stream sizes [?: initial, the
   ticket's threshold], against the cast with the depth interval, each made to keep the cast bit for
   bit (the three as first built compared as above: none differed): the 8 voxels of an interpolation

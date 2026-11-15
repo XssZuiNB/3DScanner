@@ -339,51 +339,60 @@ clearing of its tiles and its two kernels timed together by CUDA events, and the
 tabletop sphere on its plane fused from its walk of 12 frames at 640x400 at 2 mm voxels, range
 0.30 m to 1.0 m, 6779 blocks; the large sphere on its plane of 3 m x 3 m from its walk at 8 mm,
 0.4 m to 3.0 m, 11284 blocks; a sparse TSDF of 273 MB, 65536 blocks and 262144 slots [M 2026-11-15,
-10:15 to 10:18, MAXN_SUPER by `nvpmodel -q`, under the build lock, a scratch program;
-`/sys/class/devfreq/17000000.gpu/cur_freq` sampled every 16 runs; the kernel log empty after it].
-Back to back the GPU runs at 1020 MHz; paced at 30 fps the governor kept it at 306 and 408 MHz at
-640x400, at 816 and 1020 MHz at 1280x800.
+22:30 to 22:49, the cast whose normal reads each voxel once (`ray-cast-normal-reads-once`),
+MAXN_SUPER by `nvpmodel -q`, the governor `nvhost_podgov` from 306 to 1020 MHz, under the build
+lock, a scratch program; `/sys/class/devfreq/17000000.gpu/cur_freq` sampled every 16 runs; the
+kernel log empty after it]. Back to back the GPU runs at 1020 MHz; paced at 30 fps the governor
+kept it at 306 MHz at 640x400, at 612 and 816 MHz at 1280x800.
 
 | size | voxel | valid pixels | pace | median / p95 / max | GPU clock | host call median |
 |---|---|---|---|---|---|---|
-| 640x400 | 2 mm | 130678 | 30 fps | 20.110 / 20.190 / 20.251 ms | 306 MHz | 0.035 ms |
-| 640x400 | 2 mm | | back to back | 6.354 / 6.380 / 6.409 ms | 1020 MHz | 0.015 ms |
-| 1280x800 | 2 mm | 523234 | 30 fps | 22.389 / 22.444 / 23.288 ms | 816 MHz | 0.023 ms |
-| 1280x800 | 2 mm | | back to back | 17.966 / 18.006 / 18.046 ms | 1020 MHz | 0.015 ms |
-| 640x400 | 8 mm | 117477 | 30 fps | 18.602 / 18.674 / 18.758 ms | 408 MHz | 0.032 ms |
-| 640x400 | 8 mm | | back to back | 7.747 / 7.778 / 8.609 ms | 1020 MHz | 0.015 ms |
-| 1280x800 | 8 mm | 470646 | 30 fps | 21.399 / 21.437 / 21.478 ms | 1020 MHz | 0.020 ms |
-| 1280x800 | 8 mm | | back to back | 21.402 / 21.438 / 21.486 ms | 1020 MHz | 0.015 ms |
+| 640x400 | 2 mm | 130678 | 30 fps | 14.310 / 14.355 / 14.443 ms | 306 MHz | 0.041 ms |
+| 640x400 | 2 mm | | back to back | 4.550 / 4.563 / 4.581 ms | 1020 MHz | 0.014 ms |
+| 1280x800 | 2 mm | 523234 | 30 fps | 21.382 / 21.482 / 21.510 ms | 612 MHz | 0.024 ms |
+| 1280x800 | 2 mm | | back to back | 13.126 / 13.143 / 13.166 ms | 1020 MHz | 0.015 ms |
+| 640x400 | 8 mm | 117477 | 30 fps | 19.383 / 19.467 / 19.517 ms | 306 MHz | 0.030 ms |
+| 640x400 | 8 mm | | back to back | 6.115 / 6.141 / 6.994 ms | 1020 MHz | 0.014 ms |
+| 1280x800 | 8 mm | 470646 | 30 fps | 21.494 / 21.523 / 21.547 ms | 816 MHz | 0.020 ms |
+| 1280x800 | 8 mm | | back to back | 17.237 / 17.259 / 17.286 ms | 1020 MHz | 0.015 ms |
+
+The baseline, the committed cast of `ray-cast-faster-by-measurement` (a68c352), whose normal
+interpolates its six ends, in the same session before and after the cast above: back-to-back
+medians 6.314, 17.967, 7.735 and 21.402 ms in the table's order, and 6.341, 17.966, 7.742 and
+21.413 ms at the session's end; paced 20.039 ms at 306 MHz, 22.394 ms at 816 MHz, 18.547 ms at
+408 MHz and 21.306 ms at 1020 MHz [M 2026-11-15, 22:30 to 22:49]. So the normal's reads once take
+27.9 %, 26.9 %, 20.9 % and 19.5 % off the back-to-back medians; paced, 28.6 % at 640x400 and 2 mm,
+where the clock stayed at 306 MHz, while the governor lowered the clock by one or two steps in the
+other three cases, where the paced medians moved by -4.5 % to +4.5 % [S: computed]. Where that
+time comes from and what was measured and not built: docs/methods/sparse-tsdf.md, "The ray cast".
 
 The march through every block, before the depth interval, took 8.809, 28.046, 10.074 and 31.111 ms
 back to back in the table's order, and paced 21.065 ms at 408 MHz, 27.931 ms at 1020 MHz, 19.659 ms
-at 510 MHz and 31.098 ms at 1020 MHz [M 2026-11-15, 10:11 to 10:15, the same run]: the depth
-interval takes 23 % to 36 % off the back-to-back medians, and paced 4.5 % and 5.4 % off at 640x400
-and 20 % and 31 % at 1280x800, the governor lowering the clock by a step in three of the four cases
-[S: computed]. Its host call, for the clearing and the second launch, takes 0.009 to 0.010 ms more
-back to back and 0.013 to 0.024 ms more paced: its medians before were 0.011, 0.007, 0.012 and
-0.007 ms paced and 0.005 to 0.006 ms back to back [M 2026-11-15, 10:11 to 10:18, the same runs]. Two
-later runs of the same program gave back-to-back medians within 0.3 % of the table's [M 2026-11-15,
-10:36 and 10:47]. Tiles of 16 x 16 pixels gave 6.365, 17.955, 7.766 and 21.378 ms, within 0.3 %
-[M 2026-11-15, 10:18 to 10:22], so the tiles stay at 8 x 8. The depth interval reads every slot of
-the hash: the clearing of the tiles at 1280x800 and its kernel over empty slots took 0.045 ms for
-2^18 slots, the table's, and 0.260 ms for 2^21, the object classes' sparse TSDF at 2.0 GB, which
-therefore adds about 0.22 ms to the table's casts [M 2026-11-15, 11:08, back to back, a scratch
-program; S: computed]. Where the rest of the time goes and what was measured and not built:
-docs/methods/sparse-tsdf.md, "The ray cast". Before the depth interval, the march's cache of the
-last other block a voxel was found in took 11 % to 16 % off the back-to-back medians, and a jump
-over a block without voxels to the first sample past its exit, in place of stepping through its
-samples' indices, made them 7 % to 10 % longer, 9.569, 30.090, 11.118 and 33.717 ms back to back,
-the kernel at 68 registers a thread against 64 [M 2026-11-15, 07:00 to 07:04; B 2026-11-15:
-`cuobjdump -res-usage`], so it is not kept.
+at 510 MHz and 31.098 ms at 1020 MHz [M 2026-11-15, 10:11 to 10:15]: the depth interval took 23 % to
+36 % off the back-to-back medians of the cast with it then, 6.354, 17.966, 7.747 and 21.402 ms [M
+2026-11-15, 10:15 to 10:18], and paced 4.5 % and 5.4 % off at 640x400 and 20 % and 31 % at 1280x800,
+the governor lowering the clock by a step in three of the four cases [S: computed]. Its host call,
+for the clearing and the second launch, takes 0.009 to 0.010 ms more back to back and 0.013 to 0.024
+ms more paced: its medians before were 0.011, 0.007, 0.012 and 0.007 ms paced and 0.005 to 0.006 ms
+back to back [M 2026-11-15, 10:11 to 10:18, those runs]. Tiles of 16 x 16 pixels gave 6.365, 17.955,
+7.766 and 21.378 ms, within 0.3 % of the cast with tiles of 8 x 8 then [M 2026-11-15, 10:18 to
+10:22], so the tiles stay at 8 x 8. The depth interval reads every slot of the hash: the clearing of
+the tiles at 1280x800 and its kernel over empty slots took 0.045 ms for 2^18 slots, the table's, and
+0.260 ms for 2^21, the object classes' sparse TSDF at 2.0 GB, which therefore adds about 0.22 ms to
+the table's casts [M 2026-11-15, 11:08, back to back, a scratch program; S: computed]. Where the
+rest of the time goes and what was measured and not built: docs/methods/sparse-tsdf.md, "The ray
+cast". Before the depth interval, the march's cache of the last other block a voxel was found in
+took 11 % to 16 % off the back-to-back medians, and a jump over a block without voxels to the first
+sample past its exit, in place of stepping through its samples' indices, made them 7 % to 10 %
+longer, 9.569, 30.090, 11.118 and 33.717 ms back to back, the kernel at 68 registers a thread
+against 64 [M 2026-11-15, 07:00 to 07:04; B 2026-11-15: `cuobjdump -res-usage`], so it is not kept.
 
-Back to back, the stages measured so far add up to 11.2 ms and 14.0 ms a frame at 640x400 and
-31.8 ms and 36.9 ms at 1280x800, at 2 mm and 8 mm voxels: the upload on an idle stream, the
-pyramid, the ray cast, the registration of the tabletop pair (below) and the integration
-[S: computed, the medians of this section; the stages' scenes differ]; with the march through every
-block 13.7, 16.3, 41.9 and 46.6 ms. At 1280x800 the path built so far fits a frame's 33 ms at the
-full clock only at 2 mm, with 1.5 ms to spare, before the slot scan's 0.22 ms at 2.0 GB
-[S: computed, 33.3 ms less the sum].
+Back to back, the stages measured so far add up to 9.4 ms and 12.4 ms a frame at 640x400 and 27.0 ms
+and 32.7 ms at 1280x800, at 2 mm and 8 mm voxels: the upload on an idle stream, the pyramid, the ray
+cast, the registration of the tabletop pair (below) and the integration [S: computed, the medians of
+this section; the stages' scenes differ]. At 1280x800 the path built so far fits a frame's 33 ms at
+the full clock at both voxel sizes, with 6.3 ms to spare at 2 mm and 0.6 ms at 8 mm, before the slot
+scan's 0.22 ms at 2.0 GB [S: computed, 33.3 ms less the sum].
 
 **The registration of one frame** (docs/methods/registration.md): the host's call of
 `registration::align()` by the full method, both terms coarse to fine with the tabletop object's
