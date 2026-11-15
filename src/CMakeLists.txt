@@ -8,14 +8,16 @@
 #   types <- camera <- gpu (CUDA runtime) <- geometry (Eigen) <- registration
 #   geometry <- fusion (the sparse TSDF, which takes a frame's organized points)
 #   registration <- refinement (the pose graph, on the host; registration's SE(3) exponential)
+#   types <- separation (the proposal of the support plane and the box, on the host; Eigen)
 #   types <- camera <- scan (Eigen, OpenCV's core)
 # Every library includes from src/ ("gpu/cuda_container.hpp"); types carries that directory.
 
 # ---------------------------------------------------------------- types (header only)
-# The plain structs, the camera parameters, a frame's description and the camera's pose, and the
-# console colors, which camera, orbbec_camera and gpu use. types carries Eigen because the
-# camera's pose (types/camera_pose.hpp) holds Eigen's vector and quaternion, plain value types
-# that the sequence (camera) and the trajectory (scan) share.
+# The plain structs, the camera parameters, a frame's description, the camera's pose and a model's
+# point, and the console colors, which camera, orbbec_camera and gpu use. types carries Eigen
+# because the camera's pose (types/camera_pose.hpp) holds Eigen's vector and quaternion, plain value
+# types that the sequence (camera) and the trajectory (scan) share, and a model's point
+# (types/model_point.hpp) Eigen's vectors, which the model's file (scan) and separation share.
 add_library(types INTERFACE)
 target_include_directories(types INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(types INTERFACE Eigen3::Eigen)
@@ -159,6 +161,21 @@ target_link_libraries(fusion PUBLIC geometry)
 add_library(refinement STATIC refinement/pose_graph.cpp refinement/pose_graph.hpp)
 # PUBLIC: the header holds Eigen's types; types carries src/.
 target_link_libraries(refinement PUBLIC types Eigen3::Eigen PRIVATE registration)
+
+# ---------------------------------------------------------------- separation
+# Separation (docs/methods/separation.md): today the proposal of the support plane and the box from
+# the full model and its trajectory, and the orthogonal least-squares plane, which
+# distortion_check's measurement shares; on the host in double.
+add_library(
+    separation
+    STATIC
+    separation/plane_fit.cpp
+    separation/plane_fit.hpp
+    separation/proposal.cpp
+    separation/proposal.hpp
+)
+# PUBLIC: the headers hold Eigen's types and types' model point and camera pose.
+target_link_libraries(separation PUBLIC types Eigen3::Eigen)
 
 # ---------------------------------------------------------------- scan
 # The files a scan keeps and the parameters of each object class (docs/SCAN_FILES.md); host only.

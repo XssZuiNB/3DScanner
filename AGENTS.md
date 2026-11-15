@@ -27,17 +27,19 @@ a frame against a surface by colored ICP, coarse to fine over the pyramid
 (`src/registration/registration.*`); the sparse TSDF's hash of blocks, its pool, the allocation
 of the blocks near a frame's surface, the integration of a frame and the extraction of the
 surface's colored points with normals (`src/fusion/`); refinement's pose graph of keyframes and its
-solve (`src/refinement/pose_graph.*`); the files a scan keeps and the parameters of each object
-class (`src/scan/`). The tree is CUDA_3D cleaned up (dead code, RealSense and PCL
+solve (`src/refinement/pose_graph.*`); separation's proposal of the support plane and the box from
+a full model and its trajectory (`src/separation/`); the files a scan keeps and the parameters of
+each object class (`src/scan/`). The tree is CUDA_3D cleaned up (dead code, RealSense and PCL
 removed), made to build here and given the Orbbec camera. It is the rewrite's prototype: its
 methods carry over, and its code is the test oracle until new code replaces it
 (CODING_STANDARDS.md, "The rewrite's code").
 
-The tree today: `src/` is eight static libraries and the header-only `types`, each linking only
+The tree today: `src/` is nine static libraries and the header-only `types`, each linking only
 the ones below it: `types`, `camera`, `orbbec_camera`, `gpu`, `geometry`, `registration`,
-`fusion`, `refinement`, `scan` (`src/CMakeLists.txt`; `gpu` links `camera` for the frame it
-uploads, `scan` for the POSIX file calls; `fusion` links `geometry` for a frame's organized
-points; `refinement` links `registration` for the SE(3) exponential). There is one
+`fusion`, `refinement`, `separation`, `scan` (`src/CMakeLists.txt`; `gpu` links `camera` for the
+frame it uploads, `scan` for the POSIX file calls; `fusion` links `geometry` for a frame's organized
+points; `refinement` links `registration` for the SE(3) exponential; `separation` links only
+`types`, so that the scan can call it). There is one
 library per directory, except `src/camera/`, which holds two so that only the Orbbec camera
 links OrbbecSDK: `camera`, the frame, the frame source seam, the sequence on disk and the Orbbec
 camera's rules that need no camera, which the offline tests link without OrbbecSDK; and
@@ -219,7 +221,7 @@ checkers; these are the rules no checker holds.
 
    | concern | home |
    |---|---|
-   | camera parameters, a frame's description and the camera's pose (plain structs), the one check that intrinsics can be used, console colors | `src/types/` |
+   | camera parameters, a frame's description, the camera's pose and a model's point (plain structs), the one check that intrinsics can be used, the one check of a pose, console colors | `src/types/` |
    | the frame; the frame source seam | `src/camera/frame.*`; `src/camera/frame_source.hpp` |
    | the sequence on disk (docs/SEQUENCE_FILE.md): its layout, writer and reader, the comparison of two frames' descriptions bit for bit (`src/camera/sequence_format.*`); the POSIX file calls the writers and readers share | `src/camera/sequence_*`; `src/camera/posix_file.*` |
    | Orbbec: alignment, color decoding, OrbbecSDK's report as plain data | `src/camera/orbbec_device.*` |
@@ -236,6 +238,7 @@ checkers; these are the rules no checker holds.
    | the SE(3) exponential, the registration's and the pose graph's pose update; the check that a transform is rigid; the one copy of each | `src/registration/se3.*` |
    | the prototype's colored ICP, the oracle until it is retired; the 3x3 LDLT solve | `src/registration/` |
    | refinement's pose graph (docs/methods/refinement.md): its nodes and edges, the robust weight, the damped Gauss-Newton on SE(3) on the host in double, the result, the constants that end a solve | `src/refinement/pose_graph.*` |
+   | separation's proposal (docs/methods/separation.md): the trajectory's up and meeting point, the window, the support plane and its conditions, the footprint's pieces, the box, its parameters, result and constants; the orthogonal least-squares plane, which distortion_check's measurement calls too | `src/separation/proposal.*`; `src/separation/plane_fit.*` |
    | the files a scan keeps (docs/SCAN_FILES.md); the parameters of each object class | `src/scan/` |
    | `orbbec_viewer`'s loop on a frame source: the first frame, the report line, the window, the snapshots, the sequence it writes | `apps/viewer_loop.*` |
    | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, a mesh's frames (the colored-ICP fixture's), the depth noise from a fixed seed, a point's distance from a known surface, the trajectories it renders along | `tests/synthetic_source.*` |
@@ -268,7 +271,7 @@ checkers; these are the rules no checker holds.
 | `CODING_STANDARDS.md` | the style guides, what they leave to this tree, the rules for the rewrite's code, the checkers |
 | `GLOSSARY.md`, `docs/adr/` | the scanner's terms; the decisions in force and why |
 | `docs/SCAN_FILES.md` | the formats of the files a scan keeps: the models (PLY), the trajectory, the parameters |
-| `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md`, `normals.md`, `frame-pyramid.md`, `registration.md`, `sparse-tsdf.md` and `refinement.md` |
+| `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md`, `normals.md`, `frame-pyramid.md`, `registration.md`, `sparse-tsdf.md`, `refinement.md` and `separation.md` |
 | `docs/SEQUENCE_FILE.md` | the format of a sequence: a scan's frames with their poses, which the viewer writes and the scanner and the replay tool are planned to write or read |
 | `docs/agents/` | how the workflow skills in `.claude/skills/` find the tracker and the domain docs |
 

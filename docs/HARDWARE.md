@@ -374,6 +374,29 @@ took 255.2 / 256.9 / 257.7 ms [M 2026-11-15, 01:06:55 to 01:07:20], so it costs 
 the four iterations' time. Graphs of other sizes and shapes, and refinement's other
 steps, are unmeasured.
 
+## Separation
+
+What separation's proposal takes on the board after refinement (docs/methods/separation.md), on
+the host's CPU.
+
+**The proposal** (`propose_separation()`, `src/separation/proposal.hpp`) on the large scene of
+`tests/test_separation.cpp`, `large_scene()` built with the noise's seed 2: 2 048 582 points, the large
+box among a cabinet, a crate and a ball on a floor of 4.2 m x 4.2 m at 4 mm voxels, and its walk of
+24 poses. A scratch program, built with g++ 11.4 `-O3 -DNDEBUG` against the Release build's
+`libseparation.a`, builds the model once and times each call by `std::chrono::steady_clock`: 5 s
+unrecorded, then 20 s recorded, one thread pinned to cpu0 by `taskset -c 0`, holding the build lock,
+so no compiler runs beside it. Every call proposed the right box.
+
+40 calls recorded: median 502.5 ms, p95 504.5 ms, max 504.7 ms [M 2026-11-15, 04:30:22 to 04:30:48,
+MAXN_SUPER by `nvpmodel -q`, cpu0 at 1728 MHz after the warm-up and at the end by
+`scaling_cur_freq`]. The board's state moves the time by a tenth: the same build of the module took
+454.8 ms at 03:22 and 515.0 ms at 04:13 [M 2026-11-15, the same program; ?: the cause, not
+measured]. A copy of the module with a clock between its steps gave, per call: the checks and the
+trajectory 6 ms, the window 58 ms, the 4000 hypotheses 159 ms, the plane's fits and judgement 74 ms,
+the standing points and the sort of their cells 159 ms, the pieces 2 ms, the object's hull and box
+39 ms [M 2026-11-15, 04:30:48 to 04:30:58, the mean over every call of 10 s, the same conditions]. Other models are
+unmeasured.
+
 ## Connections
 
 The four USB-A ports sit on a Realtek USB 3.2 hub, seen twice by the host controller

@@ -23,10 +23,6 @@ constexpr std::string_view header = "# 3dscanner trajectory 1";
 /// The mark of tracking loss, in place of a pose.
 constexpr std::string_view lost_mark = "lost";
 
-/// How far a quaternion's norm may lie from 1 [?: a choice]: a pose solve in double precision
-/// leaves a unit quaternion's norm within a few 1e-16 of 1, and the file keeps every bit.
-constexpr double norm_tolerance = 1e-9;
-
 /// Reads a whole field as a number, without the locale. It reads back every bit of a double
 /// that append_number() wrote [M 2026-11-14: 10^6 random doubles, g++ 11.4, a test program
 /// outside the tree].
@@ -42,22 +38,26 @@ template <typename T> bool parse_number(std::string_view field, T &value)
     return end.ec == std::errc() && end.ptr == field.data() + field.size() && !field.empty();
 }
 
-/// Checks that a pose is one the file holds.
+/// Checks that a pose is one the file holds (types/camera_pose.hpp, fault_of()).
 /// @param pose [in] the pose.
 /// @return the reason it is not; empty when its position is finite and its quaternion's norm
-///         lies within norm_tolerance of 1.
+///         lies within pose_norm_tolerance of 1.
 std::string pose_refusal(const camera_pose &pose)
 {
-    if (!pose.position_m.allFinite())
-        return "the position is not finite";
-    const double norm = pose.orientation.norm();
-    if (!(std::fabs(norm - 1.0) <= norm_tolerance))
+    switch (fault_of(pose))
     {
-        std::string reason = "the quaternion's norm is ";
-        append_number(reason, norm);
-        return reason + ", not 1 within 1e-9";
+    case pose_fault::none:
+        return {};
+    case pose_fault::position_not_finite:
+        return "the position is not finite";
+    case pose_fault::norm_not_one:
+        break;
     }
-    return {};
+    std::string reason = "the quaternion's norm is ";
+    append_number(reason, pose.orientation.norm());
+    // 1e-9 is pose_norm_tolerance (types/camera_pose.hpp), written out: the message is pinned by
+    // tests/test_scan_files.cpp (AGENTS.md §7 rule 5).
+    return reason + ", not 1 within 1e-9";
 }
 
 /// Splits a line at each space.

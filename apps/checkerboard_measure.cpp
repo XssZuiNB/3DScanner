@@ -5,14 +5,15 @@
 /// plane and the summary by region (checkerboard_measure.hpp).
 
 #include "checkerboard_measure.hpp"
+#include "separation/plane_fit.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <sstream>
 
+#include <Eigen/Cholesky>
 #include <Eigen/Core>
-#include <Eigen/Eigenvalues>
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -202,19 +203,13 @@ deviation_stats stats_of(const std::vector<double> &values)
     return stats;
 }
 
-/// A plane through a point with a unit normal.
-struct plane
-{
-    Eigen::Vector3d centroid; ///< a point of the plane, mm
-    Eigen::Vector3d normal;   ///< unit normal, of either sign
-};
-
 /// Fits a plane to the corners with a point: the centroid and the eigenvector of the smallest
-/// eigenvalue of the centred covariance, in double.
+/// eigenvalue of the centred covariance, in double (separation/plane_fit.hpp, the one copy).
 /// @param corners [in] the corners.
-/// @return the plane; nothing when fewer than plane_min_corners corners have a point or their
-///     spread across their main line is under plane_min_spread_ratio of the spread along it.
-std::optional<plane> fit_plane(const std::vector<board_corner> &corners)
+/// @return the plane, in mm, its normal of either sign; nothing when fewer than plane_min_corners
+///     corners have a point or their spread across their main line is under
+///     plane_min_spread_ratio of the spread along it.
+std::optional<plane_fit> fit_corner_plane(const std::vector<board_corner> &corners)
 {
     std::vector<Eigen::Vector3d> points;
     for (const board_corner &corner : corners)
@@ -222,18 +217,11 @@ std::optional<plane> fit_plane(const std::vector<board_corner> &corners)
             points.push_back(to_eigen(*corner.point_mm));
     if (points.size() < static_cast<size_t>(plane_min_corners))
         return std::nullopt;
-    Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
-    for (const Eigen::Vector3d &p : points)
-        centroid += p;
-    centroid /= static_cast<double>(points.size());
-    Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
-    for (const Eigen::Vector3d &p : points)
-        covariance += (p - centroid) * (p - centroid).transpose();
-    const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(covariance);
+    const std::optional<plane_fit> fitted = fit_plane(points);
     // Eigenvalues in increasing order: 0 the plane's normal, 2 the points' main line.
-    if (solver.eigenvalues()(1) < plane_min_spread_ratio * solver.eigenvalues()(2))
+    if (!fitted || fitted->eigenvalues(1) < plane_min_spread_ratio * fitted->eigenvalues(2))
         return std::nullopt;
-    return plane{centroid, solver.eigenvectors().col(0)};
+    return fitted;
 }
 
 /// Sums the corners' deviations up by region: each corner's homography deviation and its
@@ -248,7 +236,7 @@ std::optional<plane> fit_plane(const std::vector<board_corner> &corners)
 ///     and image_size at least 1x1, as measure_board() makes sure.
 /// @return middle, top left, top right, bottom left, bottom right, all, in this order.
 std::vector<region_measurement> summarize_regions(const std::vector<board_corner> &corners,
-                                                  const std::optional<plane> &fitted,
+                                                  const std::optional<plane_fit> &fitted,
                                                   const checkerboard &board, cv::Size image_size)
 {
     constexpr int cells = 9;
@@ -380,7 +368,7 @@ board_result measure_board(const cv::Mat &color, const cv::Mat &depth, const che
         }
         measurement.corners.push_back(corner);
     }
-    const std::optional<plane> fitted = fit_plane(measurement.corners);
+    const std::optional<plane_fit> fitted = fit_corner_plane(measurement.corners);
     if (!fitted)
     {
         std::ostringstream reason;

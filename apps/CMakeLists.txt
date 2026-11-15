@@ -29,7 +29,7 @@ target_link_libraries(
 )
 
 # The checkerboard measurement behind distortion_check, host only: built and tested without the
-# camera backend too.
+# camera backend too; separation gives it the plane fit (separation/plane_fit.hpp, the one copy).
 add_library(checkerboard_measure STATIC checkerboard_measure.cpp checkerboard_measure.hpp)
 target_include_directories(checkerboard_measure PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(
@@ -41,6 +41,7 @@ target_link_libraries(
     Eigen3::Eigen
     opencv_calib3d
     opencv_imgproc
+    separation
 )
 
 # distortion_check's command line, host only.

@@ -108,6 +108,13 @@ add_executable(test_sparse_tsdf_fusion test_sparse_tsdf_fusion.cpp)
 target_link_libraries(test_sparse_tsdf_fusion PRIVATE fusion scan synthetic_source)
 add_test(NAME sparse_tsdf_fusion COMMAND test_sparse_tsdf_fusion)
 
+# Separation's proposal of the support plane and the box, on full models built from the synthetic
+# source's surfaces along its walks; scan gives the object classes' voxel sizes and depth ranges,
+# CUDA the headers of the angle in stage_checks.hpp, whose other checks take CUDA's float3.
+add_executable(test_separation test_separation.cpp)
+target_link_libraries(test_separation PRIVATE separation scan synthetic_source CUDA::cudart)
+add_test(NAME separation COMMAND test_separation)
+
 # Refinement's pose graph solve, on graphs built from the keyframes of a walk of the synthetic
 # source whose poses are known.
 add_executable(test_pose_graph test_pose_graph.cpp)
