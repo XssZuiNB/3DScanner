@@ -2,8 +2,9 @@
 /// @file stage_frames.hpp
 /// The frames the per-frame path's stages are tested on: the camera's two stream sizes with its
 /// intrinsics and depth unit, two sizes that test a stage's kernel at its limits, the tabletop
-/// scene's sphere, the rendering of a scene's frames by the tests' synthetic source, and frames
-/// built from functions of the pixel. Header only; each test program is one translation unit.
+/// scene's sphere, the rendering of a scene's frames by the tests' synthetic source, with depth
+/// noise or without, and frames built from functions of the pixel. Header only; each test program
+/// is one translation unit.
 
 #pragma once
 
@@ -17,6 +18,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -63,13 +65,16 @@ struct rendered
 /// Renders the frames of a scene from the synthetic source.
 /// @param scene [in] the scene, one frame for each pose of its trajectory.
 /// @param description [in] the frames' size, intrinsics and depth unit.
+/// @param depth_noise [in] the depth noise, or none.
 /// @return the frames and the known surfaces; fewer frames, with a failed check, when the source
 ///         refuses or ends early.
-inline rendered render(const synthetic_scene &scene, const gca::frame_description &description)
+inline rendered render(const synthetic_scene &scene, const gca::frame_description &description,
+                       const std::optional<synthetic_depth_noise> &depth_noise = std::nullopt)
 {
     synthetic_source_options options;
     options.description = description;
     options.scene = scene;
+    options.depth_noise = depth_noise;
     synthetic_source source(std::move(options));
     rendered result{{}, source.surfaces()};
     check(source.open(description.size).opened, "the synthetic source opened");

@@ -22,9 +22,10 @@
 /// - A pool too small: of 1536 distinct coordinates, exactly 1024 find a block, the numbers 0 to
 ///   1023 once each; 512 are counted as refused; the pool is used up, its share in use 1.
 /// - A hash too small: of 522 distinct coordinates, 512 take the 512 slots, 10 are refused.
-/// - The coordinates' range: its limits are inserted and found; coordinates past them are
-///   refused, and the coordinates their keys would alias are not found; once those aliases hold
-///   blocks, a lookup of the coordinates past the range still finds none.
+/// - The coordinates' range: its limits are inserted and found, and their keys give them back
+///   (coordinate_of_key()); coordinates past them are refused, and the coordinates their keys would
+///   alias are not found; once those aliases hold blocks, a lookup of the coordinates past the
+///   range still finds none.
 /// - Refusals as values, each leaving the counts as they were: an empty sparse TSDF, no
 ///   coordinates, room for another number of blocks, CUDA's last error left by an earlier call,
 ///   a budget that holds no block, a request to the closed pool; and the GPU arrays' own requests
@@ -496,8 +497,8 @@ void check_hash_full(cudaStream_t stream)
     check_closed_pool(what, pool);
 }
 
-/// The limits of the coordinates' range are stored; coordinates past them are refused, and the
-/// coordinates their keys would alias are not found.
+/// The limits of the coordinates' range are stored, and their keys give them back; coordinates past
+/// them are refused, and the coordinates their keys would alias are not found.
 /// @param stream [in] the stream.
 void check_key_range(cudaStream_t stream)
 {
@@ -514,6 +515,14 @@ void check_key_range(cudaStream_t stream)
     // The keys of (0, 2^20, 0) and (0, 0, 2^20) carry into the next field: they would be the
     // keys of these two coordinates [S: block_key()'s fields of 21 bits].
     const coordinate_list aliased = {{1, lo, 0}, {0, 1, lo}};
+    // The key gives the coordinates back, at the range's corners too (coordinate_of_key()).
+    bool round_trip = true;
+    for (const gca::block_coordinate &b : inside)
+    {
+        const gca::block_coordinate back = gca::coordinate_of_key(gca::block_key(b));
+        round_trip = round_trip && back.x == b.x && back.y == b.y && back.z == b.z;
+    }
+    check(round_trip, "key range: each key gives its coordinates back");
     coordinate_list inserted = inside;
     inserted.insert(inserted.end(), outside.begin(), outside.end());
     gca::gpu_pool pool;

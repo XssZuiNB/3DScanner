@@ -2,7 +2,8 @@
 /// @file stage_checks.hpp
 /// What the per-frame path's stages' tests share to check an organized picture on the host: a
 /// pixel's index, a float3 in double, the zero vector that marks an invalid point and a missing
-/// normal, the angle between two directions, the median of values, and the rule of one surface
+/// normal, the angle between two directions, a quantile and the median of values, and the rule of
+/// one surface
 /// in double, which places a pair of points against its threshold with a margin, so that a test's
 /// own reference in double leaves out a pair that float and double may decide differently
 /// (docs/methods/normals.md, "One surface, or a depth edge"). Header only; each test program is
@@ -19,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <numbers>
+#include <utility>
 #include <vector>
 
 #include <Eigen/Core>
@@ -67,16 +69,28 @@ inline double angle_deg(const Eigen::Vector3d &a, const Eigen::Vector3d &b)
     return std::atan2(a.cross(b).norm(), a.dot(b)) * 180.0 / std::numbers::pi;
 }
 
-/// Returns the median of values.
-/// @param values [in] the values; taken over and reordered.
-/// @return their median; 0 when there are none.
-inline double median(std::vector<double> values)
+/// Returns a quantile of values: the value at index floor(q n) of the n values sorted, the largest
+/// for q = 1.
+/// @param values [in] the values, none a NaN; taken over and reordered.
+/// @param q [in] the quantile, from 0 to 1.
+/// @return the value; 0 when there are none.
+inline double quantile(std::vector<double> values, double q)
 {
     if (values.empty())
         return 0.0;
-    const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);
-    std::nth_element(values.begin(), middle, values.end());
-    return *middle;
+    const std::size_t index = std::min(
+        static_cast<std::size_t>(q * static_cast<double>(values.size())), values.size() - 1);
+    const auto at = values.begin() + static_cast<std::ptrdiff_t>(index);
+    std::nth_element(values.begin(), at, values.end());
+    return *at;
+}
+
+/// Returns the median of values: quantile() at 1/2, the value at index n / 2.
+/// @param values [in] the values, none a NaN; taken over and reordered.
+/// @return their median; 0 when there are none.
+inline double median(std::vector<double> values)
+{
+    return quantile(std::move(values), 0.5);
 }
 
 /// How a pair of points stands to the rule of one surface.

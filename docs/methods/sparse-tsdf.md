@@ -10,9 +10,11 @@ pose, giving the surface the registration takes; extract the colored points with
 the full model is made of.
 
 Built so far: the hash of blocks and the pool they come from (`src/fusion/sparse_tsdf.*`, its
-test `tests/test_sparse_tsdf_blocks.cpp`), and the allocation near a frame's surface (its test
-`tests/test_sparse_tsdf_allocation.cpp`). The integration, the extraction and the ray cast are
-not built yet; this document is their method, written before their code.
+test `tests/test_sparse_tsdf_blocks.cpp`), the allocation near a frame's surface (its test
+`tests/test_sparse_tsdf_allocation.cpp`), and the integration of a frame and the extraction of the
+surface's points (`sparse_tsdf::integrate()` and `sparse_tsdf::extract()`, their test
+`tests/test_sparse_tsdf_fusion.cpp`). The ray cast is not built yet; this document is its method,
+written before its code.
 
 The method is the volumetric fusion of Curless and Levoy [S: B. Curless, M. Levoy, "A
 Volumetric Method for Building Complex Models from Range Images", SIGGRAPH 1996], in the
@@ -54,9 +56,16 @@ Eight bytes, the size of Nießner et al.'s voxel [S: 2013, section 4]:
 | color | 3 x unsigned 8 bit | red, green, blue, the frame's color order |
 
 One byte is left over to the alignment of 8 bytes, so that a voxel is read and written in one
-64-bit access. A voxel with W = 0 is **unobserved**: its distance and color mean nothing, and
-no operation reads them. The pool's blocks start with every byte 0, so every voxel of a block
-just handed out is unobserved.
+64-bit access. A voxel with W = 0 is **unobserved**: its distance and color mean nothing, and the
+extraction and the ray cast skip it. The pool's blocks start with every byte 0, so every voxel of
+a block just handed out is unobserved, with distance and color 0; the integration's running
+average takes them with the weight 0, so that its first observation gives d and c themselves
+[?: a choice: no branch for a first observation; the request's clearing is what it starts from].
+The request clears the voxels because CUDA does not: "The memory is not cleared" [S:
+cuda_runtime_api.h, cudaMalloc, CUDA 12.6]. On this board cudaMalloc gave zeroed memory each
+time, also the memory the program had just filled and freed, at the same address [M 2026-11-15:
+a scratch program, 268 MB, 2 MB and 4 KB], so no test through the module's interface sees a
+request that skips the clearing: its mutant survives `tests/test_sparse_tsdf_fusion.cpp`.
 
 The distance is kept in voxels, not in m, so that its precision follows the voxel size. A half
 float has 11 significant bits [S: IEEE 754-2008, binary16]: between 0.5 and 1 voxel its step is
@@ -158,7 +167,11 @@ frame:
    the one pinhole convention (docs/HARDWARE.md, "Pixel convention"). A nearest pixel, not an
    interpolated depth, "to prevent smearing of measurements at depth discontinuities"
    [S: Newcombe et al. 2011, section 3.3]. No update when q_z <= 0, the pixel lies outside the
-   frame, or it is invalid.
+   frame, it is invalid, or its depth lies beyond z_max [?: a choice]: z_max is the farthest
+   depth a frame contributes, as in the allocation ("The allocation near a frame's surface",
+   step 1), and it bounds an observation's distance, |d| <= mu(z_max) / v, at most 20000 voxels
+   within the parameters' ranges (mu at most 5 * 0.02 * 10² = 10 m, v at least 0.5 mm), inside
+   the largest half float, 65504 [S: computed; IEEE 754-2008, binary16].
 2. η = z_m - q_z, the measured depth z_m of that pixel minus the voxel's, along the optical axis
    (KinectFusion found "no considerable difference in using SDF values computed using distances
    along the ray or along the optical axis" [S: 2011, section 3.3]). No update when
@@ -171,13 +184,29 @@ frame:
        D ← (W D + d) / (W + 1),   C ← (W C + c) / (W + 1),   W ← min(W + 1, W_max)
 
    The color is averaged with the same weight as the distance; D is rounded to the nearest half
-   float, each of C's components to the nearest integer.
+   float, each of C's components to the nearest integer, a tie to the even one in both
+   [?: a choice: IEEE 754's default rounding, CUDA's `_rn` conversions].
+4. The voxels of the blocks on the frame's list, one thread for each voxel and one thread block
+   of 512 for each block; a slot on the list whose key has no block, refused for a used-up pool,
+   is skipped. The thread blocks are a fixed grid of 24, as many as the GPU holds at once, each
+   taking every 24th entry of the list, so that the kernel reads the list's count on the GPU and
+   the frame's fusion reads nothing back and waits for nothing (the grid's measurement:
+   `src/fusion/sparse_tsdf.cu`, `voxel_kernel_grid`; its time: docs/HARDWARE.md, "The
+   integration of a frame"). `integrate()` allocates the frame's blocks first, so that the list
+   is always the frame's own [?: a choice].
 
 * **W_max = 64** [?: initial]. Once a voxel holds W_max observations the average becomes a
   moving one: a new observation counts 1/65. A limit of the color's rounding follows: with
   W = 64 a new color moves a component only when it differs from the stored one by 33 levels or
   more [S: computed, the rounding of (c - C) / 65], so a voxel's color is mostly that of its
   early observations. The integration's tests measure the colors against the texture.
+* **What the test measures** (`tests/test_sparse_tsdf_fusion.cpp`), on walls facing the camera at
+  whole millimetres, so that every depth is exact, at 2 mm voxels: one frame gives its wall
+  exactly, its normals along the optical axis and its color; a wall 4 mm behind, fused once
+  after it, puts the surface halfway, within 0.034 µm, and the color at the mean, a tie rounded
+  to even; 64 frames of the first wall and then 64 of the second put it at 1 - (64/65)^64 = 0.629
+  of the 4 mm, within 0.5 µm, against 0.5 without the limit, and the colors where the rounded
+  recursion puts them [M 2026-11-15].
 * **Not built without a measured benefit** (AGENTS.md §7 rule 6): a weight that falls with
   depth or with the angle to the surface (KinectFusion's text weights by cos θ / R before it
   settles on 1; Nießner et al. give nearer measurements more weight, and recent colors more
@@ -469,10 +498,58 @@ grid's edges [S: W. E. Lorensen, H. E. Cline, "Marching Cubes: A High Resolution
 Construction Algorithm", SIGGRAPH 1987], without its triangles. The point's normal is the
 gradient of D by central differences at both voxels, interpolated at s and normalized, so it
 points from - to +, towards the cameras that saw the surface; its color the two colors
-interpolated at s. The points go into a buffer of a stated size from the pool; a buffer too
-small is reported as a value. A crossing between the bands of two different surfaces, a voxel
-truncated in front of one beside a negative one of the other, is no surface; whether it needs
-a filter, and which, the extraction's tests decide by measurement.
+interpolated at s, each channel rounded to the nearest integer, a tie to the even one. A
+crossing whose central differences need a voxel that is missing or unobserved, any of the 12
+around the two, gives no point [?: a choice: no one-sided difference], nor does one whose
+interpolated gradient is zero. A voxel whose distance is exactly 0 between two negative
+neighbours along one axis gives the same point twice, one from each side; no rule leaves one
+out, as either sign given to 0 has such a case, and the two points are one. The points go into a
+buffer of a stated size from the pool
+(`gca::surface_points`) in no stated order, and their count is read back with the extraction's
+one wait; a buffer too small is reported as a value, with the count found and the buffer's first
+points written. The kernel goes through every slot of the hash, one thread block for each block
+it holds, on the integration's fixed grid. Not for the per-frame path.
+
+**No filter of crossings** [M 2026-11-15]. A crossing between the bands of two different
+surfaces, a voxel truncated in front of one beside a negative one of the other, is no surface;
+the test measured whether a filter would remove such points, on a sphere resting on a plane
+fused from a walk of 12 poses at the four voxel sizes of the object classes (the table below).
+The step between the two voxels' distances, |D_a - D_b|, which such a crossing makes large, does
+not separate the far points: at 4 mm voxels points up to 11.6 mm off lie among the crossings
+of a step below 2 voxels, and the points of a step above 16 voxels lie no farther than the
+others (99th percentile 7.4 mm against 2.0 to 9.1 mm). The far points come from the band itself:
+with c = 0.01 /m the band at 1.6 m to 2 m is 77 mm to 120 mm deep, and its negative distances
+behind the sphere's rim, seen along a ray that grazes it, lie outside the sphere: ℓ² / (2 R) =
+12.5 mm for ℓ = 100 mm behind a rim of R = 0.4 m [S: geometry]. With c = 0.002 /m the largest
+distances of the large object's models fell from 13.0 mm and 14.9 mm to 4.6 mm and 3.8 mm
+[M 2026-11-15, the same test with c changed]. The measured c ("The truncation distance") is the
+remedy that stands; a filter is built only on a measured benefit.
+
+**What the extraction gives** [M 2026-11-15: `tests/test_sparse_tsdf_fusion.cpp`, 640x400, the
+method's starting values; tabletop: the tabletop sphere, 8 cm, on its plane, walked around from
+0.45 m; large: a sphere of 0.4 m on a plane of 3 m x 3 m, walked around from 1.6 m]. The
+distance from the analytic surface and the normal's angle from its normal, and the largest
+channel's error of the color against the texture there, each as median / 99th percentile /
+largest:
+
+| model | voxel | far depth | points | distance, mm | normal, deg | color, levels |
+|---|---|---|---|---|---|---|
+| tabletop, live | 2 mm | 1.0 m | 202488 | 0.10 / 0.73 / 1.50 | 3.5 / 15.1 / 37.0 | 2.1 / 20.6 / 76 |
+| tabletop, final | 1 mm | 0.7 m | 905214 | 0.11 / 0.60 / 1.38 | 6.8 / 30.9 / 95.2 | 1.7 / 21.7 / 115 |
+| large, live | 8 mm | 3.0 m | 181794 | 0.51 / 4.41 / 13.0 | 4.2 / 24.3 / 84.6 | 16.1 / 91.8 / 183 |
+| large, final | 4 mm | 2.0 m | 772148 | 0.41 / 4.97 / 14.9 | 6.6 / 44.7 / 176 | 7.4 / 98.7 / 199 |
+
+(The far depths of the final models are nearer than their object classes', so that the test's
+pool of 65536 blocks holds one frame's bound.) The normals at 1 mm voxels show the depth's steps
+of 1 mm. The largest angles, flipped up to 176°, lie where the band reaches past the sphere's
+rim. The colors follow the textures' waves of 45 mm to 100 mm, up to 14 levels a millimetre
+[S: computed, 2 pi 100 / 45 mm], at each voxel's centre's projection, so they blur at 8 mm. Of the
+surface the frames saw, sampled at every fourth pixel, all but 0.018 % or less lie within 2 voxels
+of a point, the 99th percentile within 0.68 to 0.83 voxels; the rest lie at the plane's border, at
+the far depth and where the sphere meets the plane, where the two bands interfere ("The
+truncation distance"). Fused from 12 frames with Gaussian depth noise of sigma = 0.01 z² at 2 mm
+voxels, the surface spreads 1.01 mm about the plane, one frame's points 2.19 mm, 2.16 times less
+(root mean square).
 
 ## What the prototype did, and what is not carried
 

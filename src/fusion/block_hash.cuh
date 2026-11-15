@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: 0BSD
 /// @file block_hash.cuh
 /// The hash of blocks as device code sees it: the insertion and the lookup of one block by its
-/// coordinates, the one copy every kernel of the fusion module calls when it inserts or finds a
-/// block (docs/methods/sparse-tsdf.md, "The hash of blocks"). Device code, header only, for the
-/// module's .cu files.
+/// coordinates, and the block a slot holds, the one copy every kernel of the fusion module calls
+/// when it inserts, finds or reads a block (docs/methods/sparse-tsdf.md, "The hash of blocks"), so
+/// that the hash's layout stays behind these functions. Device code, header only, for the module's
+/// .cu files.
 
 #pragma once
 
@@ -22,8 +23,10 @@ constexpr unsigned long long empty_key = ~0ULL;
 /// The slot of a coordinate the hash does not hold.
 constexpr std::uint32_t no_slot = 0xFFFFFFFFu;
 
-/// The hash's arrays and sizes as an inserting kernel takes them, by value: pointers into a
-/// sparse TSDF's device memory, which it owns and keeps while the kernel runs.
+/// The hash's arrays and sizes as every kernel of the module takes them, by value, the one view of
+/// the hash that the functions below read and write: pointers into a sparse TSDF's device memory,
+/// which it owns and keeps while the kernel runs. A kernel that only finds blocks reads through
+/// it and writes nothing (find_slot(), find_block(), block_in_slot()).
 struct block_hash_view
 {
     unsigned long long *keys;      ///< slot_count keys, empty_key for an empty slot
@@ -94,30 +97,62 @@ __device__ inline std::uint32_t insert_block(const block_hash_view &hash, const 
 
 /// Finds the slot of one block by its coordinates: the slots from the home slot on, until its
 /// key, an empty slot or all slots.
-/// @param keys [in] the hash's slot_count keys; device memory owned by the sparse TSDF, which
-///        holds it while the caller's kernel runs.
-/// @param slot_count [in] the hash's slots, a power of two >= 2.
+/// @param hash [in] the hash; read only.
 /// @param b [in] the coordinates, in blocks.
 /// @return the slot that holds the block's key, whose number may be no_block (refused for a
 ///         used-up pool); no_slot when the hash does not hold it or it is out of range.
 /// @note Reads the keys with plain loads: the insertions it is to see ran in an earlier kernel on
 ///       the same stream (insert_block()'s note). Device code; allocates nothing.
-__device__ inline std::uint32_t find_slot(const unsigned long long *keys, std::uint32_t slot_count,
-                                          const block_coordinate &b)
+__device__ inline std::uint32_t find_slot(const block_hash_view &hash, const block_coordinate &b)
 {
     if (!in_key_range(b))
         return no_slot;
     const unsigned long long key = block_key(b);
-    std::uint32_t slot = home_slot(b, slot_count);
-    for (std::uint32_t tried = 0; tried < slot_count; tried++)
+    std::uint32_t slot = home_slot(b, hash.slot_count);
+    for (std::uint32_t tried = 0; tried < hash.slot_count; tried++)
     {
-        const unsigned long long seen = keys[slot];
+        const unsigned long long seen = hash.keys[slot];
         if (seen == key)
             return slot;
         if (seen == empty_key)
             return no_slot;
-        slot = (slot + 1) & (slot_count - 1);
+        slot = (slot + 1) & (hash.slot_count - 1);
     }
     return no_slot;
+}
+
+/// Finds the block of one coordinate: its slot (find_slot()) and that slot's block's number.
+/// @param hash [in] the hash; read only.
+/// @param b [in] the coordinates, in blocks.
+/// @return the block's number, in [0, capacity_blocks); no_block when the hash holds no block for
+///         it (never inserted, refused, or out of range).
+/// @note Plain loads, as find_slot(): the insertions it is to see ran in an earlier kernel on the
+///       same stream. Device code; allocates nothing.
+__device__ inline std::uint32_t find_block(const block_hash_view &hash, const block_coordinate &b)
+{
+    const std::uint32_t slot = find_slot(hash, b);
+    return slot == no_slot ? no_block : hash.blocks[slot];
+}
+
+/// A block as a slot of the hash holds it: its coordinates and its number in the pool.
+struct held_block
+{
+    block_coordinate coordinate; ///< its coordinates, in blocks; meaningless without a number
+    std::uint32_t number;        ///< its number in the pool, or no_block
+};
+
+/// Reads the block a slot holds, its coordinates from the slot's key (coordinate_of_key()).
+/// @param hash [in] the hash; read only.
+/// @param slot [in] the slot, below the hash's slot_count.
+/// @return the block; its number no_block when the slot is empty or its key has no block (refused
+///         for a used-up pool).
+/// @note Plain loads: the insertions it is to see ran in an earlier kernel on the same stream
+///       (insert_block()'s note). Device code; allocates nothing.
+__device__ inline held_block block_in_slot(const block_hash_view &hash, std::uint32_t slot)
+{
+    const unsigned long long key = hash.keys[slot];
+    if (key == empty_key)
+        return {{0, 0, 0}, no_block};
+    return {coordinate_of_key(key), hash.blocks[slot]};
 }
 } // namespace gca

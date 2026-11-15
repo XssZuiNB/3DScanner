@@ -5,11 +5,12 @@
 /// scene is a textured support plane or none, a textured box of known size standing on it or none,
 /// a textured sphere of known centre and radius or none, a mesh of triangles colored at their
 /// vertices or none (a recorded surface, such as the colored-ICP fixture's), and a known
-/// trajectory: frame i of an opening is seen from the trajectory's pose i. The source tells a test
-/// the trajectory and the known surfaces, textured rectangles in the world frame, and the sphere,
-/// which are exactly what it renders besides the mesh, the pinhole ray of any point of the picture,
-/// where any ray first meets them, the hit it renders each pixel from, and how far a point lies
-/// from a known surface. It also builds the trajectories its scenes are seen along: a camera's
+/// trajectory: frame i of an opening is seen from the trajectory's pose i. The depth may carry
+/// Gaussian noise that grows with the square of the depth, from a fixed seed. The source tells a
+/// test the trajectory and the known surfaces, textured rectangles in the world frame, and the
+/// sphere, which are exactly what it renders besides the mesh, the pinhole ray of any point of the
+/// picture, where any ray first meets them, the hit it renders each pixel from, and how far a point
+/// lies from a known surface. It also builds the trajectories its scenes are seen along: a camera's
 /// upright pose looking at a point, and a walk once around a point, each refused as a value where
 /// the view is not defined. This is the one renderer of the tests' frames: a test whose scene it
 /// lacks adds the scene here as one more option. A test builds the source to deliver its
@@ -242,12 +243,29 @@ enum class synthetic_ending
     failure, ///< next_status::failure, as a camera that fails
 };
 
+/// The depth noise the synthetic source adds to every pixel's depth before it rounds it to depth
+/// values: Gaussian, of mean 0 and standard deviation sigma(z) = c z^2 at the true depth z, the law
+/// of a stereo camera's noise (docs/methods/sparse-tsdf.md, "The truncation distance"), drawn from
+/// a generator of a fixed seed [?: a choice: independent at every pixel, which the camera's noise
+/// need not be].
+struct synthetic_depth_noise
+{
+    double noise_per_m; ///< c, in 1/m, > 0
+    /// The seed: frame i of an opening draws from std::mt19937_64 seeded with (seed, i) through
+    /// std::seed_seq, one draw of std::normal_distribution for each pixel in the frame's order, so
+    /// that a frame's noise depends on the seed and its index alone. The draws are those of this
+    /// tree's standard library, the same in every run.
+    std::uint32_t seed;
+};
+
 /// How a test builds the synthetic source.
 struct synthetic_source_options
 {
     /// The size, intrinsics and depth unit of every frame; the only size the source opens for.
     gca::frame_description description;
     synthetic_scene scene; ///< what the frames show, one frame for each pose of its trajectory
+    /// The depth noise, or none: then each pixel's depth is the hit's, rounded.
+    std::optional<synthetic_depth_noise> depth_noise = std::nullopt;
     synthetic_ending ending = synthetic_ending::end; ///< what next() reports after the frames
     std::string ending_message;                      ///< the message next() reports with it
     std::string open_refusal; ///< when not empty, open() refuses with this reason
@@ -270,8 +288,9 @@ public:
     /// Renders the next frame: frame i of an opening has index i and timestamp i * 33333 µs
     /// (30 fps [?: a choice, the camera's rate]) and shows the known surfaces, the sphere and the
     /// mesh from the trajectory's pose i. Each pixel shows the nearest surface its ray meets in
-    /// front of the camera: depth is the hit's z in the camera frame, rounded to the nearest depth
-    /// value; color is the surface's texture there, or at a triangle of the mesh its vertices'
+    /// front of the camera: depth is the hit's z in the camera frame, with the options' depth
+    /// noise added when they give one, rounded to the nearest depth value; color is the surface's
+    /// texture at the hit, or at a triangle of the mesh its vertices'
     /// colors weighted by the hit's barycentric coordinates, rounded. A triangle with a vertex at
     /// or behind the camera's plane, z <= 0 in the camera frame, is not rendered: a mesh is seen
     /// from in front of it. A pixel whose ray meets no surface in front

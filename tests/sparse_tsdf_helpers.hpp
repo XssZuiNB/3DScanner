@@ -1,19 +1,23 @@
 // SPDX-License-Identifier: 0BSD
 /// @file sparse_tsdf_helpers.hpp
 /// The sparse TSDF tests' shared helpers (fusion/sparse_tsdf.hpp): the method's starting values of
-/// the truncation's rule, a lookup of block coordinates on the GPU with its upload and its
-/// download of the numbers found, and the reading, printing and comparison of the usage. A failure
-/// is a failed check, counted by check.hpp. Header only; each test program is one translation
-/// unit.
+/// the truncation's rule, a pose as the sparse TSDF takes it, a frame's buffers on the GPU, a
+/// lookup of block coordinates on the GPU with its upload and its download of the numbers found,
+/// and the reading, printing and comparison of the usage. A failure is a failed check, counted by
+/// check.hpp. Header only; each test program is one translation unit.
 
 #pragma once
 
 #include "check.hpp"
 #include "fusion/sparse_tsdf.hpp"
+#include "geometry/organized_points.hpp"
 #include "gpu/gpu_array.hpp"
+#include "gpu/gpu_frame.hpp"
 #include "gpu/gpu_pool.hpp"
 #include "gpu/step_result.hpp"
 #include "gpu_test_helpers.hpp"
+#include "types/camera_pose.hpp"
+#include "types/frame_description.hpp"
 
 #include <cuda_runtime_api.h>
 
@@ -23,12 +27,41 @@
 #include <utility>
 #include <vector>
 
+#include <Eigen/Geometry>
+
 namespace gca_test
 {
 /// The truncation's rule at the method's starting values: c = 0.01 /m [?: the datasheet's bound,
 /// until the camera's depth noise is measured], k = 3 [?: initial], mu_min = 4 voxels
 /// [?: initial] (docs/methods/sparse-tsdf.md, "The truncation distance").
 inline constexpr gca::truncation_parameters method_truncation = {0.01f, 3.0f, 4.0f};
+
+/// Gives a pose of the camera as the sparse TSDF takes it.
+/// @param pose [in] camera frame to the models' frame.
+/// @return the same pose as position and orientation.
+inline gca::camera_pose as_camera_pose(const Eigen::Isometry3d &pose)
+{
+    return {pose.translation(), Eigen::Quaterniond(pose.linear())};
+}
+
+/// A frame's buffers on the GPU, from the pool: the GPU frame and its organized points.
+struct frame_buffers
+{
+    gca::gpu_frame frame;         ///< the GPU frame the frame is uploaded into
+    gca::organized_points points; ///< the organized points it is deprojected into
+};
+
+/// Requests a frame's buffers from the pool.
+/// @param pool [in,out] the pool, open.
+/// @param size [in] the frame's size.
+/// @param what [in] the case, named in the check lines.
+/// @return the buffers; empty ones and a failed check when the pool refused.
+inline frame_buffers request_buffers(gca::gpu_pool &pool, const gca::frame_size &size,
+                                     const std::string &what)
+{
+    return {granted(what + ": the GPU frame", gca::gpu_frame::request(pool, size)),
+            granted(what + ": the organized points", gca::organized_points::request(pool, size))};
+}
 
 /// Block coordinates on the GPU with room for their block numbers, and the same coordinates on the
 /// host.

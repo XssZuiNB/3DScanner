@@ -2,19 +2,24 @@
 /// @file sparse_tsdf.hpp
 /// The sparse TSDF (docs/adr/0004-sparse-tsdf-model.md): blocks of 8 x 8 x 8 voxels near the
 /// surfaces, found by their coordinates through a hash on the GPU, taken from a pool; all of its
-/// device memory together is the scan's memory budget. Built so far: the hash of blocks, the pool
-/// and the allocation of the blocks near a frame's surface at its pose. A block is inserted and
-/// found by its coordinates, many at once from many threads; a frame's organized points at a pose
-/// insert every block their band of the truncation distance passes through and list them for the
-/// frame; a pool too small says so in its usage, a value. The device side of the hash, which every
-/// kernel of the module calls, is fusion/block_hash.cuh. The method, its rules and their sources
-/// stand in docs/methods/sparse-tsdf.md. All its memory comes from the pool that closes
+/// device memory together is the scan's memory budget. Built so far: the hash of blocks, the pool,
+/// the allocation of the blocks near a frame's surface at its pose, the integration of a frame into
+/// the voxels of those blocks, and the extraction of the surface's colored points with normals. A
+/// block is inserted and found by its coordinates, many at once from many threads; a frame's
+/// organized points at a pose insert every block their band of the truncation distance passes
+/// through and list them for the frame; the integration updates each voxel of the listed blocks
+/// with the frame's depth and color; the extraction places a point on every edge of the voxel grid
+/// whose two voxels' distances differ in sign. A pool too small says so in its usage, a buffer of
+/// points too small in the extraction's result, both values. The device side of the hash, which
+/// every kernel of the module calls, is fusion/block_hash.cuh. The method, its rules and their
+/// sources stand in docs/methods/sparse-tsdf.md. All its memory comes from the pool that closes
 /// (gpu/gpu_pool.hpp) before a scan starts; its operations allocate nothing.
 
 #pragma once
 
 #include "geometry/organized_points.hpp"
 #include "gpu/gpu_array.hpp"
+#include "gpu/gpu_frame.hpp"
 #include "gpu/gpu_pool.hpp"
 #include "gpu/pinned_buffer.hpp"
 #include "gpu/step_result.hpp"
@@ -40,12 +45,17 @@ struct block_coordinate
     std::int32_t z; ///< along the models' z axis, in blocks
 };
 
+/// The bits each component of a block's coordinates takes in its key: 21, so that three fit one
+/// 64-bit word with its top bit 0 (docs/methods/sparse-tsdf.md, "The hash of blocks"). The key's
+/// layout, x in the top field, then y, then z, stands in block_key() and coordinate_of_key().
+constexpr unsigned int key_component_bits = 21;
+
 /// The least component of a block's coordinates the hash stores: -2^20, so that each component
-/// takes 21 bits of the key [S: docs/methods/sparse-tsdf.md, "The hash of blocks"].
-constexpr std::int32_t block_coordinate_min = -(std::int32_t{1} << 20);
+/// less it takes key_component_bits bits.
+constexpr std::int32_t block_coordinate_min = -(std::int32_t{1} << (key_component_bits - 1));
 
 /// The greatest component of a block's coordinates the hash stores: 2^20 - 1.
-constexpr std::int32_t block_coordinate_max = (std::int32_t{1} << 20) - 1;
+constexpr std::int32_t block_coordinate_max = (std::int32_t{1} << (key_component_bits - 1)) - 1;
 
 /// The voxels of a block: 8 x 8 x 8 [?: a choice, the block of Nießner et al. 2013, in
 /// docs/methods/sparse-tsdf.md].
@@ -79,7 +89,7 @@ __host__ __device__ constexpr bool in_key_range(const block_coordinate &b) noexc
 
 /// Gives a block's key: (x + 2^20) * 2^42 + (y + 2^20) * 2^21 + (z + 2^20), one 64-bit word
 /// whose top bit is 0, a different one for every coordinate in range
-/// (docs/methods/sparse-tsdf.md, "The hash of blocks").
+/// (docs/methods/sparse-tsdf.md, "The hash of blocks"); coordinate_of_key() undoes it.
 /// @param b [in] the coordinates, in blocks.
 /// @return the key.
 /// @pre in_key_range(b); otherwise two coordinates may share a key, so callers check first.
@@ -89,7 +99,19 @@ __host__ __device__ constexpr std::uint64_t block_key(const block_coordinate &b)
     const std::uint64_t x = static_cast<std::uint64_t>(std::int64_t{b.x} - block_coordinate_min);
     const std::uint64_t y = static_cast<std::uint64_t>(std::int64_t{b.y} - block_coordinate_min);
     const std::uint64_t z = static_cast<std::uint64_t>(std::int64_t{b.z} - block_coordinate_min);
-    return (x << 42) | (y << 21) | z;
+    return (x << (2 * key_component_bits)) | (y << key_component_bits) | z;
+}
+
+/// Gives the coordinates a key stands for, the inverse of block_key().
+/// @param key [in] a block's key, block_key() of a coordinate in range.
+/// @return the coordinates, in blocks, each in [block_coordinate_min, block_coordinate_max].
+__host__ __device__ constexpr block_coordinate coordinate_of_key(std::uint64_t key) noexcept
+{
+    constexpr std::uint64_t field = (std::uint64_t{1} << key_component_bits) - 1;
+    return {static_cast<std::int32_t>((key >> (2 * key_component_bits)) & field) +
+                block_coordinate_min,
+            static_cast<std::int32_t>((key >> key_component_bits) & field) + block_coordinate_min,
+            static_cast<std::int32_t>(key & field) + block_coordinate_min};
 }
 
 /// Gives a block's home slot, where the hash's search for it starts: the 64-bit finalizer of
@@ -132,6 +154,22 @@ constexpr float farthest_max_depth_m = 10.0f;
 /// not walked and is counted (docs/methods/sparse-tsdf.md, "The allocation near a frame's
 /// surface", which gives the most the starting values need, 50) [?: a choice].
 constexpr std::uint32_t max_blocks_per_ray = 64;
+
+/// The most observations a voxel's running average counts, W_max (docs/methods/sparse-tsdf.md,
+/// "Integration, and the weight of an observation") [?: initial]: once a voxel holds as many, a
+/// new observation counts 1 / (W_max + 1).
+constexpr std::uint16_t max_voxel_weight = 64;
+
+/// A point of the surface as the extraction gives it (docs/methods/sparse-tsdf.md, "The
+/// extraction"), on the GPU: where the distance changes sign between two neighbouring voxels.
+struct surface_point
+{
+    float3 position_m; ///< the point, in the models' frame, in m
+    float3 normal;     ///< the surface's unit normal there, in the models' frame, pointing from
+                       ///< negative to positive distances, towards the cameras that saw it
+    uchar3 color;      ///< red, green and blue, 0 to 255, the frame's color order
+};
+static_assert(sizeof(surface_point) == 28, "a point is 28 bytes, the buffer's request says");
 
 /// The truncation distance's rule (docs/methods/sparse-tsdf.md, "The truncation distance"): at the
 /// measured depth z, mu(z) = max(mu_min v, k sigma(z)) with the depth noise sigma(z) = c z^2, v the
@@ -231,13 +269,98 @@ struct usage_result
     std::string message;                    ///< why not, in plain English; empty when read
 };
 
+class sparse_tsdf;
+
+/// The hash's one view, as every kernel of the module takes it: defined in fusion/block_hash.cuh.
+struct block_hash_view;
+
+/// A frame's pose rounded to float and checked, as the allocation and the integration apply it:
+/// defined in sparse_tsdf.cu.
+struct float_pose;
+
+/// The buffer an extraction writes its points into, on the GPU, of a stated size, with the count
+/// of the points found and the pinned buffer that count is read back through. Its memory comes
+/// from the pool that closes. Move-only. Not synchronized: one thread at a time uses one.
+class surface_points
+{
+public:
+    /// An empty buffer: no memory; an extraction into it is refused.
+    surface_points() noexcept = default;
+
+    /// Requests the buffer's memory from the pool: room for a number of points, the count on the
+    /// GPU and the pinned buffer it is read back through.
+    /// @param pool [in,out] the pool; open, else the request is refused as closed.
+    /// @param capacity [in] the points the buffer holds, > 0.
+    /// @return granted, with a buffer whose points are not set until an extraction; or the first
+    ///         of its requests that was refused, with its status and message
+    ///         (gpu_pool::request_array()), a capacity of 0 among them.
+    /// @note Allocates device memory (cudaMalloc, twice: 28 bytes a point, and 4 bytes) and
+    ///       page-locked host memory (cudaMallocHost, 4 bytes), so it is called before the pool is
+    ///       closed; whether CUDA's allocators wait for the GPU is not stated by CUDA [?].
+    ///       Allocates for the message when refused; a failed allocation ends the program
+    ///       (std::terminate): the function is noexcept. Two threads may not request from one
+    ///       pool at once.
+    static request_result<surface_points> request(gpu_pool &pool, std::uint32_t capacity) noexcept;
+
+    /// A buffer is not copied: a copy allocates.
+    surface_points(const surface_points &) = delete;
+    surface_points &operator=(const surface_points &) = delete;
+
+    /// Takes over another buffer's memory without allocating.
+    /// @param other [in,out] the buffer moved from; left empty.
+    /// @note Allocates nothing and waits for nothing.
+    surface_points(surface_points &&other) noexcept = default;
+
+    /// Takes over another buffer's memory; this one's is freed first.
+    /// @param other [in,out] the buffer moved from; left empty. Moving onto itself changes
+    ///        nothing.
+    /// @return this buffer.
+    /// @pre No work queued on the GPU uses this one's memory any more (gpu_array's move
+    ///      assignment says what happens when some does).
+    /// @note Frees with cudaFree and cudaFreeHost, which may wait for the GPU (gpu/gpu_array.hpp,
+    ///       gpu/pinned_buffer.hpp). Allocates nothing.
+    surface_points &operator=(surface_points &&other) noexcept = default;
+
+    /// Frees the memory.
+    /// @pre No work queued on the GPU uses it any more (as for the move assignment).
+    /// @note Frees with cudaFree and cudaFreeHost, which may wait for the GPU.
+    ~surface_points() = default;
+
+    /// Gives the points the buffer holds.
+    /// @return its capacity; 0 when empty.
+    std::uint32_t capacity() const noexcept;
+
+    /// Gives the points for the GPU to read or for a copy to the host.
+    /// @return the array of capacity() points; the first ones the last extraction wrote, as its
+    ///         result says, the rest not set. Empty when the buffer is. Valid as long as the
+    ///         buffer holds it.
+    const gpu_array<surface_point> &points() const noexcept;
+
+private:
+    friend class sparse_tsdf; ///< the extraction writes the points and the count
+
+    gpu_array<surface_point> m_points; ///< the points
+    gpu_array<std::uint32_t> m_count;  ///< one element: the points the extraction found
+    pinned_buffer m_count_on_host;     ///< the count as the last extraction read it back
+};
+
+/// What an extraction gave: the points it found and wrote, or why not.
+struct extraction_result
+{
+    bool done = false;         ///< whether every point found was written into the buffer
+    std::uint32_t found = 0;   ///< the points found; 0 when the extraction did not run
+    std::uint32_t written = 0; ///< the points written, the buffer's first: found, or the
+                               ///< buffer's capacity when that is smaller
+    std::string message;       ///< why not done, in plain English; empty when done
+};
+
 /// The sparse TSDF's hash of blocks and its pool, on the GPU, with its parameters. Its memory comes
 /// from the pool that closes when it is requested, before a scan; its insertions, lookups,
-/// allocations near a frame's surface and readings of the usage allocate nothing. One exists at a
-/// time (docs/methods/sparse-tsdf.md, "The pool and the memory budget"). Move-only. Not
-/// synchronized: each member function's note says whether two threads may call it at once; the
-/// work it queues goes to one stream at a time, the stream the request queued its clearing on or
-/// one ordered after it.
+/// allocations near a frame's surface, integrations, extractions and readings of the usage
+/// allocate nothing. One exists at a time (docs/methods/sparse-tsdf.md, "The pool and the memory
+/// budget"). Move-only. Not synchronized: each member function's note says whether two threads may
+/// call it at once; the work it queues goes to one stream at a time, the stream the request queued
+/// its clearing on or one ordered after it.
 class sparse_tsdf
 {
 public:
@@ -249,9 +372,10 @@ public:
     /// stamp of the last frame that touched it, the frame's list of slots, the counts and the
     /// pool's voxels; and the pinned buffer the usage is read through. Queues their clearing on
     /// a stream: the keys to empty, the blocks' numbers to none, the stamps to every bit 1 (no
-    /// frame), the counts and every voxel to 0, unobserved; the list is written before it is
-    /// read. No code reads the voxels yet: their first reader is the integration
-    /// (docs/methods/sparse-tsdf.md). Keeps the parameters for its operations.
+    /// frame), the counts and every voxel to 0, unobserved: distance, weight and color 0, the
+    /// state the integration's first observation of a voxel averages from
+    /// (docs/methods/sparse-tsdf.md, "What a voxel holds"); the list is written before it is
+    /// read. Keeps the parameters for its operations.
     /// @param pool [in,out] the pool; open, else the request is refused as closed.
     /// @param parameters [in] the memory budget, the voxel size, the truncation's rule and the far
     ///        depth.
@@ -407,6 +531,78 @@ public:
     step_result allocate_near_surface(const organized_points &points, const camera_pose &pose,
                                       cudaStream_t stream) noexcept;
 
+    /// Integrates a frame at its pose (docs/methods/sparse-tsdf.md, "Integration, and the weight of
+    /// an observation"): allocates the blocks near its surface first (allocate_near_surface(),
+    /// with the same points and pose), then updates every voxel of the blocks on the frame's list,
+    /// one GPU thread for each. Voxel g's centre, (g + 1/2) v in the models' frame, is carried
+    /// into the camera frame, q = R^T (c - t), and projected to its nearest pixel; a pixel that is
+    /// valid and no deeper than the far depth, with depth z, observes the voxel when
+    /// eta = z - q_z >= -mu(z): the distance d = min(eta, mu(z)) / v, in voxels, and the pixel's
+    /// color join the voxel's running averages with the weight 1, the voxel's weight limited to
+    /// max_voxel_weight. A voxel behind the camera, outside the picture, at an invalid or too deep
+    /// pixel, or more than mu(z) behind the surface is left as it was. A slot on the list without
+    /// a block (a used-up pool) is skipped. Each voxel is updated by one thread: the list holds
+    /// each slot once.
+    /// @param frame [in] the GPU frame the points were deprojected from, of their size: its color
+    ///        picture (RGB8) and its intrinsics (in px); device memory owned by the caller, which
+    ///        holds it until the work queued here has run. Uploaded on stream or on a stream
+    ///        ordered before it.
+    /// @param points [in] the frame's organized points and validity mask, in the camera frame, in
+    ///        m, as allocate_near_surface() takes them; owned as frame.
+    /// @param pose [in] the frame's pose, camera frame to the models' frame, as
+    ///        allocate_near_surface() takes it.
+    /// @param stream [in] the CUDA stream of the current device the work is queued on, ordered
+    ///        after the request's clearing; owned by the caller. Work queued on it later sees the
+    ///        voxels, the blocks and the frame's list.
+    /// @return done when the work is queued; not done with the reason when refused before any
+    ///         of it, with nothing queued: this sparse TSDF is empty, the organized points are,
+    ///         the GPU frame holds no frame, its size is not the points', its intrinsics are not
+    ///         usable (types/camera_param.hpp, usable_intrinsics()), or the pose is not, as
+    ///         allocate_near_surface() refuses it. Not done with CUDA's error, which is then
+    ///         cleared, as allocate_near_surface() returns it for the allocation; and when CUDA
+    ///         refuses the integration's launch, the allocation queued then, its blocks inserted
+    ///         and listed, their voxels left as they were.
+    /// @pre The points were deprojected from the frame (organized_points::deproject()), so that a
+    ///      pixel's point and color are the same pixel's; not checked. The same @pre on the count
+    ///      of allocations as allocate_near_surface().
+    /// @note allocate_near_surface()'s memset and kernel, then one kernel on stream, of a fixed
+    ///       grid of thread blocks of 512 threads, which go through the frame's list and read its
+    ///       count on the GPU, so that nothing is read back; it writes only the voxels of listed
+    ///       blocks with a number. Waits for nothing. Allocates nothing when done; allocates for
+    ///       the message when not, and a failed allocation ends the program (std::terminate): the
+    ///       function is noexcept. Not while another thread uses this sparse TSDF.
+    step_result integrate(const gpu_frame &frame, const organized_points &points,
+                          const camera_pose &pose, cudaStream_t stream) noexcept;
+
+    /// Extracts the surface's colored points with normals (docs/methods/sparse-tsdf.md, "The
+    /// extraction"): for every block the hash holds, each voxel g and each of its neighbours
+    /// g + e, e along x, y and z, found through the hash when in another block, both observed,
+    /// whose distances D_a and D_b differ in sign (D_a >= 0 > D_b, or D_a < 0 <= D_b), a point at
+    /// the fraction s = D_a / (D_a - D_b) of the way from g's centre to the neighbour's; its normal
+    /// the gradient of the distance by central differences at both voxels, interpolated at s and
+    /// normalized, so that it points from negative to positive; its color the two colors
+    /// interpolated at s and rounded. A crossing whose central differences need an unobserved or
+    /// missing voxel gives no point. The points come in no stated order: two runs give the same
+    /// set in another order.
+    /// @param out [in,out] the buffer the points are written into, the first written of them, and
+    ///        its count; owned by the caller.
+    /// @param stream [in] the CUDA stream of the current device the work is queued on and waited
+    ///        for, ordered after the integrations it is to see; owned by the caller.
+    /// @return done with the points found and written, all of them; not done, with the reason:
+    ///         when the buffer holds fewer than were found, with both counts, the buffer's first
+    ///         capacity points written; when refused before any work, this sparse TSDF or the
+    ///         buffer is empty, with nothing queued and both counts 0; with CUDA's error, then
+    ///         cleared, when CUDA's last error was set before the call (nothing queued), refused
+    ///         the reset of the count, the launch or the copy, or failed while the work ran, with
+    ///         both counts 0 and the buffer's points unspecified.
+    /// @note A cudaMemsetAsync of the count, one kernel over every slot of the hash, of a fixed
+    ///       grid of thread blocks of 512 threads, a copy of 4 bytes into the pinned buffer, then
+    ///       the one written wait, cudaStreamSynchronize(stream), which waits for all the stream's
+    ///       earlier work. Not for the per-frame path. Allocates nothing when done; allocates for
+    ///       the message when not, and a failed allocation ends the program (std::terminate): the
+    ///       function is noexcept. Not while another thread uses this sparse TSDF or the buffer.
+    extraction_result extract(surface_points &out, cudaStream_t stream) const noexcept;
+
     /// Reads the use of the pool and the hash back from the GPU, after the work queued on a
     /// stream. In the per-frame path it is called after the registration's own readback, so that
     /// its wait finds the stream's earlier work done and costs only its copy
@@ -428,6 +624,28 @@ public:
     sparse_tsdf_layout layout() const noexcept;
 
 private:
+    /// Queues the allocation near a frame's surface at a pose already rounded to float and found
+    /// usable, as allocate_near_surface() describes it after its refusals: the reset of the list's
+    /// count and the allocation's kernel.
+    /// @param points [in] the frame's organized points, not empty; as allocate_near_surface().
+    /// @param pose [in] the frame's pose rounded to float, its values finite.
+    /// @param stream [in] the stream, as allocate_near_surface().
+    /// @return done when queued; not done with CUDA's error, then cleared, when CUDA's last error
+    ///         was set before the call or CUDA refused the reset (nothing queued) or the launch
+    ///         (the list's count then reset to 0).
+    /// @pre This sparse TSDF holds memory; not checked here, its callers refuse an empty one.
+    /// @note As allocate_near_surface(). Not while another thread uses this sparse TSDF.
+    step_result allocate_at(const organized_points &points, const float_pose &pose,
+                            cudaStream_t stream) noexcept;
+
+    /// Gives the hash's one view, which every kernel of the module takes (fusion/block_hash.cuh).
+    /// @return pointers into this sparse TSDF's keys, block numbers and counts, and its slots and
+    ///         blocks; null pointers and 0 when empty.
+    /// @note The pointers are not const, for the kernels that insert: a const sparse TSDF hands the
+    ///       view only to kernels that find blocks, which write nothing through it. Allocates
+    ///       nothing and waits for nothing.
+    block_hash_view hash_view() const noexcept;
+
     sparse_tsdf_layout m_layout{0, 0, 0};
     sparse_tsdf_parameters m_parameters{0, 0.0f, {0.0f, 0.0f, 0.0f}, 0.0f}; ///< from the request
     std::uint32_t m_frames_allocated = 0;   ///< the allocations near a frame's surface so far, the

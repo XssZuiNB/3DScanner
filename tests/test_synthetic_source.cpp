@@ -22,7 +22,9 @@
 ///   The source tells the trajectory and the known surfaces, which are checked against the
 ///   test's own box and walk;
 /// - look_at() and walk_around() give upright poses, and refuse as values a view that is not
-///   defined.
+///   defined;
+/// - the depth noise: its mean and its spread at two depths against the law sigma(z) = c z^2,
+///   and the same frames from the same seed, other frames from another.
 
 #include "camera/frame.hpp"
 #include "check.hpp"
@@ -1306,6 +1308,127 @@ void check_walk()
     const walk_counts totals = check_walk_frames(source, faces, errors);
     report_walk(totals, errors);
 }
+/// The depth noise's coefficient of the noise test: c = 0.01 /m, the method's starting value of
+/// the camera's noise (docs/methods/sparse-tsdf.md, "The truncation distance") [?: a choice].
+constexpr double noise_test_per_m = 0.01;
+
+/// The frames of each depth of the noise test: four, 76800 pixels [?: a choice], so that the
+/// standard deviation's relative standard error is 1 / sqrt(2 * 76800) = 0.26 % [S: the normal
+/// distribution's sample variance].
+constexpr std::size_t noise_test_frames = 4;
+
+/// The tolerance of the measured standard deviation against the expected one, relative: 1.5 %,
+/// about six standard errors (noise_test_frames) [?: a choice].
+constexpr double noise_spread_tolerance = 0.015;
+
+/// The tolerance of the measured mean against the true depth: five of its standard errors, sigma
+/// over the root of the pixels, which a Gaussian mean passes but for 6e-7 [S: the normal
+/// distribution] [?: a choice].
+constexpr double noise_mean_tolerance_errors = 5.0;
+
+/// The noise test's seed, and another one, which renders other frames [?: a choice].
+constexpr std::uint32_t noise_test_seed = 7;
+constexpr std::uint32_t other_noise_seed = 8;
+
+/// Builds the options of a source of noisy frames of a wide plane seen straight from above, so
+/// that every pixel sees the plane at the same depth.
+/// @param height_m [in] the camera's height above the plane, the depth of every pixel, in m.
+/// @param seed [in] the noise's seed.
+/// @return the options: noise_test_frames frames from the same pose, depth unit 1 mm (the
+///         camera's), then the end.
+gca_test::synthetic_source_options noise_options(double height_m, std::uint32_t seed)
+{
+    // The camera's x along the world's x, its y along the world's -y and its z, the view, down.
+    Eigen::Isometry3d from_above = Eigen::Isometry3d::Identity();
+    from_above.linear() = Eigen::Vector3d(1.0, -1.0, -1.0).asDiagonal();
+    from_above.translation() = Eigen::Vector3d(0.0, 0.0, height_m);
+    gca_test::synthetic_source_options options;
+    options.description = {test_size, test_intrinsics, 0.001f};
+    options.scene = {.plane = gca_test::synthetic_plane{3.0, 3.0},
+                     .trajectory = std::vector<Eigen::Isometry3d>(noise_test_frames, from_above)};
+    options.depth_noise = gca_test::synthetic_depth_noise{noise_test_per_m, seed};
+    options.ending_message = "end";
+    return options;
+}
+
+/// Renders every frame of a source's options.
+/// @param options [in] the options.
+/// @return the frames, in their order; fewer, with a failed check, when the source fails.
+std::vector<gca::frame> frames_of(const gca_test::synthetic_source_options &options)
+{
+    gca_test::synthetic_source source(options);
+    check(source.open(options.description.size).opened, "noise: opened");
+    std::vector<gca::frame> frames(options.scene.trajectory.size());
+    for (gca::frame &frame : frames)
+        check(source.next(frame).status == gca::next_status::frame, "noise: a frame rendered");
+    return frames;
+}
+
+/// Says whether two frames hold the same depth picture.
+/// @param a [in] one frame.
+/// @param b [in] the other.
+/// @return whether every depth value is equal.
+bool same_depth(const gca::frame &a, const gca::frame &b)
+{
+    return std::equal(a.depth().begin(), a.depth().end(), b.depth().begin(), b.depth().end());
+}
+
+/// The depth noise: a wide plane seen straight from above at 1.0 m and at 0.5 m, every pixel at
+/// that depth. Over the frames' pixels the depth's mean lies within five standard errors of the
+/// true depth, and its standard deviation within noise_spread_tolerance of the law's c z^2 with
+/// the rounding's variance added, unit^2 / 12 [S: Sheppard's correction for values rounded to a
+/// step]; so the noise grows with the square of the depth. Every pixel is seen. Two sources of
+/// the same seed render the same frames; the frames of one source differ from each other, and
+/// another seed gives other frames.
+void check_depth_noise()
+{
+    for (const double height_m : {1.0, 0.5})
+    {
+        const std::string name = height_m == 1.0 ? "noise at 1.0 m" : "noise at 0.5 m";
+        const std::vector<gca::frame> frames = frames_of(noise_options(height_m, noise_test_seed));
+        double sum_mm = 0.0;
+        double sum_squares_mm2 = 0.0;
+        std::size_t seen = 0;
+        std::size_t pixels = 0;
+        for (const gca::frame &frame : frames)
+        {
+            for (const std::uint16_t value : frame.depth())
+            {
+                pixels++;
+                if (value == 0)
+                    continue;
+                seen++;
+                const double error_mm = static_cast<double>(value) - 1000.0 * height_m;
+                sum_mm += error_mm;
+                sum_squares_mm2 += error_mm * error_mm;
+            }
+        }
+        check(seen == pixels && seen > 0, (name + ": every pixel sees the plane").c_str());
+        const double count = static_cast<double>(seen);
+        const double mean_mm = sum_mm / count;
+        const double spread_mm = std::sqrt(sum_squares_mm2 / count - mean_mm * mean_mm);
+        const double sigma_mm = 1000.0 * noise_test_per_m * height_m * height_m;
+        const double expected_mm = std::sqrt(sigma_mm * sigma_mm + 1.0 / 12.0);
+        std::printf("%s: %zu pixels, mean error %.4f mm, spread %.4f mm against %.4f mm\n",
+                    name.c_str(), seen, mean_mm, spread_mm, expected_mm);
+        check_within((name + ": |mean error| / its standard error").c_str(),
+                     std::abs(mean_mm) / (expected_mm / std::sqrt(count)),
+                     noise_mean_tolerance_errors);
+        check_within((name + ": spread, relative to the law's").c_str(),
+                     std::abs(spread_mm / expected_mm - 1.0), noise_spread_tolerance);
+        check(frames.size() >= 2 && !same_depth(frames[0], frames[1]),
+              (name + ": two frames of the same pose differ").c_str());
+    }
+    const std::vector<gca::frame> first = frames_of(noise_options(1.0, noise_test_seed));
+    const std::vector<gca::frame> again = frames_of(noise_options(1.0, noise_test_seed));
+    const std::vector<gca::frame> other = frames_of(noise_options(1.0, other_noise_seed));
+    bool same = first.size() == again.size();
+    for (std::size_t i = 0; same && i < first.size(); i++)
+        same = same_depth(first[i], again[i]);
+    check(same, "noise: the same seed renders the same frames");
+    check(!first.empty() && !other.empty() && !same_depth(first[0], other[0]),
+          "noise: another seed renders other frames");
+}
 } // namespace
 
 int main()
@@ -1315,5 +1438,6 @@ int main()
     check_sphere_pictures();
     check_mesh_pictures();
     check_walk();
+    check_depth_noise();
     return gca_test::check_summary("test_synthetic_source");
 }

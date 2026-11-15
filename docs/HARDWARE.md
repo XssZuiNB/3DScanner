@@ -266,6 +266,39 @@ count [B 2026-11-14: `cuobjdump -sass` of `allocate_kernel`, VOTEU.ANY, POPC, RE
 is not gathered by hand; the difference between the two frames holds the read of the 6.3 MB of
 points besides that count, not timed apart [?].
 
+**The integration of a frame** (docs/methods/sparse-tsdf.md, "Integration, and the weight of an
+observation"): `sparse_tsdf::integrate()`, the allocation near the frame's surface and the
+integration's kernel together, timed by CUDA events, and the host's call; in the same runs the
+allocation alone, so that the integration's kernel is the difference. 20 s per case after 5 s, the
+same frame fused again and again into a sparse TSDF of 0.38 GB, 90636 blocks and 524288 slots,
+that holds its blocks already, as a scan's frame finds most of its blocks held; the scenes, voxel
+sizes and depth ranges of the allocation's table above [M 2026-11-15, 01:52 to 01:59, MAXN_SUPER
+by `nvpmodel -q`, no compiler running, a scratch program; the GPU's clock sampled every 16 runs,
+the warm-up included]. Paced at 30 fps the governor keeps the GPU at 306 MHz once warm; back to
+back it runs at 1020 MHz once warm.
+
+| size | voxel | blocks | pace | integrate() median / p95 / max | allocation alone, median | the integration's kernel | host call median |
+|---|---|---|---|---|---|---|---|
+| 640x400 | 2 mm | 5180 | 30 fps | 3.159 / 3.190 / 3.215 ms | 0.546 ms | 2.61 ms | 0.058 ms |
+| 640x400 | 2 mm | | back to back | 1.038 / 1.049 / 1.095 ms | 0.188 ms | 0.85 ms | 0.012 ms |
+| 1280x800 | 2 mm | 5215 | 30 fps | 4.256 / 4.549 / 4.780 ms | 1.518 ms | 2.74 ms | 0.052 ms |
+| 1280x800 | 2 mm | | back to back | 1.392 / 1.397 / 1.445 ms | 0.524 ms | 0.87 ms | 0.012 ms |
+| 640x400 | 8 mm | 10877 | 30 fps | 7.346 / 7.381 / 7.427 ms | 1.478 ms | 5.87 ms | 0.055 ms |
+| 640x400 | 8 mm | | back to back | 2.414 / 2.428 / 2.449 ms | 0.449 ms | 1.97 ms | 0.012 ms |
+| 1280x800 | 8 mm | 10950 | 30 fps | 9.288 / 9.676 / 11.550 ms | 3.136 ms | 6.15 ms | 0.044 ms |
+| 1280x800 | 8 mm | | back to back | 3.047 / 3.064 / 3.219 ms | 0.988 ms | 2.06 ms | 0.012 ms |
+
+The integration's kernel takes about the same at both sizes: it runs over the listed blocks'
+voxels, 512 a block, and reads one pixel for each, so its time follows the blocks, 0.16 to
+0.19 µs a block back to back and 0.50 to 0.56 µs paced [S: computed, the table: 0.85 ms / 5180 to
+6.15 ms / 10950 blocks]. The allocation alone takes 0.2 % to 5.3 % less than in its table above,
+which used a sparse TSDF of 1.0 GB [S: computed, the two tables' medians]. The kernels go through the list on a fixed grid of thread blocks
+(`src/fusion/sparse_tsdf.cu`, `voxel_kernel_grid`): 24, the thread blocks of 512 the GPU holds at
+once, against 96 and 384, `integrate()` back to back for 10 s after 3 s per case, medians in the
+table's order of size and voxel: 1.037, 1.392, 2.416 and 3.048 ms at 24; 1.115, 1.516, 2.425 and
+3.037 ms at 96; 1.151, 1.612, 2.614 and 3.384 ms at 384 [M 2026-11-15, 01:47 to 01:51, as the
+table]. So 24 is kept: 0.4 % longer to 8.2 % shorter than 96, 7.6 % to 13.7 % shorter than 384.
+
 **The registration of one frame** (docs/methods/registration.md): the host's call of
 `registration::align()` by the full method, both terms coarse to fine with the tabletop object's
 starting values, on the tabletop object's pair of `tests/test_registration.cpp` (a box and a sphere

@@ -84,18 +84,21 @@
 
 namespace
 {
+using gca_test::as_camera_pose;
 using gca_test::check;
 using gca_test::check_no_cuda_error;
 using gca_test::check_refusal;
 using gca_test::check_refused;
 using gca_test::create_stream;
 using gca_test::find;
+using gca_test::frame_buffers;
 using gca_test::granted;
 using gca_test::lookup;
 using gca_test::make_lookup;
 using gca_test::method_truncation;
 using gca_test::print_usage;
 using gca_test::read_usage;
+using gca_test::request_buffers;
 using gca_test::same_usage;
 using gca_test::small_description;
 
@@ -560,33 +563,6 @@ block_set with_block(const lookup &found, const std::vector<std::uint32_t> &numb
         if (numbers[i] != gca::no_block)
             result.insert(gca::block_key(found.host[i]));
     return result;
-}
-
-/// Gives a pose of the camera as the sparse TSDF takes it.
-/// @param pose [in] camera frame to the models' frame.
-/// @return the same pose as position and orientation.
-gca::camera_pose as_camera_pose(const Eigen::Isometry3d &pose)
-{
-    return {pose.translation(), Eigen::Quaterniond(pose.linear())};
-}
-
-/// A frame's buffers on the GPU, from the pool: the GPU frame and its organized points.
-struct frame_buffers
-{
-    gca::gpu_frame frame;         ///< the GPU frame the frame is uploaded into
-    gca::organized_points points; ///< the organized points it is deprojected into
-};
-
-/// Requests a frame's buffers from the pool.
-/// @param pool [in,out] the pool, open.
-/// @param size [in] the frame's size.
-/// @param what [in] the case, named in the check lines.
-/// @return the buffers; empty ones and a failed check when the pool refused.
-frame_buffers request_buffers(gca::gpu_pool &pool, const gca::frame_size &size,
-                              const std::string &what)
-{
-    return {granted(what + ": the GPU frame", gca::gpu_frame::request(pool, size)),
-            granted(what + ": the organized points", gca::organized_points::request(pool, size))};
 }
 
 /// Uploads a frame, deprojects it and downloads its marks, and finds each pixel's analytic hit.

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: 0BSD
 /// @file synthetic_source.cpp
 /// The tests' synthetic source: the scene's textures and known surfaces, the trajectories, the
-/// renderer of the surfaces, the sphere and the mesh, and the source's states (see
-/// synthetic_source.hpp).
+/// renderer of the surfaces, the sphere and the mesh with its depth noise, and the source's states
+/// (see synthetic_source.hpp).
 
 #include "synthetic_source.hpp"
 
@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <limits>
 #include <optional>
+#include <random>
 #include <span>
 #include <string>
 #include <utility>
@@ -264,21 +265,44 @@ mesh_picture render_mesh(const synthetic_mesh &mesh, const Eigen::Isometry3d &ca
     return picture;
 }
 
+/// Draws the depth noise of one frame, one standard normal value for each pixel in the frame's
+/// order, from std::mt19937_64 seeded with the noise's seed and the frame's index
+/// (synthetic_depth_noise).
+/// @param noise [in] the noise.
+/// @param index [in] the frame's index in its opening.
+/// @param pixels [in] the frame's pixels.
+/// @return the values, each of mean 0 and standard deviation 1.
+std::vector<double> standard_normals(const synthetic_depth_noise &noise, std::uint64_t index,
+                                     std::size_t pixels)
+{
+    std::seed_seq seeds{noise.seed, static_cast<std::uint32_t>(index & 0xFFFFFFFFu),
+                        static_cast<std::uint32_t>(index >> 32)};
+    std::mt19937_64 generator(seeds);
+    std::normal_distribution<double> normal(0.0, 1.0);
+    std::vector<double> values(pixels);
+    for (double &value : values)
+        value = normal(generator);
+    return values;
+}
+
 /// Renders the known surfaces, the sphere and the mesh as the camera sees them into a prepared
 /// frame, by the one pinhole convention: the ray of pixel (u, v) is ((u - cx) / fx,
 /// (v - cy) / fy, 1) in the camera frame. Its point at parameter s has the camera-frame depth s,
 /// so the ray's parameter where it meets a surface is the hit's depth, and the nearest surface is
-/// the one of the smallest s > 0; on a tie a known surface or the sphere before the mesh.
+/// the one of the smallest s > 0; on a tie a known surface or the sphere before the mesh. With
+/// depth noise, the depth s becomes s + c s^2 n, n the pixel's standard normal value, before it is
+/// rounded; the color stays the hit's.
 /// @param surfaces [in] the surfaces, in the world frame.
 /// @param sphere [in] the sphere, in the world frame, or none.
 /// @param mesh [in] the mesh, in the world frame, or none.
 /// @param camera_to_world [in] the camera's pose: camera frame to world frame.
-/// @param out [in,out] prepared for its description (frame::prepare()); every pixel of its
-///            color and depth is written.
+/// @param noise [in] the depth noise, or none.
+/// @param out [in,out] prepared for its description and index (frame::prepare()); every pixel
+///            of its color and depth is written.
 void render(const std::vector<synthetic_surface> &surfaces,
             const std::optional<synthetic_sphere> &sphere,
             const std::optional<synthetic_mesh> &mesh, const Eigen::Isometry3d &camera_to_world,
-            gca::frame &out)
+            const std::optional<synthetic_depth_noise> &noise, gca::frame &out)
 {
     const gca::frame_description &description = out.description();
     const gca::intrinsics &k = description.intrinsics;
@@ -289,6 +313,8 @@ void render(const std::vector<synthetic_surface> &surfaces,
     const std::optional<mesh_picture> meshed =
         mesh ? std::optional<mesh_picture>(render_mesh(*mesh, camera_to_world, description))
              : std::nullopt;
+    const std::vector<double> normals =
+        noise ? standard_normals(*noise, out.index(), depth.size()) : std::vector<double>{};
     for (std::uint32_t v = 0; v < description.size.height; v++)
     {
         for (std::uint32_t u = 0; u < description.size.width; u++)
@@ -301,7 +327,10 @@ void render(const std::vector<synthetic_surface> &surfaces,
                                                     : meshed->depth_m[pixel] <
                                                           std::numeric_limits<double>::infinity());
             const double nearest_s = on_mesh ? meshed->depth_m[pixel] : nearest ? nearest->s : 0.0;
-            const double value = std::round(nearest_s / description.depth_unit_m);
+            const double noisy_s =
+                noise ? nearest_s + noise->noise_per_m * nearest_s * nearest_s * normals[pixel]
+                      : nearest_s;
+            const double value = std::round(noisy_s / description.depth_unit_m);
             const bool seen = (on_mesh || nearest.has_value()) && value >= 1.0 &&
                               value <= std::numeric_limits<std::uint16_t>::max();
             depth[pixel] = seen ? static_cast<std::uint16_t>(value) : 0;
@@ -478,7 +507,7 @@ gca::next_result synthetic_source::next(gca::frame &out) noexcept
         return {ending_status(m_options.ending), m_options.ending_message};
     out.prepare(m_options.description, m_next_index, m_next_index * frame_period_us);
     render(m_surfaces, m_options.scene.sphere, m_options.scene.mesh,
-           m_options.scene.trajectory[m_next_index], out);
+           m_options.scene.trajectory[m_next_index], m_options.depth_noise, out);
     m_next_index++;
     return {gca::next_status::frame, {}};
 }

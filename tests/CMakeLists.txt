@@ -101,6 +101,13 @@ add_executable(test_sparse_tsdf_allocation test_sparse_tsdf_allocation.cpp)
 target_link_libraries(test_sparse_tsdf_allocation PRIVATE fusion scan synthetic_source)
 add_test(NAME sparse_tsdf_allocation COMMAND test_sparse_tsdf_allocation)
 
+# The sparse TSDF's integration of a frame and extraction of the surface's points, on frames of the
+# synthetic source at their known poses and on built walls; scan gives the object classes' voxel
+# sizes and depth ranges.
+add_executable(test_sparse_tsdf_fusion test_sparse_tsdf_fusion.cpp)
+target_link_libraries(test_sparse_tsdf_fusion PRIVATE fusion scan synthetic_source)
+add_test(NAME sparse_tsdf_fusion COMMAND test_sparse_tsdf_fusion)
+
 # Refinement's pose graph solve, on graphs built from the keyframes of a walk of the synthetic
 # source whose poses are known.
 add_executable(test_pose_graph test_pose_graph.cpp)
