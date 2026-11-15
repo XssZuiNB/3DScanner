@@ -103,8 +103,10 @@ system_solution solve_normal_equations(const normal_sums &sums,
         return solution;
     solution.step = Eigen::Translation3d(solution.centroid_m) * se3_exp(xi) *
                     Eigen::Translation3d(-solution.centroid_m);
-    const bool small = xi.head<3>().norm() < registration_converged_rotation_rad &&
-                       xi.tail<3>().norm() < registration_converged_translation_m;
+    solution.step_turn_rad = xi.head<3>().norm();
+    solution.step_shift_m = xi.tail<3>().norm();
+    const bool small = solution.step_turn_rad < registration_converged_rotation_rad &&
+                       solution.step_shift_m < registration_converged_translation_m;
     solution.verdict = small ? system_verdict::last_step : system_verdict::step;
     return solution;
 }

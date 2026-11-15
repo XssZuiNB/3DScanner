@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: 0BSD
 /// @file registration_cases.hpp
 /// What the tests that register frames against a surface share (registration/registration.hpp,
-/// docs/methods/registration.md): the normals' parameters and the object classes' depth ranges
-/// their pyramids are built with, the object classes' starting values of the registration and the
-/// parameters with the coarser levels skipped, the tabletop object's and the large object's scenes,
-/// the poses they are seen from and their known motions, a pyramid's levels as a surface, and the
-/// printing of a result with the check that a converged one carries the known motion. Header only;
-/// each test program is one translation unit.
+/// docs/methods/registration.md): the normals' parameters and the depth ranges their pyramids are
+/// built with, the registration's parameters of an object class's set and the object classes'
+/// starting values, the parameters with the coarser levels skipped, the tabletop object's and the
+/// large object's scenes, the poses they are seen from and their known motions, and the printing
+/// of a result with the check that a converged one carries the known motion. Header only; each
+/// test program is one translation unit.
 
 #pragma once
 
@@ -14,6 +14,7 @@
 #include "geometry/frame_pyramid.hpp"
 #include "geometry/organized_normals.hpp"
 #include "geometry/organized_points.hpp"
+#include "registration/normal_equations.hpp"
 #include "registration/registration.hpp"
 #include "scan/object_class.hpp"
 #include "stage_frames.hpp"
@@ -33,37 +34,62 @@ namespace gca_test
 /// 75 degrees [S: docs/methods/normals.md, "Input"].
 inline constexpr gca::organized_normals_parameters normals_parameters = {3, 25, 75.0f};
 
-/// Gives an object class's depth range for the organized points, each limit half a depth unit
-/// inside, so that no depth value lies on a limit.
-/// @param kind [in] the object class.
-/// @return its range (scan/object_class.hpp), in m, each limit moved inward by half of 1 mm.
-inline gca::organized_points_parameters range_of(gca::object_class kind)
+/// Gives a depth range for the organized points, each limit half a depth unit inside, so that no
+/// depth value lies on a limit.
+/// @param range [in] the range, in m.
+/// @return the range, each limit moved inward by half of 1 mm, rounded to float.
+inline gca::organized_points_parameters inside(const depth_range &range)
 {
-    const gca::object_class_parameters p = gca::parameters_of(kind);
     const double half_unit_m = 0.5 * camera_depth_unit_m;
-    return {static_cast<float>(p.min_depth_m + half_unit_m),
-            static_cast<float>(p.max_depth_m - half_unit_m)};
+    return {static_cast<float>(range.near_m + half_unit_m),
+            static_cast<float>(range.far_m - half_unit_m)};
 }
 
-/// The tabletop object class's depth range, 0.30 m to 1.0 m [S: src/scan/object_class.cpp].
+/// Gives the depth range an object class's registration tests were measured at
+/// (measured_range_of()), for the organized points, each limit half a depth unit inside.
+/// @param kind [in] the object class.
+/// @return its measured range, in m, each limit moved inward by half of 1 mm.
+inline gca::organized_points_parameters range_of(gca::object_class kind)
+{
+    return inside(measured_range_of(kind));
+}
+
+/// The tabletop object's measured range, 0.30 m to 1.0 m (measured_range_of()).
 inline const gca::organized_points_parameters tabletop_range =
     range_of(gca::object_class::tabletop_object);
 
-/// The large object class's depth range, 0.4 m to 3.0 m [S: src/scan/object_class.cpp].
+/// The large object's measured range, 0.4 m to 3.0 m (measured_range_of()).
 inline const gca::organized_points_parameters large_range =
     range_of(gca::object_class::large_object);
 
+/// Gives the registration's parameters of a set of an object class's parameters: each level's
+/// d_max and most iterations, δ_G and λ, rounded to float. The one copy of this conversion until
+/// the scan interface takes it over (scan-interface-first-whole-scan).
+/// @param set [in] the set (scan/object_class.hpp).
+/// @return the registration's parameters.
+inline gca::registration_parameters registration_parameters_of(
+    const gca::object_class_parameters &set)
+{
+    gca::registration_parameters p{};
+    for (std::size_t level = 0; level < gca::frame_pyramid::level_count; level++)
+        p.levels[level] = {static_cast<float>(set.max_distance_m[level]),
+                           set.max_iterations[level]};
+    p.huber_threshold_m = static_cast<float>(set.huber_threshold_m);
+    p.point_to_plane_weight = static_cast<float>(set.point_to_plane_weight);
+    return p;
+}
+
 /// The tabletop object class's starting values, the full method: d_max 5, 10 and 20 cm and 20, 10
 /// and 10 iterations at levels 0, 1 and 2, δ_G 5 mm, λ 0.968 [?: initial;
-/// docs/methods/registration.md, "Parameters"].
-inline constexpr gca::registration_parameters tabletop_parameters = {
-    {{{0.05f, 20}, {0.10f, 10}, {0.20f, 10}}}, 0.005f, 0.968f};
+/// src/scan/object_class.cpp].
+inline const gca::registration_parameters tabletop_parameters =
+    registration_parameters_of(gca::parameters_of(gca::object_class::tabletop_object));
 
 /// The large object class's starting values, the full method: d_max 10, 20 and 40 cm and 20, 10
 /// and 10 iterations at levels 0, 1 and 2, δ_G 30 mm, λ 0.968 [?: initial;
-/// docs/methods/registration.md, "Parameters"].
-inline constexpr gca::registration_parameters large_parameters = {
-    {{{0.10f, 20}, {0.20f, 10}, {0.40f, 10}}}, 0.030f, 0.968f};
+/// src/scan/object_class.cpp].
+inline const gca::registration_parameters large_parameters =
+    registration_parameters_of(gca::parameters_of(gca::object_class::large_object));
 
 /// Gives parameters with the coarser levels skipped: level 0 alone.
 /// @param p [in] the parameters.
@@ -115,40 +141,23 @@ inline const Eigen::Isometry3d large_delta =
 inline const Eigen::Isometry3d large_turn_delta =
     make_transform(Eigen::Vector3d(-0.4, 0.7, 0.3), 1.5, Eigen::Vector3d(0.008, 0.006, -0.010));
 
-/// Gives a level of a pyramid as a level of a surface.
-/// @param pyramid [in] the pyramid.
-/// @param level [in] the level, below frame_pyramid::level_count.
-/// @return its points, marks, normals, intensity and intrinsics.
-inline gca::organized_surface level_of(const gca::frame_pyramid &pyramid, std::size_t level)
-{
-    return {pyramid.points(level).points(), pyramid.points(level).validity_mask(),
-            pyramid.normals(level).normals(), pyramid.intensity(level),
-            pyramid.level_intrinsics(level)};
-}
-
-/// Gives a pyramid's levels as a surface.
-/// @param pyramid [in] the pyramid.
-/// @return its levels 0, 1 and 2.
-inline gca::surface_levels surface_of(const gca::frame_pyramid &pyramid)
-{
-    return {level_of(pyramid, 0), level_of(pyramid, 1), level_of(pyramid, 2)};
-}
-
 /// Prints a result.
 /// @param what [in] the case.
 /// @param result [in] the result.
 inline void print_result(const std::string &what, const gca::registration_result &result)
 {
     std::printf("%s: %s after %u iterations, fitness %.4f, inlier RMSE %.3g m, eigenvalues %.3g "
-                "%.3g %.3g %.3g %.3g %.3g%s%s\n",
+                "%.3g %.3g %.3g %.3g %.3g, last step %.3g rad and %.3g m%s%s\n",
                 what.c_str(), end_name(result.end), result.iterations, result.fitness,
                 result.inlier_rmse_m, result.eigenvalues[0], result.eigenvalues[1],
                 result.eigenvalues[2], result.eigenvalues[3], result.eigenvalues[4],
-                result.eigenvalues[5], result.message.empty() ? "" : ", ", result.message.c_str());
+                result.eigenvalues[5], result.last_step_turn_rad, result.last_step_shift_m,
+                result.message.empty() ? "" : ", ", result.message.c_str());
 }
 
-/// Checks the rule every result keeps: when it says converged, its transform is the known one.
-/// Prints how far the transform lies from it either way.
+/// Checks the rules every result keeps: when it says converged, its transform is the known one and
+/// its last step lay below ε_ω and ε_υ (registration/normal_equations.hpp). Prints how far the
+/// transform lies from the known one either way.
 /// @param what [in] the case.
 /// @param result [in] the result.
 /// @param known [in] the known transform.
@@ -164,6 +173,9 @@ inline void check_converged_is_known(const std::string &what,
     if (!result.converged())
         return;
     check_near(what, result.transform, known, tolerance);
+    check(result.last_step_turn_rad < gca::registration_converged_rotation_rad &&
+              result.last_step_shift_m < gca::registration_converged_translation_m,
+          (what + ": the last step below epsilon").c_str());
 }
 
 /// The tabletop object: a box of 0.30 m x 0.20 m x 0.25 m turned by 20 degrees and a sphere of

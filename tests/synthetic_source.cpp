@@ -23,9 +23,6 @@ namespace gca_test
 {
 namespace
 {
-/// The time between two frames, in µs: 30 fps [?: a choice, the camera's rate].
-constexpr std::uint64_t frame_period_us = 33333;
-
 /// The least distance from a camera to the point it looks at, in m [?: a choice, far below a
 /// scene's size] (look_at()).
 constexpr double least_view_distance_m = 1e-9;
@@ -99,7 +96,7 @@ std::vector<synthetic_surface> known_surfaces(const synthetic_scene &scene)
     if (scene.plane)
         surfaces.push_back({Eigen::Vector3d::Zero(), Eigen::Vector3d::UnitX(),
                             Eigen::Vector3d::UnitY(), scene.plane->half_size_x_m,
-                            scene.plane->half_size_y_m, synthetic_texture::plane});
+                            scene.plane->half_size_y_m, scene.plane->texture});
     if (!scene.box)
         return surfaces;
     const synthetic_box &box = *scene.box;
@@ -267,6 +264,9 @@ std::array<double, 3> texture_color(synthetic_texture texture, const Eigen::Vect
             rgb[c] = wave_level(direction.dot(point_m), wave.wavelength_m, wave.phase_rad);
             break;
         }
+        case synthetic_texture::grey:
+            rgb[c] = texture_mean;
+            break;
         }
     }
     return rgb;
@@ -415,9 +415,13 @@ gca::next_result synthetic_source::next(gca::frame &out) noexcept
         return {gca::next_status::failure, "the synthetic source is not open"};
     if (m_next_index >= m_options.scene.trajectory.size())
         return {ending_status(m_options.ending), m_options.ending_message};
-    out.prepare(m_options.description, m_next_index, m_next_index * frame_period_us);
+    out.prepare(m_options.description, m_next_index, m_next_index * synthetic_frame_period_us);
     render(m_surfaces, m_options.scene.sphere, m_options.scene.trajectory[m_next_index],
            m_options.depth_noise, out);
+    const std::optional<synthetic_depth_gap> &gap = m_options.depth_gap;
+    if (gap && m_next_index >= gap->first_frame &&
+        m_next_index - gap->first_frame < gap->frame_count)
+        std::ranges::fill(out.depth(), std::uint16_t{0});
     m_next_index++;
     return {gca::next_status::frame, {}};
 }

@@ -76,6 +76,7 @@ using gca_test::check_within;
 using gca_test::create_stream;
 using gca_test::expect_at;
 using gca_test::expected_point;
+using gca_test::extract_points;
 using gca_test::flat_wall;
 using gca_test::frame_buffers;
 using gca_test::fuse;
@@ -133,38 +134,13 @@ constexpr std::uint32_t wall_border_px = 8;
 /// within 2 voxels of a sample is found.
 constexpr double grid_cell_voxels = 2.0;
 
-/// The far depths of the full models' cases, nearer than their object classes', 0.7 m against
+/// The far depths of the full models' cases, nearer than their measured ranges', 0.7 m against
 /// 1.0 m and 2.0 m against 3.0 m, so that one frame's bound fits the cases' pool of case_blocks:
 /// about 163000 and 140000 blocks against a room of 196608 [S: computed, docs/methods/
-/// sparse-tsdf.md, "One frame's blocks"], where the classes' far depths give 513102 and 604739.
+/// sparse-tsdf.md, "One frame's blocks"], where the measured ranges' far depths give 513102 and
+/// 604739.
 constexpr double tabletop_final_far_m = 0.7;
 constexpr double large_final_far_m = 2.0;
-
-/// Extracts a sparse TSDF's points and downloads them.
-/// @param tsdf [in] the sparse TSDF.
-/// @param buffer [in,out] the buffer of points.
-/// @param stream [in] the stream.
-/// @param what [in] the case, named in the check lines.
-/// @return the points written; fewer, with a failed check, when the extraction or the download
-///         failed.
-std::vector<gca::surface_point> extract_points(const gca::sparse_tsdf &tsdf,
-                                               gca::surface_points &buffer, cudaStream_t stream,
-                                               const std::string &what)
-{
-    const gca::extraction_result extracted = tsdf.extract(buffer, stream);
-    check(extracted.done && extracted.message.empty() && extracted.written == extracted.found,
-          (what + ": extraction done, " + extracted.message).c_str());
-    std::vector<gca::surface_point> points(extracted.written);
-    const bool downloaded =
-        points.empty() || (cudaMemcpyAsync(points.data(), buffer.points().data(),
-                                           points.size() * sizeof(gca::surface_point),
-                                           cudaMemcpyDeviceToHost, stream) == cudaSuccess &&
-                           cudaStreamSynchronize(stream) == cudaSuccess);
-    check(downloaded, (what + ": the points downloaded").c_str());
-    if (!downloaded)
-        points.clear();
-    return points;
-}
 
 /// Prints how an extraction that has to be refused came out and checks that it was not done, with
 /// a message that holds a text.

@@ -21,7 +21,10 @@
 /// - look_at() and walk_around() give upright poses, and refuse as values a view that is not
 ///   defined;
 /// - the depth noise: its mean and its spread at two depths against the law sigma(z) = c z^2,
-///   and the same frames from the same seed, other frames from another.
+///   and the same frames from the same seed, other frames from another;
+/// - a run of frames without depth: depth 0 at every pixel of the run's frames, their color and
+///   every other frame as without the run; and the grey plane: 128 in each channel at every
+///   pixel, its depth the textured plane's.
 
 #include "camera/frame.hpp"
 #include "check.hpp"
@@ -1265,6 +1268,62 @@ void check_depth_noise()
     check(!first.empty() && !other.empty() && !same_depth(first[0], other[0]),
           "noise: another seed renders other frames");
 }
+/// Says whether two frames hold the same color picture.
+/// @param a [in] one frame.
+/// @param b [in] the other.
+/// @return whether every byte of color is equal.
+bool same_color(const gca::frame &a, const gca::frame &b)
+{
+    return std::equal(a.color().begin(), a.color().end(), b.color().begin(), b.color().end());
+}
+
+/// A run of frames without depth and the grey plane, on the wide plane seen from above at 0.5 m,
+/// without noise, the camera moving 1 cm along x a frame so that the frames differ: frames 1 and
+/// 2 of the run [?: a choice] have depth 0 at every pixel and the color of the same frames
+/// without the run; frames 0, 3 and 4 are the frames without the run. The grey plane's frames
+/// have 128 in each channel at every pixel, every pixel seen, and the textured plane's depth.
+void check_depth_gap_and_grey()
+{
+    gca_test::synthetic_source_options plain = noise_options(0.5, noise_test_seed);
+    plain.depth_noise = std::nullopt;
+    const Eigen::Isometry3d from_above = plain.scene.trajectory.front();
+    plain.scene.trajectory.assign(5, from_above);
+    for (std::size_t i = 0; i < plain.scene.trajectory.size(); i++)
+        plain.scene.trajectory[i].translation().x() = 0.01 * static_cast<double>(i);
+    gca_test::synthetic_source_options gap = plain;
+    gap.depth_gap = gca_test::synthetic_depth_gap{1, 2};
+    const std::vector<gca::frame> without = frames_of(plain);
+    const std::vector<gca::frame> with = frames_of(gap);
+    check(without.size() == 5 && with.size() == 5, "depth gap: five frames each");
+    for (std::size_t i = 0; i < std::min(without.size(), with.size()); i++)
+    {
+        const std::string name = "depth gap, frame " + std::to_string(i);
+        const bool in_gap = i == 1 || i == 2;
+        const bool none =
+            std::ranges::all_of(with[i].depth(), [](std::uint16_t value) { return value == 0; });
+        if (in_gap)
+            check(none, (name + ": depth 0 at every pixel").c_str());
+        else
+            check(same_depth(with[i], without[i]), (name + ": the depth without the run").c_str());
+        check(same_color(with[i], without[i]), (name + ": the color without the run").c_str());
+    }
+    check(!same_color(without[0], without[1]), "depth gap: the frames differ");
+
+    gca_test::synthetic_source_options grey = plain;
+    grey.scene.plane->texture = gca_test::synthetic_texture::grey;
+    const std::vector<gca::frame> grey_frames = frames_of(grey);
+    for (std::size_t i = 0; i < std::min(grey_frames.size(), without.size()); i++)
+    {
+        const std::string name = "grey plane, frame " + std::to_string(i);
+        check(std::ranges::all_of(grey_frames[i].color(),
+                                  [](std::uint8_t channel) { return channel == 128; }),
+              (name + ": 128 in each channel at every pixel").c_str());
+        check(same_depth(grey_frames[i], without[i]) &&
+                  std::ranges::none_of(grey_frames[i].depth(),
+                                       [](std::uint16_t value) { return value == 0; }),
+              (name + ": every pixel seen at the textured plane's depth").c_str());
+    }
+}
 } // namespace
 
 int main()
@@ -1274,5 +1333,6 @@ int main()
     check_sphere_pictures();
     check_walk();
     check_depth_noise();
+    check_depth_gap_and_grey();
     return gca_test::check_summary("test_synthetic_source");
 }

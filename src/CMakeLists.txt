@@ -7,6 +7,7 @@
 #   camera <- orbbec_camera (OrbbecSDK, OpenCV)
 #   types <- camera <- gpu (CUDA runtime) <- geometry (Eigen) <- registration
 #   geometry <- fusion (the sparse TSDF, which takes a frame's organized points)
+#   fusion, registration <- tracking (the per-frame path's steps 1 to 6 and the check; no kernel)
 #   registration <- refinement (the pose graph, on the host; registration's SE(3) exponential)
 #   types <- separation (the proposal of the support plane and the box, on the host; Eigen)
 #   types <- camera <- scan (Eigen, OpenCV's core)
@@ -124,6 +125,15 @@ add_library(fusion STATIC fusion/block_hash.cuh fusion/sparse_tsdf.cu fusion/spa
 # PUBLIC: the header holds gpu's arrays, images and pool, CUDA's half float, geometry's organized
 # points and frame pyramid, and the camera's pose and intrinsics of types.
 target_link_libraries(fusion PUBLIC geometry)
+
+# ---------------------------------------------------------------- tracking
+# Tracking (docs/methods/tracking.md): each frame uploaded, its pyramid built, the live model ray
+# cast from the last tracked pose, the registration, the check, and the fusion when it passes; it
+# launches no kernel of its own.
+add_library(tracking STATIC tracking/tracker.cpp tracking/tracker.hpp)
+# PUBLIC: the header holds fusion's sparse TSDF and surface, registration's parameters and result,
+# the frame of camera and the pose of types.
+target_link_libraries(tracking PUBLIC fusion registration Eigen3::Eigen)
 
 # ---------------------------------------------------------------- refinement
 # Refinement (docs/methods/refinement.md): today the pose graph of keyframes and its solve, on the

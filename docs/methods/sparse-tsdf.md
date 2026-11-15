@@ -148,8 +148,9 @@ What the rule gives, in mm [S: computed]:
 | 4 mm (large, final) | 16 | | 16 | 30 | 120 | 270 | 0.73 m |
 | 8 mm (large, live) | 32 | | 32 | 32 | 120 | 270 | 1.03 m |
 
-(Blank: outside the object class's depth range, 0.30 m to 1.0 m and 0.4 m to 3.0 m
-[?: initial, `src/scan/object_class.cpp`].) The cost
+(Blank: outside the object classes' depth ranges of 2026-11-14, 0.30 m to 1.0 m and 0.4 m to
+3.0 m; since 2026-11-15, evening, the ranges are 0.25 m to 0.6 m and 0.25 m to 3.0 m
+[?: initial, `src/scan/object_class.cpp`], and μ at 0.25 m is μ_min at every voxel size.) The cost
 of a wide band: two surfaces closer than μ along a camera's ray interfere, the nearer one's
 negative distances reaching the farther one, and an object thinner than μ is seen through from
 both sides. At 3 m that is 270 mm with the datasheet's bound, which is why the bound is to be
@@ -371,7 +372,10 @@ and S doubles.
 | large, live | 8 mm | 3.0 m | 92152 | 61437 to 64889 |
 | large, final | 4 mm | 3.0 m | 604739 | 444257 to 452085 |
 
-(The starting values of the truncation's rule; N [S: computed], rounded up; the last column a
+(z_max the object classes' far depths of 2026-11-14; the tabletop object's is 0.6 m since
+2026-11-15, evening, where N is 21381 for the live model and 103746 for the full one [S: computed,
+`tests/test_sparse_tsdf_allocation.cpp`'s bound]. The starting values of the
+truncation's rule; N [S: computed], rounded up; the last column a
 count of the distinct blocks met by the bands of the 1024000 pixels' rays, each sampled every
 eighth of a block, at three poses: the identity, a turn of 30° about x and one of 54.7° about
 (1, -1, 0) [S: computed, a CPU count].) At 2.0 GB the room is 1617532 blocks, so every model is
@@ -725,17 +729,17 @@ largest:
 | large, live | 8 mm | 3.0 m | 181794 | 0.51 / 4.41 / 13.0 | 4.2 / 24.3 / 84.6 | 16.1 / 91.8 / 183 |
 | large, final | 4 mm | 2.0 m | 772148 | 0.41 / 4.97 / 14.9 | 6.6 / 44.7 / 176 | 7.4 / 98.7 / 199 |
 
-(The far depths of the full models are nearer than their object classes', so that the test's
-pool of 65536 blocks holds one frame's bound.) The normals at 1 mm voxels show the depth's steps
-of 1 mm. The largest angles, flipped up to 176°, lie where the band reaches past the sphere's
-rim. The colors follow the textures' waves of 45 mm to 100 mm, up to 14 levels a millimetre
-[S: computed, 2 pi 100 / 45 mm], at each voxel's centre's projection, so they blur at 8 mm. Of the
-surface the frames saw, sampled at every fourth pixel, all but 0.018 % or less lie within 2 voxels
-of a point, the 99th percentile within 0.68 to 0.83 voxels; the rest lie at the plane's border, at
-the far depth and where the sphere meets the plane, where the two bands interfere ("The
-truncation distance"). Fused from 12 frames with Gaussian depth noise of sigma = 0.01 z² at 2 mm
-voxels, the surface spreads 1.01 mm about the plane, one frame's points 2.19 mm, 2.16 times less
-(root mean square).
+(The far depths of the full models are nearer than those of the ranges the test was measured at,
+1.0 m and 3.0 m, so that the test's pool of 65536 blocks holds one frame's bound.) The normals at
+1 mm voxels show the depth's steps of 1 mm. The largest angles, flipped up to 176°, lie where the
+band reaches past the sphere's rim. The colors follow the textures' waves of 45 mm to 100 mm, up to
+14 levels a millimetre [S: computed, 2 pi 100 / 45 mm], at each voxel's centre's projection, so they
+blur at 8 mm. Of the surface the frames saw, sampled at every fourth pixel, all but 0.018 % or less
+lie within 2 voxels of a point, the 99th percentile within 0.68 to 0.83 voxels; the rest lie at the
+plane's border, at the far depth and where the sphere meets the plane, where the two bands interfere
+("The truncation distance"). Fused from 12 frames with Gaussian depth noise of sigma = 0.01 z² at
+2 mm voxels, the surface spreads 1.01 mm about the plane, one frame's points 2.19 mm, 2.16 times
+less (root mean square).
 
 ## What the prototype did, and what is not carried
 

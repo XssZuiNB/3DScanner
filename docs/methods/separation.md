@@ -134,7 +134,7 @@ the cameras walk around the object, so the object lies nearer to m than the came
 stands farther than the median camera is background [?: a choice]. The median, not the largest
 distance, so that a few views from afar do not widen it. D bounds W, so that every coordinate below
 is bounded; D is refused beyond 10^5 v, which keeps the footprint's cells within ±4·10^4 of m's foot
-[S: computed, 2 D / c; the object classes' D / v are 1000 and 750].
+[S: computed, 2 D / c; the object classes' D / v are 600 and 750].
 
 ## The support plane
 

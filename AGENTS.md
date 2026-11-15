@@ -19,13 +19,13 @@ written for Intel RealSense (its history ends at 5e568d9).
 What the rewrite builds: an operator scans a tabletop object or a large object with the
 hand-held camera and works the scan from a web page the Jetson serves (the terms: GLOSSARY.md;
 the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the libraries below and four
-programs, each with its offline tests; tracking, the scan interface, the web page and the
-service are not built yet. The tree began as CUDA_3D cleaned up (dead code, RealSense and PCL
-removed), made to build here and given the Orbbec camera: the rewrite's prototype, whose
-methods carry over. Its library was the test oracle of the organized points, the normals, the
-pyramid's intensity and the registration until each agreed with it, and is deleted; each method
-document keeps the agreement as measured (docs/methods/; CODING_STANDARDS.md, "The rewrite's
-code"), and its code stands in git at 74dda68.
+programs, each with its offline tests; the scan interface, the web page and the service are not
+built yet. The tree began as CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to
+build here and given the Orbbec camera: the rewrite's prototype, whose methods carry over. Its
+library was the test oracle of the organized points, the normals, the pyramid's intensity and the
+registration until each agreed with it, and is deleted; each method document keeps the agreement
+as measured (docs/methods/; CODING_STANDARDS.md, "The rewrite's code"), and its code stands in git
+at 74dda68.
 
 The tree today: `src/` holds one library per directory, and `src/camera/` two, so that only the
 Orbbec camera links OrbbecSDK. Each library links only libraries above it in this table
@@ -40,6 +40,7 @@ Orbbec camera links OrbbecSDK. Each library links only libraries above it in thi
 | `geometry` | a frame's organized points, their normals, the frame's pyramid with the intensity | `gpu` |
 | `registration` | the registration of a frame against a surface by colored ICP, coarse to fine over the pyramid; the SE(3) exponential | `geometry` |
 | `fusion` | the sparse TSDF: its hash of blocks, its pool, the allocation of the blocks near a frame's surface, the integration of a frame, the ray cast of the model's surface at each level of the pyramid, the extraction of its colored points with normals | `geometry` |
+| `tracking` | the per-frame path's steps 1 to 6 for each frame: the upload, the pyramid, the ray cast from the last tracked pose, the registration, the check, and the fusion when it passes; no kernel of its own | `fusion`, `registration` |
 | `refinement` | the pose graph of keyframes and its solve, on the host | `types`, `registration` for the SE(3) exponential |
 | `separation` | the proposal of the support plane and the box from a full model and its trajectory, the least-squares plane, on the host | `types` only, so that the scan can call it |
 | `scan` | the files a scan keeps, the parameters of each object class | `types`, `camera` for the POSIX file calls |
@@ -242,7 +243,8 @@ checkers; these are the rules no checker holds.
    | the frame's pyramid: the number of levels, the intensity of a color, the coarser levels, their sizes and their intrinsics; the ray cast takes the number of levels, the intensity of a color (`frame_pyramid::intensity_of()`), a level's size (`level_size()`) and its intrinsics (`intrinsics_at_level()`) from there too; the rule of one surface the stages share | `src/geometry/frame_pyramid.*`; `src/geometry/one_surface.cuh` |
    | the sparse TSDF (docs/methods/sparse-tsdf.md): its voxel, its parameters (the voxel size, the truncation's rule, the far depth) and their check against one frame's bound, its hash of blocks, its pool and the division of the memory budget, the allocation of the blocks near a frame's surface, the integration of a frame, the ray cast with the model's surface it writes at each level, the extraction of the surface's points with its buffer and result; the hash's insertion, lookup and the block a slot holds as device code, which every fusion kernel calls | `src/fusion/sparse_tsdf.*`; `src/fusion/block_hash.cuh` |
    | the 3x3 eigensolver, `float3` arithmetic and the conversion of Eigen's vector into a `float3` | `src/geometry/symmetric_eigen_3x3.cuh`, `src/geometry/float3_ops.cuh`, `src/geometry/float3_eigen.cuh` |
-   | the registration of a frame against a surface (docs/methods/registration.md): the surface's view at each level, the parameters, the result, the surface's intensity gradient, the association and the system of both terms on the GPU, the levels coarse to fine | `src/registration/registration.*` |
+   | the registration of a frame against a surface (docs/methods/registration.md): the surface's view at each level, a frame's pyramid as a surface, the parameters and their check, the result, the surface's intensity gradient, the association and the system of both terms on the GPU, the levels coarse to fine | `src/registration/registration.*` |
+   | tracking (docs/methods/tracking.md): its parameters and thresholds, the check of a registration's result, the step of a transform, the ray cast's surface as the registration takes it, the tracker with its buffers, the live model and the last tracked pose, the tracking result | `src/tracking/tracker.*` |
    | one iteration's normal equations solved on the host: the sums' positions, the centring, the degeneracy test and the damped step, the constants that judge a system | `src/registration/normal_equations.*` |
    | the SE(3) exponential, the registration's and the pose graph's pose update; the check that a transform is rigid; the one copy of each | `src/registration/se3.*` |
    | refinement's pose graph (docs/methods/refinement.md): its nodes and edges, the robust weight, the damped Gauss-Newton on SE(3) on the host in double, the result, the constants that end a solve | `src/refinement/pose_graph.*` |
@@ -251,13 +253,13 @@ checkers; these are the rules no checker holds.
    | the acceptance tool's box fit: the box's axes from the normals, its faces, their planes and spreads, its edges, its refusals and the lines the hardware acceptance reads | `apps/box_measure.*` |
    | `depth_noise`'s measurement of c (docs/methods/depth-noise.md): the sequence read twice, each pixel's sums, the pixels kept, the depth bins, the rounding's share, the drift between the halves, the spatial error from the plane, the fit of c, its refusals and the lines the measurement on the camera reads | `apps/depth_noise_measure.*` |
    | `orbbec_viewer`'s loop on a frame source: the first frame, its GPU path (a stream, the organized points, the snapshot's normals), the report line, the window, the snapshots as a model's PLY, the sequence it writes | `apps/viewer_loop.*` |
-   | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, the depth noise from a fixed seed, a point's distance from a known surface, the trajectories it renders along, the Fibonacci lattice the tests sample a sphere on | `tests/synthetic_source.*` |
+   | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, the depth noise from a fixed seed, a run of frames without depth, a point's distance from a known surface, the trajectories it renders along, the Fibonacci lattice the tests sample a sphere on | `tests/synthetic_source.*` |
    | the tests' checks, counted into the program's summary line and exit status; their files (a temporary directory, a file's bytes, a limit that stands for a full disk); their GPU helpers (a stream, the pool's grant, CUDA's last error, a step's refusal, an image's download); their reader of a model's PLY, apart from the scanner's; their run of a program through the shell, for a program's exits | `tests/check.hpp`; `tests/test_files.hpp`; `tests/gpu_test_helpers.hpp`; `tests/ply_reader.hpp`; `tests/program_run.hpp` |
    | the tests' copy of a frame, to check a source left it as it was | `tests/frame_copy.hpp` |
-   | the sparse TSDF tests' lookups of blocks, their readings of the usage, the method's starting truncation, a pose as the sparse TSDF takes it and a frame's buffers on the GPU | `tests/sparse_tsdf_helpers.hpp` |
+   | the sparse TSDF tests' lookups of blocks, their readings of the usage, the method's starting truncation, a pose as the sparse TSDF takes it, a frame's buffers on the GPU and the extraction of the model's points with their download | `tests/sparse_tsdf_helpers.hpp` |
    | the sparse TSDF tests that fuse frames: a case's budget, an object class's model, the fusion of a frame, walls facing the camera, the scenes of a sphere on a plane with their walks, a point's nearest known surface | `tests/sparse_tsdf_scenes.hpp` |
-   | the tests that register frames: the normals' parameters, the object classes' ranges and starting values of the registration, the tabletop object's and the large object's scenes, poses and known motions, a pyramid's levels as a surface, a result's printing and its check against the known motion | `tests/registration_cases.hpp` |
-   | the stages' test frames: the camera's stream sizes and intrinsics, the tabletop sphere, a scene's frames rendered, with depth noise or without, frames built from functions of the pixel | `tests/stage_frames.hpp` |
+   | the tests that register frames: the normals' parameters, a measured range for the organized points, the registration's parameters of an object class's set and the object classes' starting values, the tabletop object's and the large object's scenes, poses and known motions, a result's printing and its check against the known motion | `tests/registration_cases.hpp` |
+   | the stages' test frames: the camera's stream sizes and intrinsics, the depth ranges the stages' tests were measured at, the tabletop sphere, a scene's frames rendered, with depth noise or without, frames built from functions of the pixel | `tests/stage_frames.hpp` |
    | the stages' tests' checks of an organized picture: a pixel's index, a float3 in double, the zero mark, angles, medians, the rule of one surface in double with its margin | `tests/stage_checks.hpp` |
    | the tests' rigid transforms in double: one built from an axis, an angle and a shift, how far one lies from a known one, its tolerance and check | `tests/transform_checks.hpp` |
 
@@ -284,7 +286,7 @@ checkers; these are the rules no checker holds.
 | `CODING_STANDARDS.md` | the style guides, what they leave to this tree, the rules for the rewrite's code, the checkers |
 | `GLOSSARY.md`, `docs/adr/` | the scanner's terms; the decisions in force and why |
 | `docs/SCAN_FILES.md` | the formats of the files a scan keeps: the models (PLY), the trajectory, the parameters |
-| `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md`, `normals.md`, `frame-pyramid.md`, `registration.md`, `sparse-tsdf.md`, `refinement.md` and `separation.md`; besides them the method of a tool's measurement, the depth noise's, `depth-noise.md` |
+| `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md`, `normals.md`, `frame-pyramid.md`, `registration.md`, `sparse-tsdf.md`, `tracking.md`, `refinement.md` and `separation.md`; besides them the method of a tool's measurement, the depth noise's, `depth-noise.md` |
 | `docs/SEQUENCE_FILE.md` | the format of a sequence: a scan's frames with their poses, which the viewer writes and the scanner and the replay tool are planned to write or read |
 | `docs/agents/` | how the workflow skills in `.claude/skills/` find the tracker and the domain docs |
 

@@ -59,6 +59,17 @@ struct organized_surface
 /// pyramid (docs/methods/registration.md, "Coarse to fine").
 using surface_levels = std::array<organized_surface, frame_pyramid::level_count>;
 
+/// Gives a frame's pyramid as a surface: each level's points, marks, normals, intensity and
+/// intrinsics, the levels of another frame (docs/methods/registration.md, "Input"); tracking
+/// registers a frame against its own pyramid while the model is empty (docs/methods/tracking.md,
+/// "The models' frame and the first frame"), and the tests register one frame against another's.
+/// The one copy of this view; the ray cast's (fusion/sparse_tsdf.hpp, model_surface) is
+/// tracking's, which links both (tracking/tracker.hpp).
+/// @param pyramid [in] the pyramid; it holds the images, which must outlive the view.
+/// @return its levels 0, 1 and 2, each viewing the pyramid's images.
+/// @note Host only; allocates nothing and waits for nothing.
+surface_levels surface_of(const frame_pyramid &pyramid) noexcept;
+
 /// The registration's parameters at one level of the pyramid (docs/methods/registration.md,
 /// "Parameters").
 struct registration_level_parameters
@@ -86,7 +97,9 @@ struct registration_parameters
     float point_to_plane_weight;
 };
 
-/// How a registration ended (docs/methods/registration.md, "Output"); only converged gives a pose.
+/// How a registration ended (docs/methods/registration.md, "Output"). Tracking's check takes the
+/// transform of the first two only, converged and iterations used up, each leaving a last system
+/// that is not degenerate (docs/methods/tracking.md, "The check").
 enum class registration_end
 {
     /// A step below ε_ω and ε_υ on a last system whose smallest eigenvalue is at least τ: the
@@ -111,9 +124,10 @@ struct registration_result
     std::string message; ///< why it was refused or failed, in plain English; empty otherwise
     /// The transform from the frame's camera frame F into the surface's frame S, in m: the last
     /// estimate, the initial transform when refused or failed before a step. A pose only when the
-    /// registration converged. Each coarser level hands its last transform to the next finer one
-    /// whatever its end [?: a choice]: after a coarse level that ended degenerate, it holds that
-    /// level's damped steps, each shortened along the motions the level held weakly
+    /// registration converged or used its iterations up and tracking's check passed it
+    /// (docs/methods/tracking.md). Each coarser level hands its last transform to the next finer
+    /// one whatever its end [?: a choice]: after a coarse level that ended degenerate, it holds
+    /// that level's damped steps, each shortened along the motions the level held weakly
     /// (docs/methods/registration.md, "Coarse to fine").
     Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
     /// The share of the frame's candidates at level 0, its pixels with a valid point and a normal,
@@ -128,8 +142,14 @@ struct registration_result
     /// adds (docs/methods/registration.md, "The system, centred and scaled"); zeros when no system
     /// was solved for them.
     std::array<double, 6> eigenvalues{};
+    /// The turn of level 0's last step, |ω| in rad, the value the end compared with ε_ω; 0 when
+    /// that system took no step (too few correspondences, no spread) or no system was built.
+    double last_step_turn_rad = 0.0;
+    /// The move of the centroid by level 0's last step, |υ_c| in m, the value the end compared
+    /// with ε_υ; 0 when that system took no step or no system was built.
+    double last_step_shift_m = 0.0;
 
-    /// Says whether the registration converged, the one end whose transform is a pose.
+    /// Says whether the registration converged: its last step below ε on a system not degenerate.
     /// @return end == converged.
     bool converged() const noexcept
     {
@@ -181,6 +201,16 @@ public:
     ///       (std::terminate): the function is noexcept. Two threads may not request from one pool
     ///       at once (gpu_pool::request()).
     static request_result<registration> request(gpu_pool &pool, const frame_size &size) noexcept;
+
+    /// Checks the parameters as align() does before it queues anything, so that a caller that
+    /// requests its buffers once, tracking (tracking/tracker.hpp), refuses them before it takes
+    /// memory, by the same rule and message.
+    /// @param parameters [in] the parameters.
+    /// @return empty when each lies in its range (registration_parameters); else the reason, the
+    ///         message align() refuses them with.
+    /// @note Allocates only for the reason; throws std::bad_alloc when that fails. Waits for
+    ///       nothing.
+    static std::string parameters_refusal(const registration_parameters &parameters);
 
     /// A registration is not copied: a copy allocates.
     registration(const registration &) = delete;

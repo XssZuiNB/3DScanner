@@ -90,6 +90,12 @@ struct system_solution
     /// The step ΔT = Tr(c') exp((ω, υ_c)^) Tr(-c'), applied on the left of the transform, in the
     /// surface's frame; the identity unless the verdict is step or last_step.
     Eigen::Isometry3d step = Eigen::Isometry3d::Identity();
+    /// The step's turn |ω|, in rad, the value compared with ε_ω; 0 unless the verdict is step or
+    /// last_step.
+    double step_turn_rad = 0.0;
+    /// The step's move of the centroid |υ_c|, in m, the value compared with ε_υ; 0 unless the
+    /// verdict is step or last_step.
+    double step_shift_m = 0.0;
 };
 
 /// Solves one iteration's normal equations (docs/methods/registration.md): the fitness and the

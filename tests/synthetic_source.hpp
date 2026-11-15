@@ -2,10 +2,11 @@
 /// @file synthetic_source.hpp
 /// The tests' synthetic source: a frame source (camera/frame_source.hpp) that renders a known scene
 /// by the one pinhole convention (types/camera_param.hpp) and tells a test what it rendered. The
-/// scene is a textured support plane or none, a textured box of known size standing on it or none,
-/// a textured sphere of known centre and radius or none, and a known trajectory: frame i of an
-/// opening is seen from the trajectory's pose i. The depth may carry Gaussian noise that grows with
-/// the square of the depth, from a fixed seed. The source tells a test the trajectory and the known
+/// scene is a support plane, textured or grey, or none, a textured box of known size standing on
+/// it or none, a textured sphere of known centre and radius or none, and a known trajectory: frame
+/// i of an opening is seen from the trajectory's pose i. The depth may carry Gaussian noise that
+/// grows with the square of the depth, from a fixed seed, and a run of frames may come without
+/// depth. The source tells a test the trajectory and the known
 /// surfaces, textured rectangles in the world frame, and the sphere, which are exactly what it
 /// renders, the pinhole ray of any point of the picture, where any ray first meets them, the hit it
 /// renders each pixel from, and how far a point lies from a known surface. It also builds the
@@ -34,13 +35,34 @@
 
 namespace gca_test
 {
+/// The textures of the scene's surfaces.
+enum class synthetic_texture
+{
+    /// The support plane's: three sine waves in the plane, one per channel, along x, along y and
+    /// diagonally, each with its own wavelength, so that the color changes along every direction
+    /// of the plane and has a gradient everywhere [?: a choice].
+    plane,
+    /// The box's and the sphere's, painted through them like a solid: three sine waves in space,
+    /// one per channel, along directions that each rise or fall by 35 to 50 degrees, with
+    /// wavelengths and phases other than the plane's [?: a choice; the tables in
+    /// synthetic_source.cpp]. On a face of the box of any turn every channel changes along the
+    /// face, by at least 0.57 of its wave's slope [S: computed, sin 35 degrees on a side, cos 50
+    /// degrees on the top].
+    box,
+    /// None: one grey, 128 in each channel, without a gradient, a surface whose color holds no
+    /// motion [?: a choice, the grey of stage_frames.hpp's built frames].
+    grey,
+};
+
 /// The support plane: the world's plane z = 0, the rectangle |x| <= half_size_x_m,
-/// |y| <= half_size_y_m around the world's origin, textured by synthetic_texture::plane and seen
-/// from either side.
+/// |y| <= half_size_y_m around the world's origin, seen from either side.
 struct synthetic_plane
 {
     double half_size_x_m; ///< half the rectangle's extent along the world's x axis, in m, > 0
     double half_size_y_m; ///< half the rectangle's extent along the world's y axis, in m, > 0
+    /// Its texture: synthetic_texture::plane, or synthetic_texture::grey for a plane without
+    /// texture.
+    synthetic_texture texture = synthetic_texture::plane;
 };
 
 /// A box standing on the support plane, textured by synthetic_texture::box. Its own axes are the
@@ -79,27 +101,11 @@ struct synthetic_scene
     std::vector<Eigen::Isometry3d> trajectory;
 };
 
-/// The textures of the scene's surfaces.
-enum class synthetic_texture
-{
-    /// The support plane's: three sine waves in the plane, one per channel, along x, along y and
-    /// diagonally, each with its own wavelength, so that the color changes along every direction
-    /// of the plane and has a gradient everywhere [?: a choice].
-    plane,
-    /// The box's and the sphere's, painted through them like a solid: three sine waves in space,
-    /// one per channel, along directions that each rise or fall by 35 to 50 degrees, with
-    /// wavelengths and phases other than the plane's [?: a choice; the tables in
-    /// synthetic_source.cpp]. On a face of the box of any turn every channel changes along the
-    /// face, by at least 0.57 of its wave's slope [S: computed, sin 35 degrees on a side, cos 50
-    /// degrees on the top].
-    box,
-};
-
 /// Returns a texture's color at a point of a surface it covers.
 /// @param texture [in] the texture.
 /// @param point_m [in] the point, in the world frame, in m.
 /// @return red, green and blue, unrounded, each within 28 to 228 of the 8-bit range [S: the
-///         waves' mean 128 and amplitude 100, synthetic_source.cpp].
+///         waves' mean 128 and amplitude 100, synthetic_source.cpp]; 128 each for the grey.
 std::array<double, 3> texture_color(synthetic_texture texture, const Eigen::Vector3d &point_m);
 
 /// A known surface of the scene: a textured rectangle, seen from either side.
@@ -229,6 +235,10 @@ inline constexpr synthetic_plane tabletop_plane = {0.45, 0.40};
 /// @return the walk, for walk_around().
 synthetic_walk tabletop_walk();
 
+/// The time between two frames of the synthetic source, in µs: 30 fps [?: a choice, the camera's
+/// rate].
+inline constexpr std::uint64_t synthetic_frame_period_us = 33333;
+
 /// What the synthetic source reports once it has delivered its frames.
 enum class synthetic_ending
 {
@@ -252,6 +262,15 @@ struct synthetic_depth_noise
     std::uint32_t seed;
 };
 
+/// A run of frames without depth, as a camera whose depth stream gives none for a while: frames
+/// first_frame to first_frame + frame_count - 1 of an opening have depth 0 at every pixel, their
+/// color rendered as without the run.
+struct synthetic_depth_gap
+{
+    std::uint64_t first_frame; ///< the index of the run's first frame
+    std::uint64_t frame_count; ///< the frames of the run, >= 0
+};
+
 /// How a test builds the synthetic source.
 struct synthetic_source_options
 {
@@ -260,6 +279,8 @@ struct synthetic_source_options
     synthetic_scene scene; ///< what the frames show, one frame for each pose of its trajectory
     /// The depth noise, or none: then each pixel's depth is the hit's, rounded.
     std::optional<synthetic_depth_noise> depth_noise = std::nullopt;
+    /// A run of frames without depth, or none.
+    std::optional<synthetic_depth_gap> depth_gap = std::nullopt;
     synthetic_ending ending = synthetic_ending::end; ///< what next() reports after the frames
     std::string ending_message;                      ///< the message next() reports with it
     std::string open_refusal; ///< when not empty, open() refuses with this reason
@@ -279,13 +300,14 @@ public:
     ///         when size is not the description's, and when the source is open already.
     gca::open_result open(const gca::frame_size &size) noexcept override;
 
-    /// Renders the next frame: frame i of an opening has index i and timestamp i * 33333 µs
-    /// (30 fps [?: a choice, the camera's rate]) and shows the known surfaces and the sphere from
-    /// the trajectory's pose i. Each pixel shows the nearest surface its ray meets in front of the
-    /// camera: depth is the hit's z in the camera frame, with the options' depth noise added when
+    /// Renders the next frame: frame i of an opening has index i and timestamp i times
+    /// synthetic_frame_period_us and shows the known surfaces and the sphere from the trajectory's
+    /// pose i. Each pixel shows the nearest surface its ray meets in front of the camera: depth
+    /// is the hit's z in the camera frame, with the options' depth noise added when
     /// they give one, rounded to the nearest depth value; color is the surface's texture at the
     /// hit, rounded. A pixel whose ray meets no surface in front of the camera, or whose depth
     /// rounds below 1 or above the largest 16-bit value, 65535 [S], has depth 0 and color black.
+    /// A frame of the options' depth gap then has depth 0 at every pixel, its color kept.
     /// Frames come as fast as they are asked for.
     /// @param out [out] the frame, filled when the status is frame, else left as it was.
     /// @return frame for the first calls after an opening, one for each pose of the trajectory,

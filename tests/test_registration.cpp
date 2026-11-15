@@ -27,7 +27,8 @@
 ///   and 2 m away, at both stream sizes, with three eigenvalues below τ, and the shared tabletop
 ///   box on its plane; the same with λ = 1 through the pyramid. Few correspondences, and none,
 ///   there and by the full method. Patches of frame B the surface does not hold, each held off by
-///   its rule. The ends: the iterations used up, and the last system deciding.
+///   its rule. The ends: the iterations used up, and the last system deciding. Every converged
+///   result's last step lay below ε, the iterations used up's not.
 /// - Refusals as values, with the initial transform: an empty registration, an empty pyramid, a
 ///   frame larger than the registration's size, a level of the surface with empty images, images
 ///   of two sizes, a size larger than the registration's or intrinsics that cannot be used, an
@@ -90,7 +91,6 @@ using gca_test::make_transform;
 using gca_test::normals_parameters;
 using gca_test::on_level_0;
 using gca_test::print_result;
-using gca_test::surface_of;
 using gca_test::tabletop_delta;
 using gca_test::tabletop_object_pose;
 using gca_test::tabletop_object_scene;
@@ -303,8 +303,8 @@ gca::registration_result register_frames(stage &s, const gca::frame &a, const gc
     if (!build_pyramid(s, a, range, buffers.surface, buffers.frame) ||
         !build_pyramid(s, b, range, buffers.moved, buffers.frame))
         return {};
-    return s.registration.align(buffers.moved, surface_of(buffers.surface), initial, parameters,
-                                s.stream);
+    return s.registration.align(buffers.moved, gca::surface_of(buffers.surface), initial,
+                                parameters, s.stream);
 }
 
 /// Registers frame B of a pair against frame A from the identity.
@@ -939,6 +939,9 @@ void check_ends(stage &s)
     print_result("2 iterations of 4", short_of);
     check(short_of.end == gca::registration_end::iterations_used_up && short_of.iterations == 2,
           "2 iterations of 4: the iterations used up, not converged");
+    check(!(short_of.last_step_turn_rad < gca::registration_converged_rotation_rad &&
+            short_of.last_step_shift_m < gca::registration_converged_translation_m),
+          "2 iterations of 4: the last step not below epsilon");
 
     Eigen::Isometry3d up = Eigen::Isometry3d::Identity();
     up.translation() = far_pose->linear().transpose() * Eigen::Vector3d(0.0, 0.0, start_up_m);
@@ -1113,7 +1116,7 @@ void check_refusals(stage &s)
         !build_pyramid(s, large.frames[0], tabletop_range, s.large_surface, s.large_frame))
         return;
     const gca::frame_pyramid &frame = s.small_surface;
-    const gca::surface_levels surface = surface_of(s.small_surface);
+    const gca::surface_levels surface = gca::surface_of(s.small_surface);
     const Eigen::Isometry3d identity = Eigen::Isometry3d::Identity();
     const gca::registration_parameters usable = tabletop_parameters;
     gca::registration &r = s.registration;
@@ -1158,7 +1161,7 @@ void check_refusals(stage &s)
                                         level_1.intensity, level_2.intrinsics}},
                 identity, usable, stream),
         identity, "level 2 of the surface: the surface's points, marks, normals and intensity");
-    const gca::surface_levels large_surface = surface_of(s.large_surface);
+    const gca::surface_levels large_surface = gca::surface_of(s.large_surface);
     check_align_refused(
         "a surface's level 1 of 640x400 for a registration of 640x400",
         s.small_only.align(frame, {level_0, large_surface[1], level_2}, identity, usable, stream),

@@ -429,6 +429,38 @@ runs took 13.718, 3.988, 22.813 and 15.712 ms, the last paced case at a GPU cloc
 each warp's 35 sums converted to double in its own lane, 1.49 and 4.34 ms back to back
 [M 2026-11-14, as the table, but 1 s per case after 0.2 s, at 19:50].
 
+**The whole per-frame path** (docs/methods/tracking.md, "The path of a frame"): the host's call of
+`tracker::track()` to the end of the stream's work, the frame's fusion included, and the call
+alone, which returns after the registration's last wait with the fusion queued; 20 s per case
+after 5 s, the first 60 poses of the walk around the tabletop box of `tests/test_tracking.cpp`
+(1.5° apart) played forth and back, every frame tracking; the tabletop object class's values (the
+range 0.25 m to 0.6 m, 2 mm voxels, e_track 5 mm); a sparse TSDF of 273 MB, 65536 blocks and 262144
+slots, holding 5659 to 5860 blocks, since frames of 1280x800 and the object classes' 2.0 GB would
+not fit the memory free beside the other jobs that evening, about 3.4 GB [?: the orchestrator's
+reading], and the cast's scan of the slots adds about 0.22 ms at 2.0 GB ("The ray cast")
+[M 2026-11-15, 21:20 to 21:22, MAXN_SUPER by `nvpmodel -q`, under the build lock, a scratch
+program on the tree of `track-frames-against-the-model`, whose ray cast is a68c352's, before
+`ray-cast-normal-reads-once`; `/sys/class/devfreq/17000000.gpu/cur_freq` sampled every 16 frames;
+the kernel log empty after it].
+
+| size | pace | path median / p95 / max | call median | GPU clock |
+|---|---|---|---|---|
+| 640x400 | 30 fps | 20.897 / 25.355 / 31.104 ms | 19.828 ms | 510 to 918 MHz, median 612 MHz |
+| 640x400 | back to back | 12.497 / 13.838 / 20.141 ms | 11.764 ms | 1020 MHz |
+| 1280x800 | 30 fps (1) | 34.875 / 37.645 / 55.159 ms | 33.771 ms | 1020 MHz |
+| 1280x800 | back to back | 34.933 / 37.541 / 50.919 ms | 33.820 ms | 1020 MHz |
+
+(1) A frame takes longer than 33.3 ms, so the pace never waits: the paced run is a run back to
+back.
+
+At 640x400 the path fits a frame's 33.3 ms, with 12 ms to spare paced at the governor's clock and
+21 ms back to back; at 1280x800 it takes 1.6 ms more than a frame at the median at the full clock
+[S: computed, the medians]. The stages measured apart above add up to 11.2 ms and 31.8 ms back to
+back at 2 mm, 10 % and 9 % below the path's medians [S: computed]: the path's frame and scene are
+other ones, and its host adds the check and the pose. The fusion runs 0.7 to 1.1 ms after the call
+returns [S: computed, the path's median less the call's]. These are a first number for
+`per-stage-times-from-replay`, which settles the stream size on real sequences.
+
 ## Refinement
 
 What refinement takes on the board after a scan (docs/methods/refinement.md), on the host's CPU,

@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: 0BSD
 /// @file stage_frames.hpp
 /// The frames the per-frame path's stages are tested on: the camera's two stream sizes with its
-/// intrinsics and depth unit, two sizes that test a stage's kernel at its limits, the tabletop
-/// scene's sphere, the rendering of a scene's frames by the tests' synthetic source, with depth
-/// noise or without, and frames built from functions of the pixel. Header only; each test program
-/// is one translation unit.
+/// intrinsics and depth unit, two sizes that test a stage's kernel at its limits, the depth ranges
+/// the stages' tests were measured at, the tabletop scene's sphere, the rendering of a scene's
+/// frames by the tests' synthetic source, with depth noise or without, and frames built from
+/// functions of the pixel. Header only; each test program is one translation unit.
 
 #pragma once
 
 #include "camera/frame.hpp"
 #include "camera/frame_source.hpp"
 #include "check.hpp"
+#include "scan/object_class.hpp"
 #include "synthetic_source.hpp"
 #include "types/frame_description.hpp"
 
@@ -50,6 +51,34 @@ inline constexpr gca::frame_description odd_description = {
 /// 65535 a grid holds along y [S: CUDA C++ Programming Guide, "Compute Capabilities"], so that
 /// CUDA refuses a stage kernel's launch.
 inline constexpr gca::frame_size tall_size = {1, 600000};
+
+/// A depth range along the camera's z, in m.
+struct depth_range
+{
+    double near_m; ///< the range's lower limit, in m
+    double far_m;  ///< the range's upper limit, in m, > near_m
+};
+
+/// Gives the depth range the stages' tests of an object class were measured at, and with them the
+/// measurements of docs/methods/ and docs/HARDWARE.md: the object classes' ranges until
+/// 2026-11-15, evening, 0.30 m to 1.0 m for the tabletop object and 0.4 m to 3.0 m for the large
+/// object [S: src/scan/object_class.cpp at 54ddb72]. The object classes' own ranges since are
+/// 0.25 m to 0.6 m and 0.25 m to 3.0 m (src/scan/object_class.cpp); a test whose measured numbers
+/// depend on its range names this one, and tracking's test takes the object class's own.
+/// @param kind [in] the object class.
+/// @return its measured range, in m.
+inline depth_range measured_range_of(gca::object_class kind)
+{
+    switch (kind)
+    {
+    case gca::object_class::tabletop_object:
+        return {0.30, 1.0};
+    case gca::object_class::large_object:
+        return {0.4, 3.0};
+    }
+    // Not reached: the switch names every object class, and -Wswitch says when one is added.
+    return {0.0, 0.0};
+}
 
 /// The tabletop scene's sphere: 8 cm in radius, resting on tabletop_plane off its centre
 /// [?: a choice, a tabletop object's size].

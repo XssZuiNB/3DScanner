@@ -34,6 +34,7 @@
 #include "separation/plane_fit.hpp"
 #include "separation/proposal.hpp"
 #include "stage_checks.hpp"
+#include "stage_frames.hpp"
 #include "synthetic_source.hpp"
 
 #include <algorithm>
@@ -217,12 +218,13 @@ void sample_sphere(built_model &model, const synthetic_sphere &ball, double spac
 /// Builds a scene's full model in the frame of its walk's first camera, and its trajectory there.
 /// @param scene [in] the scene.
 /// @param seed [in] the noise's seed.
-/// @return the model, its parts, the walk and the object class's v and D.
+/// @return the model, its parts, the walk, the object class's v and as D the far depth its
+///         tests were measured at (gca_test::measured_range_of()).
 built_model build(const test_scene &scene, std::uint64_t seed)
 {
     const gca::object_class_parameters kind = gca::parameters_of(scene.kind);
     built_model model;
-    model.parameters = {kind.full_voxel_size_m, kind.max_depth_m};
+    model.parameters = {kind.full_voxel_size_m, gca_test::measured_range_of(scene.kind).far_m};
     model.to_model = scene.walk.front().inverse();
     const double v = kind.full_voxel_size_m;
     std::mt19937_64 generator(seed);

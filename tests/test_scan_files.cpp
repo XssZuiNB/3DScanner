@@ -476,20 +476,72 @@ const std::string parameters_by_hand = R"({
     "parameters": {
         "live_voxel_size_m": 8.0000000000000002e-03,
         "full_voxel_size_m": 4.0000000000000001e-03,
-        "min_depth_m": 4.0000000000000002e-01,
+        "min_depth_m": 2.5000000000000000e-01,
         "max_depth_m": 3.0,
-        "memory_budget_bytes": 2000000000.0
+        "memory_budget_bytes": 2000000000.0,
+        "too_close_depth_m": 4.0000000000000002e-01,
+        "max_distance_level_0_m": 1.0000000000000001e-01,
+        "max_distance_level_1_m": 2.0000000000000001e-01,
+        "max_distance_level_2_m": 3.4999999999999998e-01,
+        "max_iterations_level_0": 20.0,
+        "max_iterations_level_1": 10.0,
+        "max_iterations_level_2": 5.0,
+        "huber_threshold_m": 2.9999999999999999e-02,
+        "point_to_plane_weight": 9.6799999999999997e-01,
+        "min_fitness": 5.9999999999999998e-01,
+        "max_inlier_rmse_m": 2.0000000000000000e-02,
+        "max_turn_rate_deg_s": 90.0,
+        "max_speed_m_s": 1.5000000000000000e+00
     }
 }
 )";
 
-/// The example's text of three values, which the refusal cases replace.
+/// The example's text of six values, which the refusal cases replace.
 const std::string live_text = "8.0000000000000002e-03";
 const std::string full_text = "4.0000000000000001e-03";
-const std::string min_text = "4.0000000000000002e-01";
+const std::string min_text = "2.5000000000000000e-01";
+const std::string too_close_text = "4.0000000000000002e-01";
+const std::string iterations_text = "\"max_iterations_level_0\": 20.0";
+const std::string weight_text = "9.6799999999999997e-01";
+
+/// The set of the document's example, a large object's scan, each value written out here and
+/// every one another, so that two keys swapped show [S: docs/SCAN_FILES.md, "Parameters"].
+const gca::object_class_parameters example_set = {.live_voxel_size_m = 0.008,
+                                                  .full_voxel_size_m = 0.004,
+                                                  .min_depth_m = 0.25,
+                                                  .max_depth_m = 3.0,
+                                                  .memory_budget_bytes = 2000000000u,
+                                                  .too_close_depth_m = 0.4,
+                                                  .max_distance_m = {0.1, 0.2, 0.35},
+                                                  .max_iterations = {20, 10, 5},
+                                                  .huber_threshold_m = 0.03,
+                                                  .point_to_plane_weight = 0.968,
+                                                  .min_fitness = 0.6,
+                                                  .max_inlier_rmse_m = 0.02,
+                                                  .max_turn_rate_deg_s = 90.0,
+                                                  .max_speed_m_s = 1.5};
+
+/// A set of neither object class whose doubles need all 17 digits, with the largest budget JSON
+/// holds exactly and the largest counts the set holds, each value another, so that two keys
+/// swapped show.
+const gca::object_class_parameters odd_set = {.live_voxel_size_m = 1.0 / 3.0,
+                                              .full_voxel_size_m = 0.1,
+                                              .min_depth_m = 0.30000000000000004,
+                                              .max_depth_m = 2.9999999999999996,
+                                              .memory_budget_bytes = 9007199254740992u,
+                                              .too_close_depth_m = 1.0 / 7.0 + 0.3,
+                                              .max_distance_m = {0.1 / 3.0, 0.2 / 3.0, 0.4 / 3.0},
+                                              .max_iterations = {4294967295u, 0, 7},
+                                              .huber_threshold_m = 0.01 / 3.0,
+                                              .point_to_plane_weight = 2.0 / 3.0,
+                                              .min_fitness = 5.0 / 9.0,
+                                              .max_inlier_rmse_m = 0.001 / 7.0,
+                                              .max_turn_rate_deg_s = 100.0 / 7.0,
+                                              .max_speed_m_s = 10.0 / 11.0};
 
 /// The parameters of each object class, and a set of neither whose doubles need all 17 digits
-/// with the largest budget JSON holds exactly, are written and read back equal; commits at the
+/// with the largest budget JSON holds exactly and every value another, are written and read back
+/// equal; commits at the
 /// edges of the strings the file holds too: one that starts with '{' and holds double quotes, a
 /// backslash and every other printable ASCII character but the apostrophe, an empty one and one
 /// of 4095 characters; the document's example is read as the document says, also after white
@@ -502,9 +554,7 @@ void test_parameters_round_trip(const temporary_directory &directory)
          gca::parameters_of(gca::object_class::tabletop_object)},
         {"831f06a", gca::object_class::large_object,
          gca::parameters_of(gca::object_class::large_object)},
-        {"{\"not a map\" [",
-         gca::object_class::tabletop_object,
-         {1.0 / 3.0, 0.1, 0.30000000000000004, 2.9999999999999996, 9007199254740992u}},
+        {"{\"not a map\" [", gca::object_class::tabletop_object, odd_set},
         {" !\"#$%&()*+,-./0123456789:;<=>?@AZ[\\]^_`az{|}~", gca::object_class::large_object,
          gca::parameters_of(gca::object_class::large_object)},
         {"", gca::object_class::large_object, gca::parameters_of(gca::object_class::large_object)},
@@ -530,8 +580,7 @@ void test_parameters_round_trip(const temporary_directory &directory)
     const std::filesystem::path hand_path = directory / "by_hand.json";
     write_bytes(hand_path, parameters_by_hand);
     const gca::read_result<gca::scan_parameters> hand = gca::read_parameters(hand_path);
-    const gca::scan_parameters expected = {
-        "db91e0d", gca::object_class::large_object, {0.008, 0.004, 0.4, 3.0, 2000000000u}};
+    const gca::scan_parameters expected = {"db91e0d", gca::object_class::large_object, example_set};
     check(hand.value && *hand.value == expected,
           ("parameters: the document's example is read as the document says; " + hand.reason)
               .c_str());
@@ -643,7 +692,7 @@ void test_parameters_refusals(const temporary_directory &directory)
          "\"parameters\" is no JSON object"},
         {"a length written as an integer", replaced(valid, "3.0", "3"),
          "\"max_depth_m\" " + not_real},
-        {"a length written as a string", replaced(valid, min_text, "\"0.4\""),
+        {"a length written as a string", replaced(valid, min_text, "\"0.25\""),
          "\"min_depth_m\" " + not_real},
         {"a budget written as an integer", replaced(valid, "2000000000.0", "2000000000"),
          "\"memory_budget_bytes\" " + not_real},
@@ -662,6 +711,36 @@ void test_parameters_refusals(const temporary_directory &directory)
          "\"memory_budget_bytes\" is 0, not a whole number from 1 to 2^53"},
         {"a budget above 2^53", replaced(valid, "2000000000.0", "9007199254740994.0"),
          "\"memory_budget_bytes\" is 9007199254740994, not a whole number from 1 to 2^53"},
+        {"a file written before the set's keys of 2026-11-15",
+         valid.substr(0, valid.find(",\n        \"too_close_depth_m\"")) + "\n    }\n}\n",
+         "no key \"too_close_depth_m\" " + nested},
+        {"no min_fitness",
+         replaced(valid, "        \"min_fitness\": 5.9999999999999998e-01,\n", ""),
+         "no key \"min_fitness\" " + nested},
+        {"a count written as an integer",
+         replaced(valid, iterations_text, "\"max_iterations_level_0\": 20"),
+         "\"max_iterations_level_0\" " + not_real},
+        {"a count with a fraction",
+         replaced(valid, iterations_text, "\"max_iterations_level_0\": 20.5"),
+         "\"max_iterations_level_0\" is 20.5, not a whole number from 0 to 4294967295"},
+        {"a count below 0", replaced(valid, iterations_text, "\"max_iterations_level_0\": -1.0"),
+         "\"max_iterations_level_0\" is -1, not a whole number from 0 to 4294967295"},
+        {"a count above 2^32 - 1",
+         replaced(valid, iterations_text, "\"max_iterations_level_0\": 4294967296.0"),
+         "\"max_iterations_level_0\" is 4294967296, not a whole number from 0 to 4294967295"},
+        {"a share above 1", replaced(valid, weight_text, "1.5"),
+         "\"point_to_plane_weight\" is 1.5, not a number in (0, 1]"},
+        {"a share of 0",
+         replaced(valid, "\"min_fitness\": 5.9999999999999998e-01", "\"min_fitness\": 0.0"),
+         "\"min_fitness\" is 0, not a number in (0, 1]"},
+        {"a threshold of 0",
+         replaced(valid, "\"max_speed_m_s\": 1.5000000000000000e+00", "\"max_speed_m_s\": 0.0"),
+         "\"max_speed_m_s\" is 0, not a finite number > 0"},
+        {"too_close_depth_m equal to min_depth_m", replaced(valid, too_close_text, min_text),
+         "\"too_close_depth_m\" 0.25 does not lie between \"min_depth_m\" 0.25 and \"max_depth_m\" "
+         "3"},
+        {"too_close_depth_m equal to max_depth_m", replaced(valid, too_close_text, "3.0"),
+         "\"too_close_depth_m\" 3 does not lie between \"min_depth_m\" 0.25 and \"max_depth_m\" 3"},
         {"a file cut short", valid.substr(0, valid.find("\"parameters\"")),
          "no JSON that OpenCV reads"},
         {"an empty file", "", "no JSON object: the first byte after any white space is not '{'"},
@@ -690,30 +769,43 @@ void test_parameters_refusals(const temporary_directory &directory)
     const gca::object_class_parameters good =
         gca::parameters_of(gca::object_class::tabletop_object);
     const double nan = std::numeric_limits<double>::quiet_NaN();
+    // The tabletop object's set with one value changed.
+    const auto with = [&good](auto change) {
+        gca::object_class_parameters set = good;
+        change(set);
+        return set;
+    };
     const struct
     {
         const char *what;
         gca::object_class_parameters set;
         const char *reason;
     } refused_sets[] = {
-        {"a voxel size not finite",
-         {nan, good.full_voxel_size_m, good.min_depth_m, good.max_depth_m,
-          good.memory_budget_bytes},
+        {"a voxel size not finite", with([nan](auto &set) { set.live_voxel_size_m = nan; }),
          "\"live_voxel_size_m\" is "},
-        {"a depth of 0",
-         {good.live_voxel_size_m, good.full_voxel_size_m, 0.0, good.max_depth_m,
-          good.memory_budget_bytes},
+        {"a depth of 0", with([](auto &set) { set.min_depth_m = 0.0; }),
          "\"min_depth_m\" is 0, not a finite number > 0"},
-        {"min_depth_m above max_depth_m",
-         {good.live_voxel_size_m, good.full_voxel_size_m, 2.0, 1.0, good.memory_budget_bytes},
+        {"min_depth_m above max_depth_m", with([](auto &set) {
+             set.min_depth_m = 2.0;
+             set.max_depth_m = 1.0;
+         }),
          "\"min_depth_m\" 2 is not less than \"max_depth_m\" 1"},
-        {"a budget of 0",
-         {good.live_voxel_size_m, good.full_voxel_size_m, good.min_depth_m, good.max_depth_m, 0},
+        {"a budget of 0", with([](auto &set) { set.memory_budget_bytes = 0; }),
          "\"memory_budget_bytes\" is 0, not a whole number from 1 to 2^53"},
         {"a budget of 2^53 + 1",
-         {good.live_voxel_size_m, good.full_voxel_size_m, good.min_depth_m, good.max_depth_m,
-          9007199254740993u},
+         with([](auto &set) { set.memory_budget_bytes = 9007199254740993u; }),
          "\"memory_budget_bytes\" is 9007199254740993, not a whole number from 1 to 2^53"},
+        {"too_close_depth_m beyond max_depth_m",
+         with([](auto &set) { set.too_close_depth_m = 0.7; }),
+         "\"too_close_depth_m\" 0.7 does not lie between \"min_depth_m\" 0.25 and "
+         "\"max_depth_m\" 0.6"},
+        {"a largest distance of 0", with([](auto &set) { set.max_distance_m[2] = 0.0; }),
+         "\"max_distance_level_2_m\" is 0, not a finite number > 0"},
+        {"a least fitness above 1", with([](auto &set) { set.min_fitness = 1.25; }),
+         "\"min_fitness\" is 1.25, not a number in (0, 1]"},
+        {"an RMSE threshold not finite",
+         with([](auto &set) { set.max_inlier_rmse_m = std::numeric_limits<double>::infinity(); }),
+         "\"max_inlier_rmse_m\" is inf, not a finite number > 0"},
     };
     for (const auto &refused : refused_sets)
     {

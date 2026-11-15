@@ -46,23 +46,25 @@ struct model_case
     gca::organized_points_parameters range; ///< the depth range of the organized points
 };
 
-/// Gives a model of an object class: its live or its final voxel size and its depth range, the
-/// sparse TSDF's far depth the class's or nearer.
+/// Gives a model of an object class: its live or its full voxel size and its depth range, the
+/// sparse TSDF's far depth the range's or nearer, the range its tests were measured at
+/// (measured_range_of()).
 /// @param name [in] the case's name.
 /// @param kind [in] the object class.
 /// @param full_model [in] whether the full models' voxel size, else the live model's.
-/// @param nearer_far_m [in] the sparse TSDF's far depth, in m, nearer than the class's; none for
-///        the class's own.
+/// @param nearer_far_m [in] the sparse TSDF's far depth, in m, nearer than the range's; none for
+///        the range's own.
 /// @return the case.
 inline model_case model_of(const std::string &name, gca::object_class kind, bool full_model,
                            std::optional<double> nearer_far_m = std::nullopt)
 {
     const gca::object_class_parameters p = gca::parameters_of(kind);
     const double voxel_m = full_model ? p.full_voxel_size_m : p.live_voxel_size_m;
+    const depth_range range = measured_range_of(kind);
     return {name,
             {case_budget, static_cast<float>(voxel_m), method_truncation,
-             static_cast<float>(nearer_far_m.value_or(p.max_depth_m))},
-            {static_cast<float>(p.min_depth_m), static_cast<float>(p.max_depth_m)}};
+             static_cast<float>(nearer_far_m.value_or(range.far_m))},
+            {static_cast<float>(range.near_m), static_cast<float>(range.far_m)}};
 }
 
 /// Uploads a frame, deprojects it and integrates it at its pose, and checks that the work was

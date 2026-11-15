@@ -102,7 +102,8 @@ Example, seven distinct values in the tracked line: frame 7 with the camera's ce
 ## Parameters
 
 JSON, written and read with OpenCV's `cv::FileStorage` on memory (ADR 0002: no other JSON
-library). Example, a large object's set:
+library). Example, a large object's scan whose set differs from the object class's own in five
+values, so that every value of it is another:
 
     {
         "format_version": 1,
@@ -111,9 +112,22 @@ library). Example, a large object's set:
         "parameters": {
             "live_voxel_size_m": 8.0000000000000002e-03,
             "full_voxel_size_m": 4.0000000000000001e-03,
-            "min_depth_m": 4.0000000000000002e-01,
+            "min_depth_m": 2.5000000000000000e-01,
             "max_depth_m": 3.0,
-            "memory_budget_bytes": 2000000000.0
+            "memory_budget_bytes": 2000000000.0,
+            "too_close_depth_m": 4.0000000000000002e-01,
+            "max_distance_level_0_m": 1.0000000000000001e-01,
+            "max_distance_level_1_m": 2.0000000000000001e-01,
+            "max_distance_level_2_m": 3.4999999999999998e-01,
+            "max_iterations_level_0": 20.0,
+            "max_iterations_level_1": 10.0,
+            "max_iterations_level_2": 5.0,
+            "huber_threshold_m": 2.9999999999999999e-02,
+            "point_to_plane_weight": 9.6799999999999997e-01,
+            "min_fitness": 5.9999999999999998e-01,
+            "max_inlier_rmse_m": 2.0000000000000000e-02,
+            "max_turn_rate_deg_s": 90.0,
+            "max_speed_m_s": 1.5000000000000000e+00
         }
     }
 
@@ -122,15 +136,30 @@ library). Example, a large object's set:
 | `format_version` | the integer 1 |
 | `commit` | a string, the tree's commit the scanner was built from |
 | `object_class` | the object class the operator chose: `tabletop_object` or `large_object` |
-| `parameters` | the set of parameters in force, an object of the five keys below |
+| `parameters` | the set of parameters in force, an object of the eighteen keys below |
 | `live_voxel_size_m` | the voxel edge of the live model, in m, finite and > 0 |
 | `full_voxel_size_m` | the voxel edge of the full models, in m, finite and > 0 |
 | `min_depth_m` | the nearest depth a frame contributes, along the camera's z, in m, finite and > 0 |
 | `max_depth_m` | the farthest depth, in m, finite and greater than `min_depth_m` |
 | `memory_budget_bytes` | all of the device memory of the scan's sparse TSDF, its pool of blocks, its hash and their lists and counts (docs/methods/sparse-tsdf.md, "The pool and the memory budget"), in bytes, a whole number from 1 to 2^53 |
+| `too_close_depth_m` | the "too close" notice's threshold, along the camera's z, in m: a frame is too close when at least a quarter of its pixels with depth lie nearer (R36); greater than `min_depth_m` and less than `max_depth_m` |
+| `max_distance_level_0_m`, `max_distance_level_1_m`, `max_distance_level_2_m` | the registration's d_max at levels 0, 1 and 2 (docs/methods/registration.md, "Parameters"), in m, finite and > 0 |
+| `max_iterations_level_0`, `max_iterations_level_1`, `max_iterations_level_2` | the registration's most iterations n_l at levels 0, 1 and 2, a whole number from 0 to 2^32 - 1 |
+| `huber_threshold_m` | the registration's δ_G, in m, finite and > 0 |
+| `point_to_plane_weight` | the registration's λ, a share, > 0 and at most 1 |
+| `min_fitness` | tracking's f_track, the least fitness (docs/methods/tracking.md, "Parameters"), a share, > 0 and at most 1 |
+| `max_inlier_rmse_m` | tracking's e_track, the largest inlier RMSE, in m, finite and > 0 |
+| `max_turn_rate_deg_s` | tracking's ω_max, the hand's largest turn rate, in degrees a second, finite and > 0 |
+| `max_speed_m_s` | tracking's v_max, the hand's largest speed, in m/s, finite and > 0 |
+
+The ranges each stage takes these values in are the stage's own, narrower than the file's: the
+scan's request of its buffers refuses a value outside them, naming it (`src/tracking/tracker.hpp`,
+`src/fusion/sparse_tsdf.hpp`), so a file can hold a set the scanner does not run with.
 
 Every key stands in every file; there is no optional key. A field added later that can lack a
-value states its empty form here when it is added, so the file keeps one version.
+value states its empty form here when it is added, so the file keeps one version. A file written
+before the thirteen keys from `too_close_depth_m` on joined the set (2026-11-15, evening) lacks
+them, and the reader refuses it: `no key "too_close_depth_m" in "parameters"`.
 
 Each object class's own set stands in `src/scan/object_class.cpp`, each value with its
 evidence. A scan stores the set it was made with, and a stored set is read back as it stands,
@@ -138,7 +167,8 @@ so the set in a file need not be its class's own.
 
 The writer writes each parameter as a double with 17 significant digits, or as a whole number
 with `.0`, and the reader gets every bit back [M 2026-11-14: OpenCV 4.8.0, 200 000 random
-doubles]. A budget up to 2^53 is a double exactly [S: IEEE 754 binary64, a 53-bit significand].
+doubles]. A budget up to 2^53 and a count up to 2^32 - 1 are doubles exactly [S: IEEE 754
+binary64, a 53-bit significand].
 
 **Strings.** OpenCV's JSON writer gives text that both its own reader and Python's `json.loads`
 take back unchanged only for some strings [M 2026-11-14: OpenCV 4.8.0, Python 3.10]: it writes
@@ -159,8 +189,9 @@ The reader refuses, naming the key:
   version is refused as such;
 - a key it does not know, a key that stands twice, and a missing key, at the top level and in
   `parameters`;
-- a value of another type, an unknown object class, a string outside the set above, and a
-  parameter out of the range above;
+- a value of another type, an unknown object class, a string outside the set above, a
+  parameter out of the range above, and a count of iterations that is no whole number from 0 to
+  2^32 - 1;
 - a parameter written as an integer: OpenCV reads an integer beyond 2147483647 wrapped to 32
   bits without a word, so every parameter is a number with a decimal point or an exponent;
 - a text that OpenCV's parser does not read.

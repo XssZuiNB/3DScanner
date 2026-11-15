@@ -131,14 +131,16 @@ struct scene_case
     gca::sparse_tsdf_parameters tsdf;       ///< the sparse TSDF's parameters
 };
 
-/// Gives an object class's live voxel size and depth range as a case takes them.
+/// Gives an object class's live voxel size and the depth range its tests were measured at
+/// (gca_test::measured_range_of()) as a case takes them.
 /// @param kind [in] the object class.
-/// @param range [out] its depth range, rounded to float.
+/// @param range [out] its measured depth range, rounded to float.
 /// @return its live model's voxel size, rounded to float, in m.
 float live_model_of(gca::object_class kind, gca::organized_points_parameters &range)
 {
     const gca::object_class_parameters p = gca::parameters_of(kind);
-    range = {static_cast<float>(p.min_depth_m), static_cast<float>(p.max_depth_m)};
+    const gca_test::depth_range measured = gca_test::measured_range_of(kind);
+    range = {static_cast<float>(measured.near_m), static_cast<float>(measured.far_m)};
     return static_cast<float>(p.live_voxel_size_m);
 }
 

@@ -3,8 +3,9 @@
 /// The sparse TSDF tests' shared helpers (fusion/sparse_tsdf.hpp): the method's starting values of
 /// the truncation's rule, a pose as the sparse TSDF takes it, a frame's buffers on the GPU, a
 /// lookup of block coordinates on the GPU with its upload and its download of the numbers found,
-/// and the reading, printing and comparison of the usage. A failure is a failed check, counted by
-/// check.hpp. Header only; each test program is one translation unit.
+/// the extraction of the surface's points with their download, and the reading, printing and
+/// comparison of the usage. A failure is a failed check, counted by check.hpp. Header only; each
+/// test program is one translation unit.
 
 #pragma once
 
@@ -117,6 +118,32 @@ inline std::vector<std::uint32_t> find(const gca::sparse_tsdf &tsdf, lookup &fou
     if (!downloaded)
         numbers.clear();
     return numbers;
+}
+
+/// Extracts a sparse TSDF's points and downloads them.
+/// @param tsdf [in] the sparse TSDF.
+/// @param buffer [in,out] the buffer of points.
+/// @param stream [in] the stream.
+/// @param what [in] the case, named in the check lines.
+/// @return the points written; fewer, with a failed check, when the extraction or the download
+///         failed.
+inline std::vector<gca::surface_point> extract_points(const gca::sparse_tsdf &tsdf,
+                                                      gca::surface_points &buffer,
+                                                      cudaStream_t stream, const std::string &what)
+{
+    const gca::extraction_result extracted = tsdf.extract(buffer, stream);
+    check(extracted.done && extracted.message.empty() && extracted.written == extracted.found,
+          (what + ": extraction done, " + extracted.message).c_str());
+    std::vector<gca::surface_point> points(extracted.written);
+    const bool downloaded =
+        points.empty() || (cudaMemcpyAsync(points.data(), buffer.points().data(),
+                                           points.size() * sizeof(gca::surface_point),
+                                           cudaMemcpyDeviceToHost, stream) == cudaSuccess &&
+                           cudaStreamSynchronize(stream) == cudaSuccess);
+    check(downloaded, (what + ": the points downloaded").c_str());
+    if (!downloaded)
+        points.clear();
+    return points;
 }
 
 /// Reads the usage and checks that it was read.

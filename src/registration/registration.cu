@@ -450,41 +450,6 @@ std::string surface_refusal(const organized_surface &surface, const frame_size &
     return {};
 }
 
-/// Says why the parameters cannot be used, if they cannot.
-/// @param parameters [in] the parameters.
-/// @return empty when each lies in its range (registration_parameters); else the reason.
-/// @note Allocates only for the reason; throws std::bad_alloc when that fails.
-std::string parameters_refusal(const registration_parameters &parameters)
-{
-    // The level's name is built only for a refusal: a call that is taken allocates nothing.
-    const auto name = [](std::size_t level) { return "level " + std::to_string(level) + "'s "; };
-    float smallest_d_max = largest_max_distance_m;
-    for (std::size_t level = 0; level < frame_pyramid::level_count; level++)
-    {
-        const registration_level_parameters &at = parameters.levels[level];
-        const float d_max = at.max_distance_m;
-        if (!std::isfinite(d_max) || !(d_max > 0.0f) || d_max > largest_max_distance_m)
-            return name(level) + "largest distance " + std::to_string(d_max) +
-                   " m is not within (0, " + std::to_string(largest_max_distance_m) + "] m";
-        smallest_d_max = std::min(smallest_d_max, d_max);
-        // Level 0 gives the result: it iterates at least once.
-        const std::uint32_t fewest = level == 0 ? 1 : 0;
-        if (at.max_iterations < fewest || at.max_iterations > largest_max_iterations)
-            return name(level) + "most iterations " + std::to_string(at.max_iterations) +
-                   " are not within " + std::to_string(fewest) + " to " +
-                   std::to_string(largest_max_iterations);
-    }
-    const float huber = parameters.huber_threshold_m;
-    if (!std::isfinite(huber) || !(huber > 0.0f) || huber > smallest_d_max)
-        return "Huber's threshold " + std::to_string(huber) +
-               " m is not within (0, the smallest largest distance]";
-    const float lambda = parameters.point_to_plane_weight;
-    if (!std::isfinite(lambda) || !(lambda > 0.0f) || lambda > 1.0f)
-        return "the point-to-plane term's weight " + std::to_string(lambda) +
-               " is not within (0, 1]";
-    return {};
-}
-
 /// Rounds the transform, the centre, the thresholds and the weights to the kernel's floats.
 /// @param transform [in] the current transform, F to S, in m.
 /// @param centre_m [in] the centre c, in S, in m.
@@ -534,6 +499,47 @@ picture picture_of(const gpu_image<float3> &points, const gpu_image<std::uint8_t
 }
 
 } // namespace
+
+std::string registration::parameters_refusal(const registration_parameters &parameters)
+{
+    // The level's name is built only for a refusal: a call that is taken allocates nothing.
+    const auto name = [](std::size_t level) { return "level " + std::to_string(level) + "'s "; };
+    float smallest_d_max = largest_max_distance_m;
+    for (std::size_t level = 0; level < frame_pyramid::level_count; level++)
+    {
+        const registration_level_parameters &at = parameters.levels[level];
+        const float d_max = at.max_distance_m;
+        if (!std::isfinite(d_max) || !(d_max > 0.0f) || d_max > largest_max_distance_m)
+            return name(level) + "largest distance " + std::to_string(d_max) +
+                   " m is not within (0, " + std::to_string(largest_max_distance_m) + "] m";
+        smallest_d_max = std::min(smallest_d_max, d_max);
+        // Level 0 gives the result: it iterates at least once.
+        const std::uint32_t fewest = level == 0 ? 1 : 0;
+        if (at.max_iterations < fewest || at.max_iterations > largest_max_iterations)
+            return name(level) + "most iterations " + std::to_string(at.max_iterations) +
+                   " are not within " + std::to_string(fewest) + " to " +
+                   std::to_string(largest_max_iterations);
+    }
+    const float huber = parameters.huber_threshold_m;
+    if (!std::isfinite(huber) || !(huber > 0.0f) || huber > smallest_d_max)
+        return "Huber's threshold " + std::to_string(huber) +
+               " m is not within (0, the smallest largest distance]";
+    const float lambda = parameters.point_to_plane_weight;
+    if (!std::isfinite(lambda) || !(lambda > 0.0f) || lambda > 1.0f)
+        return "the point-to-plane term's weight " + std::to_string(lambda) +
+               " is not within (0, 1]";
+    return {};
+}
+
+surface_levels surface_of(const frame_pyramid &pyramid) noexcept
+{
+    const auto level = [&pyramid](std::size_t l) {
+        return organized_surface{pyramid.points(l).points(), pyramid.points(l).validity_mask(),
+                                 pyramid.normals(l).normals(), pyramid.intensity(l),
+                                 pyramid.level_intrinsics(l)};
+    };
+    return {level(0), level(1), level(2)};
+}
 
 request_result<registration> registration::request(gpu_pool &pool, const frame_size &size) noexcept
 {
@@ -674,6 +680,8 @@ registration_result registration::align(const frame_pyramid &frame, const surfac
             result.fitness = solution.fitness;
             result.inlier_rmse_m = solution.inlier_rmse_m;
             result.eigenvalues = solution.eigenvalues;
+            result.last_step_turn_rad = solution.step_turn_rad;
+            result.last_step_shift_m = solution.step_shift_m;
             last_degenerate = solution.degenerate;
             if (solution.verdict == system_verdict::few_correspondences)
             {

@@ -79,7 +79,7 @@ target_link_libraries(test_frame_pyramid PRIVATE geometry synthetic_source)
 add_test(NAME frame_pyramid COMMAND test_frame_pyramid)
 
 # The registration of a frame against a surface, on pairs of frames of the synthetic source whose
-# transform is known; scan gives the object classes' depth ranges.
+# transform is known; scan gives the object classes' values of the registration.
 add_executable(test_registration test_registration.cpp)
 target_link_libraries(test_registration PRIVATE registration scan synthetic_source)
 add_test(NAME registration COMMAND test_registration)
@@ -90,14 +90,14 @@ target_link_libraries(test_sparse_tsdf_blocks PRIVATE fusion)
 add_test(NAME sparse_tsdf_blocks COMMAND test_sparse_tsdf_blocks)
 
 # The sparse TSDF's allocation near a frame's surface, on frames of the synthetic source at their
-# known poses; scan gives the object classes' voxel sizes and depth ranges.
+# known poses; scan gives the object classes' voxel sizes and far depths.
 add_executable(test_sparse_tsdf_allocation test_sparse_tsdf_allocation.cpp)
 target_link_libraries(test_sparse_tsdf_allocation PRIVATE fusion scan synthetic_source)
 add_test(NAME sparse_tsdf_allocation COMMAND test_sparse_tsdf_allocation)
 
 # The sparse TSDF's integration of a frame and extraction of the surface's points, on frames of the
 # synthetic source at their known poses and on built walls; scan gives the object classes' voxel
-# sizes and depth ranges.
+# sizes.
 add_executable(test_sparse_tsdf_fusion test_sparse_tsdf_fusion.cpp)
 target_link_libraries(test_sparse_tsdf_fusion PRIVATE fusion scan synthetic_source)
 add_test(NAME sparse_tsdf_fusion COMMAND test_sparse_tsdf_fusion)
@@ -140,7 +140,23 @@ add_test(NAME depth_noise_options COMMAND test_depth_noise_options)
 
 # The sparse TSDF's ray cast of the model's surface, on sparse TSDFs fused from frames of the
 # synthetic source at their known poses and from built walls, and through the registration of a
-# frame against it; scan gives the object classes' voxel sizes and depth ranges.
+# frame against it, the cast's levels as tracking hands them over; scan gives the object classes'
+# voxel sizes and registration's values.
 add_executable(test_sparse_tsdf_ray_cast test_sparse_tsdf_ray_cast.cpp)
-target_link_libraries(test_sparse_tsdf_ray_cast PRIVATE fusion registration scan synthetic_source)
+target_link_libraries(
+    test_sparse_tsdf_ray_cast
+    PRIVATE
+    fusion
+    registration
+    tracking
+    scan
+    synthetic_source
+)
 add_test(NAME sparse_tsdf_ray_cast COMMAND test_sparse_tsdf_ray_cast)
+
+# Tracking: each frame of the synthetic source registered against the live model, checked, and
+# fused only when the check passes, with the pool closed before the first frame; scan gives the
+# tabletop object class's values.
+add_executable(test_tracking test_tracking.cpp)
+target_link_libraries(test_tracking PRIVATE tracking scan synthetic_source)
+add_test(NAME tracking COMMAND test_tracking)

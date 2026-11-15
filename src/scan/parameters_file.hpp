@@ -36,9 +36,10 @@ struct scan_parameters
 /// Writes a scan's parameters as JSON (docs/SCAN_FILES.md), the doubles exactly.
 /// @param path [in] the file's path; its directory exists. A file there is replaced.
 /// @param parameters [in] the parameters.
-/// @return written; or the reason, naming the path and the key: a value of the set is not finite
-///         and > 0, min_depth_m is not less than max_depth_m, the budget is not from 1 to 2^53
-///         bytes, the commit holds more than 4095 characters, a byte outside printable ASCII or
+/// @return written; or the reason, naming the path and the key: a length or threshold of the set
+///         is not finite and > 0, a share not in (0, 1], min_depth_m is not less than max_depth_m,
+///         too_close_depth_m does not lie between them, the budget is not from 1 to 2^53 bytes,
+///         the commit holds more than 4095 characters, a byte outside printable ASCII or
 ///         an apostrophe, or starts and ends with a double quote (nothing is written then); or
 ///         OpenCV could not write the JSON; or the file could not be written (scan/file_io.hpp,
 ///         write_file()).
@@ -52,8 +53,9 @@ write_result write_parameters(const std::filesystem::path &path,
 /// @return the parameters; or the reason, naming the path and the key: the file cannot be read,
 ///         does not start with '{' after any white space, is no JSON that OpenCV reads, is of
 ///         another format version, holds a key the reader does not know or a key twice, lacks a
-///         key, holds a value of another type, an unknown object class, or a commit or a set the
-///         writer refuses.
+///         key, holds a value of another type, an unknown object class, a count of iterations
+///         that is no whole number from 0 to 2^32 - 1, or a commit or a set the writer refuses;
+///         a file written before the set's 13 keys of 2026-11-15 among them, which lacks a key.
 /// @note Allocates. A failed allocation ends the program (std::terminate): the function is
 ///       noexcept.
 read_result<scan_parameters> read_parameters(const std::filesystem::path &path) noexcept;

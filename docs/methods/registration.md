@@ -48,19 +48,29 @@ stands in "Against the prototype".
 The result is a value (`gca::registration_result`) for every call, a refusal included:
 
 * **The transform** T, F to S, in double: the last estimate, level 0's. It is a pose only when the
-  registration converged; tracking gives the frame the pose P_S T, P_S the surface's pose (camera
-  to model).
+  registration converged or used its iterations up and tracking's check passed it; tracking gives
+  the frame the pose P_S T, P_S the surface's pose (camera to model) (docs/methods/tracking.md).
 * **How it ended**, level 0's end: converged; the iterations used up; too few correspondences;
-  degenerate; refused (the inputs, with the reason); failed (CUDA's error, with its message). Only
-  "converged" says that T is the minimum of the method's objective near T_0 and that the last
-  system holds every motion; every other end is tracking loss, never a pose (GLOSSARY.md,
-  "Tracking"). A coarser level's end is not reported ("Coarse to fine").
+  degenerate; refused (the inputs, with the reason); failed (CUDA's error, with its message).
+  "Converged" says that T is the minimum of the method's objective near T_0, its last step below
+  ε, and that the last system holds every motion; "the iterations used up" says that the last
+  system holds every motion too, its last step not below ε, which on real frames the depth's
+  noise keeps it from [M 2026-11-15: docs/methods/tracking.md, "The check"]. Tracking's check
+  takes both and judges the result's fitness, RMSE and step; too few correspondences and
+  degenerate are tracking loss, never a pose (GLOSSARY.md, "Tracking"), and refused and failed
+  the tracker's failure, which ends the scan (docs/methods/tracking.md, "Output", "The check";
+  the user's decision of 2026-11-15, evening). A coarser level's end is not reported ("Coarse to fine").
 * **The fitness**: the share of level 0's candidates, its pixels with a valid point and a normal,
   that found a correspondence ("The association by projection"), 0 to 1; 0 when the frame has no
   candidate.
 * **The inlier RMSE**: the root mean square of the correspondences' point-to-plane residuals, in m,
   unweighted; 0 when there is none.
 * **The iterations**: the systems built at every level, 0 for a refusal.
+* **The last step**: the turn |ω|, in rad, and the move of the centroid |υ_c|, in m, of level 0's
+  last system's step, the values the end compared with ε_ω and ε_υ ("The iterations and the
+  end"); 0 when that system took no step, for too few correspondences or no spread. Each frame's
+  result records them, so that `tracking-thresholds-from-real-sequences` sets ε from their floor
+  on real sequences.
 * **The conditioning**: the six eigenvalues of the last system, centred, scaled and normalized
   ("The system, centred and scaled"), ascending; the point-to-plane term's part holds each within 0
   to 2, and the color term only adds; zeros when no system was solved, for too few correspondences
@@ -381,7 +391,9 @@ The kernel takes T in float, its rotation's and translation's rounding below 1e-
 After the level's most iterations without one of these ends, it ends as **degenerate** when the
 last system's λ_1 < τ, else as **the iterations used up**, with the transform after the last step.
 Level 0's end is the registration's. The prototype's convergence, a step under 0.081° and 1 mm, was
-not checked before the pose was used; here every end but "converged" is tracking loss.
+not checked before the pose was used; here "too few correspondences" and "degenerate" are
+tracking loss, "refused" and "failed" the tracker's failure, and "converged" and "the iterations
+used up" give a pose only through tracking's check (docs/methods/tracking.md, "The check").
 
 ## Coarse to fine
 
@@ -421,8 +433,9 @@ tracks so over three levels [S: Newcombe et al. 2011, "Sensor pose estimation"].
 ## Parameters
 
 The registration takes, for each call (`gca::registration_parameters`), the values that differ
-between the object classes or the levels; the tests name them, and the object class takes them
-over once tracking uses them. Starting values [?: initial], and the range outside which a value is
+between the object classes or the levels; each object class holds them (`src/scan/object_class.cpp`,
+with tracking's thresholds), and tracking passes them. Starting values [?: initial], and the range
+outside which a value is
 refused as a mistake [?: a choice]:
 
 | parameter | meaning | tabletop object | large object | refused outside |
@@ -434,11 +447,12 @@ refused as a mistake [?: a choice]:
 
 * **d_max_0**: 5 cm is the prototype's correspondence distance [S: the old loop, CUDA_3D's
   `apps/app.cpp`]; twice that for the large object, whose depth noise by the bound below is 6.8
-  times as large at the middle of its range [S: computed]. d_max_l = 2^l d_max_0, its benefit
-  measured ("Coarse to fine").
+  times as large at the middle of its range of 2026-11-14, 0.4 m to 3.0 m against 0.30 m to 1.0 m
+  [S: computed]. d_max_l = 2^l d_max_0, its benefit measured ("Coarse to fine").
 * **δ_G**: about the datasheet's bound on the depth noise, σ = c z² with c = 0.01 /m
   (docs/methods/sparse-tsdf.md, "The truncation distance"), at the middle of each class's depth
-  range: 4.2 mm at 0.65 m and 29 mm at 1.7 m [S: computed].
+  range of 2026-11-14: 4.2 mm at 0.65 m and 29 mm at 1.7 m [S: computed]. Tracking's e_track
+  starts at the same values (docs/methods/tracking.md, "Parameters").
 * **n_l**: 20 at level 0, where every case of the tests converged within 3 to 4 iterations after
   the coarser levels; 10 at levels 1 and 2, which do not converge as finely and hand on what they
   reach. The tests' recoveries took 7 to 23 systems in all, the fixture's real pair 29
@@ -485,14 +499,17 @@ textured planes' smallest eigenvalue is 0.279 to 0.309, the plane's normal shift
 the in-plane axes, which the point-to-plane term holds, while the color term holds the in-plane
 motions at 0.46 to 0.60 [M 2026-11-14: `tests/test_registration.cpp`].
 
-ε_υ = 10 µm and ε_ω = 1e-5 rad, 10 µm at 1 m, lie far below a depth unit of 1 mm. Tracking's check
-of a result, its thresholds of fitness, RMSE and conditioning, is stricter and its own.
+ε_υ = 10 µm and ε_ω = 1e-5 rad, 10 µm at 1 m, lie far below a depth unit of 1 mm [?: initial];
+`tracking-thresholds-from-real-sequences` sets them from the floor of the last step on real
+sequences, which every result records ("Output"). Tracking's check of a result, its thresholds of
+fitness, RMSE and the step, is its own (docs/methods/tracking.md, "The check").
 
 ## Accuracy
 
 On pairs of the synthetic source's frames whose transform Δ is known, from the identity, depth unit
-1 mm, the camera's intrinsics at each stream size, the normals' starting parameters and the object
-classes' starting values ("Parameters") [M 2026-11-14: `tests/test_registration.cpp`]. The tabletop
+1 mm, the camera's intrinsics at each stream size, the normals' starting parameters, the object
+classes' starting values ("Parameters") and their depth ranges of 2026-11-14, 0.30 m to 1.0 m and
+0.4 m to 3.0 m [M 2026-11-14: `tests/test_registration.cpp`]. The tabletop
 object is a box of 0.30 m x 0.20 m x 0.25 m and a sphere of 0.10 m beside it on a plane, seen from
 0.5 m, moved by 1.5° and 10.8 mm; the large object a box of 1.2 m x 0.8 m x 1.0 m and a sphere of
 0.4 m on a floor, seen from 2.7 m and from 2 m, moved by 0.5° and 14.1 mm; every surface carries the

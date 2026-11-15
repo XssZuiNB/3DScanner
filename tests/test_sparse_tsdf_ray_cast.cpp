@@ -56,6 +56,7 @@
 #include "stage_checks.hpp"
 #include "stage_frames.hpp"
 #include "synthetic_source.hpp"
+#include "tracking/tracker.hpp"
 #include "transform_checks.hpp"
 #include "types/camera_param.hpp"
 #include "types/frame_description.hpp"
@@ -107,7 +108,6 @@ using gca_test::quantile;
 using gca_test::range_of;
 using gca_test::request_buffers;
 using gca_test::small_description;
-using gca_test::surface_of;
 using gca_test::to_double;
 using gca_test::transform_tolerance;
 
@@ -1036,24 +1036,6 @@ void check_scene(const scene_case &c, cudaStream_t stream)
     check(pool.refused_while_closed() == 0, (name + ": the closed pool asked for nothing").c_str());
 }
 
-/// Gives a model's surface's level as a level of the registration's surface.
-/// @param surface [in] the model's surface.
-/// @param level [in] the level.
-/// @return its points, marks, normals, intensity and intrinsics.
-gca::organized_surface level_of_cast(const gca::model_surface &surface, std::size_t level)
-{
-    return {surface.points(level), surface.validity_mask(level), surface.normals(level),
-            surface.intensity(level), surface.level_intrinsics(level)};
-}
-
-/// Gives a model's surface's levels as the registration's surface.
-/// @param surface [in] the model's surface.
-/// @return its levels 0, 1 and 2.
-gca::surface_levels levels_of_cast(const gca::model_surface &surface)
-{
-    return {level_of_cast(surface, 0), level_of_cast(surface, 1), level_of_cast(surface, 2)};
-}
-
 /// A case of a frame registered against the cast from the last fused pose.
 struct tracking_case
 {
@@ -1138,7 +1120,7 @@ void check_tracking(const tracking_case &c, cudaStream_t stream)
     {
         const std::string what = c.name + " through the cast" + suffix;
         const gca::registration_result result =
-            registration.align(moved, levels_of_cast(surface), identity, parameters, stream);
+            registration.align(moved, gca::surface_of(surface), identity, parameters, stream);
         print_result(what, result);
         check_converged_is_known(what, result, c.delta, c.tolerance);
         if (suffix.empty())
@@ -1149,7 +1131,7 @@ void check_tracking(const tracking_case &c, cudaStream_t stream)
           (c.name + ": frame A's pyramid built").c_str());
     const std::string own = c.name + " against frame A's pyramid";
     const gca::registration_result reference =
-        registration.align(moved, surface_of(last), identity, c.parameters, stream);
+        registration.align(moved, gca::surface_of(last), identity, c.parameters, stream);
     print_result(own, reference);
     check_converged_is_known(own, reference, c.delta, c.tolerance);
     check(pool.refused_while_closed() == 0,
