@@ -11,6 +11,15 @@
 ///   picture's border holds the wall at its depth within float's rounding, its normal along -z and
 ///   its intensity; seen from behind, a back face, every pixel is invalid; a view that meets no
 ///   block, every pixel is invalid.
+/// - The depth interval, which lets a ray step past the blocks before and after the depths its
+///   tile's held blocks span (docs/methods/sparse-tsdf.md, "The ray cast"): the wall cast from
+///   poses turned and shifted from its own, at both stream sizes, every pixel whose ray meets the
+///   fused part of the wall within the range holding it at its depth with its normal; a patch in
+///   front of the wall, both surfaces held around the patch's border, where tiles see the blocks of
+///   both; the wall cast from inside its band with the range starting at 0, every pixel holding the
+///   wall 2.5 mm away; the wall cast through a model with a patch in front of it, whose blocks
+///   widen tiles' intervals, and through one without, every pixel out of the patch's reach the same
+///   bit for bit in both.
 /// - A sphere resting on a plane, fused from a walk of 12 known poses, at the live voxel sizes of
 ///   both object classes: cast from a pose of the walk, from one between two of its poses and from
 ///   one a hand's step away from it, at both stream sizes, every valid point lies within measured
@@ -60,6 +69,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <numbers>
 #include <optional>
@@ -329,6 +339,41 @@ double luma_of(const std::array<double, 3> &color)
     return (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]) / 255.0;
 }
 
+/// The tabletop object's live model fused from frames at the identity, the walls' cases' model: its
+/// pool, closed once the buffers, the sparse TSDF and a surface at each stream size are granted.
+/// Not copied and not moved, as its pool is not.
+struct fused_wall
+{
+    model_case m;                               ///< the parameters and the depth range
+    gca::gpu_pool pool;                         ///< the pool, closed after the requests
+    frame_buffers buffers;                      ///< the frame's buffers, 640x400
+    gca::sparse_tsdf tsdf;                      ///< the model
+    std::array<gca::model_surface, 2> surfaces; ///< the surfaces at 640x400 and 1280x800
+
+    /// Requests the buffers, the sparse TSDF and the surfaces, closes the pool and fuses the
+    /// frames, each at the identity.
+    /// @param name [in] the case, named in the check lines.
+    /// @param frames [in] the frames, 640x400 with the camera's intrinsics; owned by the caller.
+    /// @param stream [in] the stream.
+    fused_wall(const std::string &name, std::initializer_list<const gca::frame *> frames,
+               cudaStream_t stream)
+        : m(model_of(name, gca::object_class::tabletop_object, false))
+        , buffers(request_buffers(pool, small_description.size, name))
+        , tsdf(granted(name + ": the sparse TSDF", gca::sparse_tsdf::request(pool, m.tsdf, stream)))
+        , surfaces{granted(name + ": the surface at 640x400",
+                           gca::model_surface::request(pool, small_description.size)),
+                   granted(name + ": the surface at 1280x800",
+                           gca::model_surface::request(pool, large_description.size))}
+    {
+        pool.close();
+        for (const gca::frame *frame : frames)
+            fuse(tsdf, buffers, *frame, m.range, Eigen::Isometry3d::Identity(), stream, name);
+    }
+
+    fused_wall(const fused_wall &) = delete;
+    fused_wall &operator=(const fused_wall &) = delete;
+};
+
 /// Gives a pose turned by 180 degrees about its camera's y axis: the same camera looking back.
 /// @param pose [in] the pose, camera frame to the models' frame.
 /// @return pose with the camera's x and z axes negated.
@@ -345,17 +390,13 @@ Eigen::Isometry3d turned_back(const Eigen::Isometry3d &pose)
 /// @param stream [in] the stream.
 void check_wall(cudaStream_t stream)
 {
-    const model_case m = model_of("wall", gca::object_class::tabletop_object, false);
+    const gca::frame wall = flat_wall(wall_mm, wall_color);
+    fused_wall w("wall", {&wall}, stream);
+    const model_case &m = w.m;
     const gca::intrinsics &k = small_description.intrinsics;
-    gca::gpu_pool pool;
-    frame_buffers buffers = request_buffers(pool, small_description.size, m.name);
-    gca::sparse_tsdf tsdf =
-        granted(m.name + ": the sparse TSDF", gca::sparse_tsdf::request(pool, m.tsdf, stream));
-    gca::model_surface surface = granted(m.name + ": the surface",
-                                         gca::model_surface::request(pool, small_description.size));
-    pool.close();
+    const gca::sparse_tsdf &tsdf = w.tsdf;
+    gca::model_surface &surface = w.surfaces[0];
     const Eigen::Isometry3d identity = Eigen::Isometry3d::Identity();
-    fuse(tsdf, buffers, flat_wall(wall_mm, wall_color), m.range, identity, stream, m.name);
 
     const std::string front = "a wall, from its pose";
     const cast_pictures seen = cast(tsdf, identity, k, m.range, surface, stream, front);
@@ -405,7 +446,7 @@ void check_wall(cudaStream_t stream)
     check_levels(away, nothing, k, m.range);
     check_within((away + ": valid pixels").c_str(), static_cast<double>(valid_count(nothing[0])),
                  0.0);
-    check(pool.refused_while_closed() == 0, "wall: the closed pool asked for nothing");
+    check(w.pool.refused_while_closed() == 0, "wall: the closed pool asked for nothing");
 }
 
 /// The column where the half wall's frame ends: its pixels left of it see the wall, the others
@@ -428,23 +469,17 @@ constexpr std::uint32_t half_wall_reach_px = 3;
 /// @param stream [in] the stream.
 void check_half_wall(cudaStream_t stream)
 {
-    const model_case m = model_of("half wall", gca::object_class::tabletop_object, false);
-    const gca::intrinsics &k = small_description.intrinsics;
-    gca::gpu_pool pool;
-    frame_buffers buffers = request_buffers(pool, small_description.size, m.name);
-    gca::sparse_tsdf tsdf =
-        granted(m.name + ": the sparse TSDF", gca::sparse_tsdf::request(pool, m.tsdf, stream));
-    gca::model_surface surface = granted(m.name + ": the surface",
-                                         gca::model_surface::request(pool, small_description.size));
-    pool.close();
-    const Eigen::Isometry3d identity = Eigen::Isometry3d::Identity();
     const gca::frame half = gca_test::wall_frame(
         [](std::uint32_t u, std::uint32_t) {
             return u < half_wall_column ? wall_mm : std::uint16_t{0};
         },
         wall_color);
-    fuse(tsdf, buffers, half, m.range, identity, stream, m.name);
-    const cast_pictures pictures = cast(tsdf, identity, k, m.range, surface, stream, m.name);
+    fused_wall w("half wall", {&half}, stream);
+    const model_case &m = w.m;
+    const gca::intrinsics &k = small_description.intrinsics;
+    const Eigen::Isometry3d identity = Eigen::Isometry3d::Identity();
+    const cast_pictures pictures =
+        cast(w.tsdf, identity, k, m.range, w.surfaces[0], stream, m.name);
     check_levels(m.name, pictures, k, m.range);
     const cast_picture &p = pictures[0];
     int rows_without = 0;
@@ -473,7 +508,342 @@ void check_half_wall(cudaStream_t stream)
     check_within((m.name + ": pixels without a normal away from the edge").c_str(), far_from_edge,
                  0.0);
     check_within((m.name + ": valid pixels right of the edge").c_str(), right_valid, 0.0);
-    check(pool.refused_while_closed() == 0, "half wall: the closed pool asked for nothing");
+    check(w.pool.refused_while_closed() == 0, "half wall: the closed pool asked for nothing");
+}
+
+/// What a cast of a wall fused from the identity gives at one pixel, where its ray meets the wall's
+/// plane inside the part the fused frame saw.
+struct wall_expectation
+{
+    bool sees = false; ///< whether the ray meets the plane wall_border_px or more inside the frame,
+                       ///< within the depth range
+    double depth_m = 0.0;   ///< the depth of that point along the cast's camera z, in m
+    Eigen::Vector3d normal; ///< the wall's normal, -z of the world, in the cast's camera frame
+};
+
+/// The margin a wall's expected point keeps from the depth range's limits: 1 mm, so that float's
+/// rounding of a depth at a limit cannot decide whether the cast takes it [?: a choice].
+constexpr double range_margin_m = 1e-3;
+
+/// Gives what a pixel of a cast of the wall sees: its ray from the cast's pose meets the plane
+/// z = wall_mm of the world; the point counts when its depth lies within the depth range,
+/// range_margin_m from either limit, and it projects into the fused frame, the identity's at
+/// 640x400, wall_border_px or more inside its border.
+/// @param pose [in] the cast's pose, camera frame to the world frame.
+/// @param k [in] the cast's intrinsics.
+/// @param range [in] the cast's depth range.
+/// @param u [in] the pixel's column.
+/// @param v [in] its row.
+/// @return the expectation.
+wall_expectation wall_seen(const Eigen::Isometry3d &pose, const gca::intrinsics &k,
+                           const gca::organized_points_parameters &range, std::uint32_t u,
+                           std::uint32_t v)
+{
+    wall_expectation e;
+    const Eigen::Vector3d ray = pose.linear() * gca_test::pixel_ray(k, u, v);
+    if (!(std::abs(ray.z()) > 1e-9))
+        return e;
+    const double s = (1e-3 * wall_mm - pose.translation().z()) / ray.z();
+    if (!(s >= range.near_m + range_margin_m && s <= range.far_m - range_margin_m))
+        return e;
+    const Eigen::Vector3d hit = pose.translation() + s * ray;
+    const gca::intrinsics &fused = small_description.intrinsics;
+    const double fu = fused.fx * hit.x() / hit.z() + fused.cx;
+    const double fv = fused.fy * hit.y() / hit.z() + fused.cy;
+    const double border = wall_border_px;
+    e.sees = fu >= border && fu <= small_description.size.width - 1.0 - border && fv >= border &&
+             fv <= small_description.size.height - 1.0 - border;
+    e.depth_m = s;
+    e.normal = pose.linear().transpose() * Eigen::Vector3d(0.0, 0.0, -1.0);
+    return e;
+}
+
+/// The wall fused once from the identity, cast from poses turned and shifted from it, at both
+/// stream sizes: every pixel whose ray meets the part of the wall the frame saw, away from its
+/// border, holds the wall at the depth along its ray within the wall's tolerance, its normal the
+/// wall's within its angle. The blocks are seen at a slant, so a tile's interval of depths spans
+/// blocks a ray enters late; the cast steps past the blocks before the interval and ends past it
+/// (docs/methods/sparse-tsdf.md, "The ray cast", "The depth interval").
+/// @param stream [in] the stream.
+void check_wall_turned(cudaStream_t stream)
+{
+    const gca::frame wall = flat_wall(wall_mm, wall_color);
+    fused_wall w("turned wall", {&wall}, stream);
+    const model_case &m = w.m;
+    // Turns about the camera's axes and a shift [?: a choice]: each keeps a large part of the
+    // fused wall in view.
+    const std::array<std::pair<std::string, Eigen::Isometry3d>, 4> poses = {
+        std::pair{std::string("turned 25 deg about y"),
+                  make_transform(Eigen::Vector3d::UnitY(), 25.0, Eigen::Vector3d::Zero())},
+        std::pair{std::string("turned 20 deg about x"),
+                  make_transform(Eigen::Vector3d::UnitX(), -20.0, Eigen::Vector3d::Zero())},
+        std::pair{std::string("turned 30 deg about (1, 2, 3)"),
+                  make_transform(Eigen::Vector3d(1.0, 2.0, 3.0), 30.0, Eigen::Vector3d::Zero())},
+        std::pair{std::string("shifted and turned 20 deg about (2, -1, 0)"),
+                  make_transform(Eigen::Vector3d(2.0, -1.0, 0.0), 20.0,
+                                 Eigen::Vector3d(0.08, -0.05, 0.12))}};
+    const std::array<gca::frame_description, 2> sizes = {small_description, large_description};
+    for (std::size_t s = 0; s < sizes.size(); s++)
+        for (const auto &[pose_name, pose] : poses)
+        {
+            const std::string what =
+                m.name + ", " + pose_name + ", " + gca::size_text(sizes[s].size);
+            const cast_pictures pictures =
+                cast(w.tsdf, pose, sizes[s].intrinsics, m.range, w.surfaces[s], stream, what);
+            check_levels(what, pictures, sizes[s].intrinsics, m.range);
+            const cast_picture &p = pictures[0];
+            std::size_t seen = 0;
+            int missed = 0;
+            max_error depth;
+            max_error normal;
+            for (std::uint32_t v = 0; v < p.size.height && !p.valid.empty(); v++)
+                for (std::uint32_t u = 0; u < p.size.width; u++)
+                {
+                    const wall_expectation e = wall_seen(pose, p.k, m.range, u, v);
+                    if (!e.sees)
+                        continue;
+                    seen++;
+                    const std::size_t i = gca_test::index_of(p.size, u, v);
+                    if (p.valid[i] == 0 || gca_test::is_zero(p.normals[i]))
+                    {
+                        missed++;
+                        continue;
+                    }
+                    depth.add(std::abs(double{p.points[i].z} - e.depth_m));
+                    normal.add(angle_deg(to_double(p.normals[i]), e.normal));
+                }
+            std::printf("%s: %zu pixels see the fused wall\n", what.c_str(), seen);
+            check(seen > p.valid.size() / 4,
+                  (what + ": a quarter of the picture sees the wall").c_str());
+            check_within((what + ": pixels that see the wall without it or its normal").c_str(),
+                         missed, 0.0);
+            gca_test::check_max_error(what + ": depth's error, m", depth, wall_depth_tolerance_m);
+            gca_test::check_max_error(what + ": normal's angle, deg", normal,
+                                      wall_normal_tolerance_deg);
+        }
+    check(w.pool.refused_while_closed() == 0, "turned wall: the closed pool asked for nothing");
+}
+
+/// The patch's depth in front of the wall, and its pixels in the fused frame: columns 250 to 389
+/// and rows 150 to 249 [?: a choice: borders that fall inside tiles of 8 x 8 pixels].
+constexpr std::uint16_t patch_mm = 400;
+constexpr std::uint32_t patch_left = 250;
+constexpr std::uint32_t patch_right = 390;
+constexpr std::uint32_t patch_top = 150;
+constexpr std::uint32_t patch_bottom = 250;
+
+/// A patch 100 mm in front of the wall, fused once from the identity and cast from it: the tiles
+/// along the patch's border see the blocks of both surfaces, and their pixels away from that border
+/// hold the patch or, behind it, the wall at its depth, with the normal along -z. The rows and
+/// columns within wall_border_px of the patch's border are left out: there the patch's band and
+/// its silhouette's voxels meet.
+/// @param stream [in] the stream.
+void check_patch_before_wall(cudaStream_t stream)
+{
+    const gca::intrinsics &k = small_description.intrinsics;
+    const auto in_patch = [](std::uint32_t u, std::uint32_t v) {
+        return u >= patch_left && u < patch_right && v >= patch_top && v < patch_bottom;
+    };
+    // Whether a pixel's tile lies within the patch's blocks' reach: a block of 16 mm at 384 mm
+    // projects 12.75 px past the patch's border [S: computed, 306.18 px * 16 mm / 384 mm].
+    const auto tile_meets_patch_blocks = [](std::uint32_t u, std::uint32_t v) {
+        constexpr std::uint32_t reach = 13;
+        const std::uint32_t x = u / gca::depth_tile_px * gca::depth_tile_px;
+        const std::uint32_t y = v / gca::depth_tile_px * gca::depth_tile_px;
+        return x < patch_right + reach && x + gca::depth_tile_px + reach > patch_left &&
+               y < patch_bottom + reach && y + gca::depth_tile_px + reach > patch_top;
+    };
+    const gca::frame frame = gca_test::wall_frame(
+        [&in_patch](std::uint32_t u, std::uint32_t v) {
+            return in_patch(u, v) ? patch_mm : wall_mm;
+        },
+        wall_color);
+    fused_wall w("patch before a wall", {&frame}, stream);
+    const model_case &m = w.m;
+    const Eigen::Isometry3d identity = Eigen::Isometry3d::Identity();
+    const cast_pictures pictures =
+        cast(w.tsdf, identity, k, m.range, w.surfaces[0], stream, m.name);
+    check_levels(m.name, pictures, k, m.range);
+    const cast_picture &p = pictures[0];
+    int missed = 0;
+    std::size_t behind = 0;
+    max_error depth;
+    max_error normal;
+    for (std::uint32_t v = wall_border_px; v + wall_border_px < p.size.height && !p.valid.empty();
+         v++)
+        for (std::uint32_t u = wall_border_px; u + wall_border_px < p.size.width; u++)
+        {
+            const bool near_border =
+                u + wall_border_px >= patch_left && u < patch_right + wall_border_px &&
+                v + wall_border_px >= patch_top && v < patch_bottom + wall_border_px &&
+                !(u >= patch_left + wall_border_px && u + wall_border_px < patch_right &&
+                  v >= patch_top + wall_border_px && v + wall_border_px < patch_bottom);
+            if (near_border)
+                continue;
+            const std::size_t i = gca_test::index_of(p.size, u, v);
+            if (p.valid[i] == 0 || gca_test::is_zero(p.normals[i]))
+            {
+                missed++;
+                continue;
+            }
+            const bool patch = in_patch(u, v);
+            behind += !patch && tile_meets_patch_blocks(u, v);
+            depth.add(std::abs(double{p.points[i].z} - 1e-3 * (patch ? patch_mm : wall_mm)));
+            normal.add(angle_deg(to_double(p.normals[i]), Eigen::Vector3d(0.0, 0.0, -1.0)));
+        }
+    std::printf("%s: %zu valid pixels, %zu of the wall in tiles the patch's blocks reach\n",
+                m.name.c_str(), valid_count(p), behind);
+    check(behind > 0, (m.name + ": pixels of the wall in tiles the patch's blocks reach").c_str());
+    check_within((m.name + ": pixels away from the borders without a surface or a normal").c_str(),
+                 missed, 0.0);
+    gca_test::check_max_error(m.name + ": depth's error, m", depth, wall_depth_tolerance_m);
+    gca_test::check_max_error(m.name + ": normal's angle from -z, deg", normal,
+                              wall_normal_tolerance_deg);
+    check(w.pool.refused_while_closed() == 0,
+          "patch before a wall: the closed pool asked for nothing");
+}
+
+/// How far in front of the wall the camera lies inside its band: 2.5 mm, so that the block of
+/// voxels around the camera's centre is held and reaches behind the camera's plane
+/// [?: a choice].
+constexpr double inside_band_m = 0.0025;
+
+/// The wall fused once from the identity, cast from a camera inside its band, 2.5 mm in front of
+/// it, with the depth range starting at 0: the march starts at the camera's centre, in a held block
+/// that reaches behind the camera's plane and so covers the whole picture
+/// (docs/methods/sparse-tsdf.md, "The ray cast", "The depth interval"); every pixel inside the
+/// picture's border holds the wall 2.5 mm away, its normal along -z.
+/// @param stream [in] the stream.
+void check_inside_band(cudaStream_t stream)
+{
+    const gca::frame wall = flat_wall(wall_mm, wall_color);
+    fused_wall w("inside a wall's band", {&wall}, stream);
+    const model_case &m = w.m;
+    const gca::intrinsics &k = small_description.intrinsics;
+    const gca::organized_points_parameters from_centre = {0.0f, m.range.far_m};
+    const Eigen::Isometry3d inside(Eigen::Translation3d(0.0, 0.0, 1e-3 * wall_mm - inside_band_m));
+    const cast_pictures pictures =
+        cast(w.tsdf, inside, k, from_centre, w.surfaces[0], stream, m.name);
+    check_levels(m.name, pictures, k, from_centre);
+    const cast_picture &p = pictures[0];
+    int missed = 0;
+    max_error depth;
+    max_error normal;
+    for (std::uint32_t v = wall_border_px; v + wall_border_px < p.size.height && !p.valid.empty();
+         v++)
+        for (std::uint32_t u = wall_border_px; u + wall_border_px < p.size.width; u++)
+        {
+            const std::size_t i = gca_test::index_of(p.size, u, v);
+            if (p.valid[i] == 0 || gca_test::is_zero(p.normals[i]))
+            {
+                missed++;
+                continue;
+            }
+            depth.add(std::abs(double{p.points[i].z} - inside_band_m));
+            normal.add(angle_deg(to_double(p.normals[i]), Eigen::Vector3d(0.0, 0.0, -1.0)));
+        }
+    std::printf("%s: %zu valid pixels\n", m.name.c_str(), valid_count(p));
+    check_within((m.name + ": pixels inside the border without the wall or its normal").c_str(),
+                 missed, 0.0);
+    gca_test::check_max_error(m.name + ": depth's error, m", depth, wall_depth_tolerance_m);
+    gca_test::check_max_error(m.name + ": normal's angle from -z, deg", normal,
+                              wall_normal_tolerance_deg);
+    check(w.pool.refused_while_closed() == 0,
+          "inside a wall's band: the closed pool asked for nothing");
+}
+
+/// The near patch of check_widened_tiles(): its pixels in the fused frame, columns 97 to 142 and
+/// rows 97 to 134, at 350 mm, 150 mm in front of the wall [?: a choice: a corner of the picture,
+/// borders inside tiles of 8 x 8 pixels].
+constexpr std::uint32_t near_left = 97;
+constexpr std::uint32_t near_right = 143;
+constexpr std::uint32_t near_top = 97;
+constexpr std::uint32_t near_bottom = 135;
+constexpr std::uint16_t near_mm = 350;
+
+/// How far from the near patch's pixels, at 640x400, a ray may come within reach of its observed
+/// voxels: 8 px [?: a choice], above the 2 voxels a sample reaches at 350 mm, 3.5 px [S: computed,
+/// 306.18 px * 4 mm / 350 mm]; at 1280x800 twice as many.
+constexpr std::uint32_t near_reach_px = 8;
+
+/// How far past the near patch's pixels its blocks project, at 640x400: 15 px, a block of 16 mm at
+/// 336 mm, 14.6 px [S: computed, 306.18 px * 16 mm / 336 mm]; a pixel between near_reach_px and
+/// this lies where the patch's blocks may widen its tile's interval.
+constexpr std::uint32_t near_blocks_px = 15;
+
+/// The wall cast from the identity through two models: the wall alone, and the wall with a patch in
+/// front of it fused from a second frame whose other pixels have no depth, so that its voxels
+/// change none of the wall's. The patch's blocks widen the depth intervals of the tiles they cover:
+/// there the second model's march looks up blocks from the patch's depth on, where the first steps
+/// past them to the wall (docs/methods/sparse-tsdf.md, "The ray cast", "The depth interval").
+/// Every pixel of every level whose ray stays out of the patch's reach is the same bit for bit in
+/// both casts, its point, mark, normal and intensity, at both stream sizes.
+/// @param stream [in] the stream.
+void check_widened_tiles(cudaStream_t stream)
+{
+    const gca::frame wall = flat_wall(wall_mm, wall_color);
+    const gca::frame patch = gca_test::wall_frame(
+        [](std::uint32_t u, std::uint32_t v) {
+            return u >= near_left && u < near_right && v >= near_top && v < near_bottom
+                       ? near_mm
+                       : std::uint16_t{0};
+        },
+        wall_color);
+    fused_wall alone("the wall alone", {&wall}, stream);
+    fused_wall widened("the wall behind a near patch", {&wall, &patch}, stream);
+    const Eigen::Isometry3d identity = Eigen::Isometry3d::Identity();
+    const std::array<gca::frame_description, 2> sizes = {small_description, large_description};
+    for (std::size_t s = 0; s < sizes.size(); s++)
+    {
+        const std::string what = "widened tiles, " + gca::size_text(sizes[s].size);
+        const gca::intrinsics &k = sizes[s].intrinsics;
+        const cast_pictures a =
+            cast(alone.tsdf, identity, k, alone.m.range, alone.surfaces[s], stream, what);
+        const cast_pictures b =
+            cast(widened.tsdf, identity, k, widened.m.range, widened.surfaces[s], stream, what);
+        // At 1280x800 a pixel of the fused frame spans two.
+        const std::uint32_t scale = static_cast<std::uint32_t>(s) + 1;
+        // Whether a pixel of level 0 lies within a distance of the patch's pixels.
+        const auto within = [scale](std::uint32_t u, std::uint32_t v, std::uint32_t px) {
+            return u + scale * px >= scale * near_left && u < scale * (near_right + px) &&
+                   v + scale * px >= scale * near_top && v < scale * (near_bottom + px);
+        };
+        std::size_t compared = 0;
+        std::size_t near_blocks = 0;
+        std::size_t valid = 0;
+        int differing = 0;
+        for (std::size_t l = 0; l < levels; l++)
+        {
+            const cast_picture &x = a[l];
+            const cast_picture &y = b[l];
+            if (x.points.size() != y.points.size() || x.points.empty())
+                continue;
+            for (std::uint32_t v = 0; v < x.size.height; v++)
+                for (std::uint32_t u = 0; u < x.size.width; u++)
+                {
+                    const std::uint32_t u0 = u << l;
+                    const std::uint32_t v0 = v << l;
+                    if (within(u0, v0, near_reach_px))
+                        continue;
+                    const std::size_t i = gca_test::index_of(x.size, u, v);
+                    compared++;
+                    near_blocks += l == 0 && within(u0, v0, near_blocks_px);
+                    valid += l == 0 && x.valid[i] != 0;
+                    differing += !same_bits(x.points[i], y.points[i]) || x.valid[i] != y.valid[i] ||
+                                 !same_bits(x.normals[i], y.normals[i]) ||
+                                 std::memcmp(&x.intensity[i], &y.intensity[i], sizeof(float)) != 0;
+                }
+        }
+        std::printf("%s: %zu pixels of the three levels compared, %zu valid at level 0, %zu at "
+                    "level 0 within the patch's blocks' reach\n",
+                    what.c_str(), compared, valid, near_blocks);
+        check(near_blocks > 0 && valid > compared / 2,
+              (what + ": pixels compared within the patch's blocks' reach, most of them valid")
+                  .c_str());
+        check_within((what + ": pixels not the same bit for bit").c_str(), differing, 0.0);
+    }
+    check(alone.pool.refused_while_closed() == 0 && widened.pool.refused_while_closed() == 0,
+          "widened tiles: the closed pools asked for nothing");
 }
 
 /// Prints the median, the 99th percentile and the largest of values, and checks the median and
@@ -906,6 +1276,10 @@ int main()
         return gca_test::check_summary("test_sparse_tsdf_ray_cast");
     check_wall(stream);
     check_half_wall(stream);
+    check_wall_turned(stream);
+    check_patch_before_wall(stream);
+    check_inside_band(stream);
+    check_widened_tiles(stream);
     check_scene({model_of("tabletop, live model", gca::object_class::tabletop_object, false),
                  gca_test::tabletop_sphere_scene(), gca_test::tabletop_walk(),
                  gca_test::tabletop_delta, tabletop_tolerances},

@@ -169,6 +169,11 @@ constexpr std::uint32_t max_blocks_per_ray = 64;
 /// new observation counts 1 / (W_max + 1).
 constexpr std::uint16_t max_voxel_weight = 64;
 
+/// The side of a tile of the ray cast's depth intervals, in px of level 0
+/// (docs/methods/sparse-tsdf.md, "The ray cast", "The depth interval") [?: a choice; 16 took within
+/// 0.3 % of its times, M 2026-11-15: docs/HARDWARE.md, "The ray cast"].
+constexpr std::uint32_t depth_tile_px = 8;
+
 /// A point of the surface as the extraction gives it (docs/methods/sparse-tsdf.md, "The
 /// extraction"), on the GPU: where the distance changes sign between two neighbouring voxels.
 struct surface_point
@@ -364,8 +369,10 @@ private:
 /// registration takes as the surface at each level (registration/registration.hpp,
 /// organized_surface), so that the cast hands over all of the pyramid's levels; it gives no RGB
 /// color, the registration being its one reader [?: a choice; a reader that needs the cast's colors
-/// adds them]. The images' memory comes from the pool that closes. Move-only. Not synchronized: one
-/// thread at a time uses one.
+/// adds them]. Besides, for the cast's own use, an image of the depths each tile of
+/// depth_tile_px x depth_tile_px pixels of level 0 sees the held blocks at
+/// (docs/methods/sparse-tsdf.md, "The ray cast", "The depth interval"). The images' memory comes
+/// from the pool that closes. Move-only. Not synchronized: one thread at a time uses one.
 class model_surface
 {
 public:
@@ -373,15 +380,16 @@ public:
     model_surface() noexcept = default;
 
     /// Requests every level's images from the pool: the points, the marks, the normals and the
-    /// intensity.
+    /// intensity; and the image of the tiles' depth intervals.
     /// @param pool [in,out] the pool; open, else the request is refused as closed.
     /// @param size [in] level 0's size, the picture the ray cast fills, in px, each > 0.
     /// @return granted, with a surface whose images and intrinsics are not set until the first ray
     ///         cast; or the first of its requests that was refused, with its status and message
     ///         (gpu_pool::request()), a size of 0 among them.
     /// @note Allocates device memory (cudaMalloc, four times per level: 29 bytes per pixel of the
-    ///       level [S: 12 for a point, 1 for a mark, 12 for a normal, 4 for an intensity]), so it
-    ///       is called before the pool is closed; whether cudaMalloc waits for the GPU is not
+    ///       level [S: 12 for a point, 1 for a mark, 12 for a normal, 4 for an intensity]; once
+    ///       more for the tiles: 8 bytes per tile of level 0, 0.125 bytes per pixel [S]), so it is
+    ///       called before the pool is closed; whether cudaMalloc waits for the GPU is not
     ///       stated by CUDA [?]. Allocates for the message when refused; a failed allocation ends
     ///       the program (std::terminate): the function is noexcept. Two threads may not request
     ///       from one pool at once.
@@ -470,6 +478,7 @@ private:
     };
 
     std::array<level_images, frame_pyramid::level_count> m_levels;
+    gpu_image<uint2> m_depth_tiles; ///< each tile's depth interval, written and read by each cast
 };
 
 /// What an extraction gave: the points it found and wrote, or why not.
@@ -719,7 +728,12 @@ public:
     /// to >= 0 first (a back face), no change, a crossing beyond the far limit, or a crossing whose
     /// own 8 voxels are not all observed leaves the pixel invalid. Each coarser level is the cast
     /// at K / 2^l, whose ray at pixel (u, v) is level 0's at (2^l u, 2^l v): the thread of that
-    /// pixel writes it.
+    /// pixel writes it. Before the march every block the hash holds is projected into the picture,
+    /// and each tile of depth_tile_px x depth_tile_px pixels of level 0 keeps the least and the
+    /// greatest depth of the blocks whose projection, rounded out to whole pixels, covers it; a ray
+    /// steps past the blocks before its tile's interval without a lookup or a sample, and ends past
+    /// the interval, which leaves every pixel as the march through every block gives it, bit for
+    /// bit (docs/methods/sparse-tsdf.md, "The ray cast", "The depth interval").
     /// @param pose [in] the camera's pose, camera frame to the models' frame, as
     ///        allocate_near_surface() takes it: its position finite and in m, its orientation a
     ///        finite quaternion, not zero, normalized here; both rounded to float.
@@ -731,8 +745,9 @@ public:
     ///        and its check (organized_points::range_refusal()), so that the range the frame's
     ///        pyramid is built with (frame_pyramid_parameters::range) is passed as it is and
     ///        refused by the same rule.
-    /// @param out [in,out] the surface written: every pixel of every level, and the levels'
-    ///        intrinsics; owned by the caller, which holds it until the work queued here has run.
+    /// @param out [in,out] the surface written: every pixel of every level, the levels'
+    ///        intrinsics and the tiles' depth intervals; owned by the caller, which holds it until
+    ///        the work queued here has run.
     /// @param stream [in] the CUDA stream of the current device the work is queued on, ordered
     ///        after the integrations it is to see; owned by the caller. Work queued on it later
     ///        sees the surface.
@@ -742,19 +757,23 @@ public:
     ///         used (usable_intrinsics()), the depth range is refused
     ///         (organized_points::range_refusal()), or the pose rounded to float is not finite or
     ///         its orientation is zero. Not done with CUDA's error, which is then cleared: when
-    ///         CUDA's last error is set before the launch, by an earlier call, with nothing queued;
-    ///         when CUDA refuses the launch, for a picture whose rows need more than 65535 blocks
-    ///         of 8 rows, with the surface's images then unspecified.
-    /// @note One kernel on stream, in the stages' block of 32 x 8 threads (gpu/kernel_launch.cuh),
-    ///       which reads the hash and the voxels and writes only the surface. A thread walks the
-    ///       blocks its ray crosses between the range's depths, at most sqrt(3) L / (8 v) + 4 for a
-    ///       ray of length L there [S: the grid traversal, docs/methods/sparse-tsdf.md, "The
-    ///       allocation near a frame's surface"], so its time grows with the range: the object
-    ///       class's is the one it is made for. Waits for nothing: cudaPeekAtLastError before and
-    ///       cudaGetLastError after ask only whether an error is set. Allocates nothing when done;
-    ///       allocates for the message when not, and a failed allocation ends the program
-    ///       (std::terminate): the function is noexcept. Two threads may call it at once only with
-    ///       different surfaces, and while no thread inserts, allocates or integrates.
+    ///         CUDA's last error is set before the call, by an earlier call, with nothing queued;
+    ///         when CUDA refuses the tiles' clearing, with nothing queued, or a launch, for a
+    ///         picture whose rows need more than 65535 blocks of 8 rows, with the surface's images
+    ///         then unspecified.
+    /// @note Queues on stream the clearing of the tiles (cudaMemsetAsync), a kernel of a thread
+    ///       for each slot of the hash, which reads the hash and writes only the tiles, and the
+    ///       march's kernel, in the stages' block of 32 x 8 threads (gpu/kernel_launch.cuh), which
+    ///       reads the tiles, the hash and the voxels and writes only the surface. A thread walks
+    ///       the blocks its ray crosses between the range's depths, at most sqrt(3) L / (8 v) + 4
+    ///       for a ray of length L there [S: the grid traversal, docs/methods/sparse-tsdf.md, "The
+    ///       allocation near a frame's surface"], and looks up those within its tile's interval,
+    ///       so its time grows with the range and the held blocks it sees: the object class's
+    ///       range is the one it is made for. Waits for nothing: cudaPeekAtLastError before and
+    ///       cudaGetLastError after each launch ask only whether an error is set. Allocates nothing
+    ///       when done; allocates for the message when not, and a failed allocation ends the
+    ///       program (std::terminate): the function is noexcept. Two threads may call it at once
+    ///       only with different surfaces, and while no thread inserts, allocates or integrates.
     step_result ray_cast(const camera_pose &pose, const gca::intrinsics &k,
                          const organized_points_parameters &range, model_surface &out,
                          cudaStream_t stream) const noexcept;

@@ -305,46 +305,58 @@ table's order of size and voxel: 1.037, 1.392, 2.416 and 3.048 ms at 24; 1.115, 
 3.037 ms at 96; 1.151, 1.612, 2.614 and 3.384 ms at 384 [M 2026-11-15, 01:47 to 01:51, as the
 table]. So 24 is kept: 0.4 % longer to 8.2 % shorter than 96, 7.6 % to 13.7 % shorter than 384.
 
-**The ray cast** (docs/methods/sparse-tsdf.md, "The ray cast"): `sparse_tsdf::ray_cast()`, its one
-kernel timed by CUDA events, and the host's call, over 20 s per case after 5 s, the same cast again
-and again from the first pose of the walk, into a `model_surface` of the cast's size. The scenes of
-`tests/test_sparse_tsdf_ray_cast.cpp`: the tabletop sphere on its plane fused from its walk of 12
-frames at 640x400 at 2 mm voxels, range 0.30 m to 1.0 m, 6779 blocks; the large sphere on its
-plane of 3 m x 3 m from its walk at 8 mm, 0.4 m to 3.0 m, 11284 blocks; a sparse TSDF of 273 MB,
-65536 blocks [M 2026-11-15, 06:56 to 07:00, MAXN_SUPER by `nvpmodel -q`, under the build lock, a
-scratch program; `/sys/class/devfreq/17000000.gpu/cur_freq` sampled every 16 runs]. Back to back
-the GPU runs at 1020 MHz; paced at 30 fps the governor kept it at 408 and 510 MHz at 640x400 and
-at 1020 MHz at 1280x800, where the cast takes most of a frame's time.
+**The ray cast** (docs/methods/sparse-tsdf.md, "The ray cast"): `sparse_tsdf::ray_cast()`, the
+clearing of its tiles and its two kernels timed together by CUDA events, and the host's call, over
+20 s per case after 5 s, the same cast again and again from the first pose of the walk, into a
+`model_surface` of the cast's size. The scenes of `tests/test_sparse_tsdf_ray_cast.cpp`: the
+tabletop sphere on its plane fused from its walk of 12 frames at 640x400 at 2 mm voxels, range
+0.30 m to 1.0 m, 6779 blocks; the large sphere on its plane of 3 m x 3 m from its walk at 8 mm,
+0.4 m to 3.0 m, 11284 blocks; a sparse TSDF of 273 MB, 65536 blocks and 262144 slots [M 2026-11-15,
+10:15 to 10:18, MAXN_SUPER by `nvpmodel -q`, under the build lock, a scratch program;
+`/sys/class/devfreq/17000000.gpu/cur_freq` sampled every 16 runs; the kernel log empty after it].
+Back to back the GPU runs at 1020 MHz; paced at 30 fps the governor kept it at 306 and 408 MHz at
+640x400, at 816 and 1020 MHz at 1280x800.
 
-| size | voxel | valid pixels | pace | kernel median / p95 / max | GPU clock | host call median |
+| size | voxel | valid pixels | pace | median / p95 / max | GPU clock | host call median |
 |---|---|---|---|---|---|---|
-| 640x400 | 2 mm | 130678 | 30 fps | 21.064 / 21.120 / 21.170 ms | 408 MHz | 0.010 ms |
-| 640x400 | 2 mm | | back to back | 8.796 / 8.823 / 9.631 ms | 1020 MHz | 0.005 ms |
-| 1280x800 | 2 mm | 523234 | 30 fps | 27.928 / 27.956 / 28.008 ms | 1020 MHz | 0.007 ms |
-| 1280x800 | 2 mm | | back to back | 28.036 / 28.068 / 28.103 ms | 1020 MHz | 0.006 ms |
-| 640x400 | 8 mm | 117477 | 30 fps | 19.656 / 19.726 / 19.788 ms | 510 MHz | 0.013 ms |
-| 640x400 | 8 mm | | back to back | 10.069 / 10.100 / 10.156 ms | 1020 MHz | 0.005 ms |
-| 1280x800 | 8 mm | 470646 | 30 fps | 31.093 / 31.124 / 31.149 ms | 1020 MHz | 0.007 ms |
-| 1280x800 | 8 mm | | back to back | 31.082 / 31.111 / 31.142 ms | 1020 MHz | 0.006 ms |
+| 640x400 | 2 mm | 130678 | 30 fps | 20.110 / 20.190 / 20.251 ms | 306 MHz | 0.035 ms |
+| 640x400 | 2 mm | | back to back | 6.354 / 6.380 / 6.409 ms | 1020 MHz | 0.015 ms |
+| 1280x800 | 2 mm | 523234 | 30 fps | 22.389 / 22.444 / 23.288 ms | 816 MHz | 0.023 ms |
+| 1280x800 | 2 mm | | back to back | 17.966 / 18.006 / 18.046 ms | 1020 MHz | 0.015 ms |
+| 640x400 | 8 mm | 117477 | 30 fps | 18.602 / 18.674 / 18.758 ms | 408 MHz | 0.032 ms |
+| 640x400 | 8 mm | | back to back | 7.747 / 7.778 / 8.609 ms | 1020 MHz | 0.015 ms |
+| 1280x800 | 8 mm | 470646 | 30 fps | 21.399 / 21.437 / 21.478 ms | 1020 MHz | 0.020 ms |
+| 1280x800 | 8 mm | | back to back | 21.402 / 21.438 / 21.486 ms | 1020 MHz | 0.015 ms |
 
-The ray cast is the per-frame path's longest stage measured so far: at 1280x800 it alone takes
-28 ms to 31 ms at the full clock, near a frame's 33 ms [S: computed, the table]. The same
-measurement before the allocation and the cast shared one copy of the grid traversal gave
-medians within 0.4 % of these, back to back 8.809, 27.982, 10.064 and 30.966 ms [M 2026-11-15,
-06:27 to 06:31]. The march's cache of the last other block a voxel was found in took 11 % to 16 %
-off the back-to-back medians (docs/methods/sparse-tsdf.md, "The ray cast", "On the GPU"). A jump
+The march through every block, before the depth interval, took 8.809, 28.046, 10.074 and 31.111 ms
+back to back in the table's order, and paced 21.065 ms at 408 MHz, 27.931 ms at 1020 MHz, 19.659 ms
+at 510 MHz and 31.098 ms at 1020 MHz [M 2026-11-15, 10:11 to 10:15, the same run]: the depth
+interval takes 23 % to 36 % off the back-to-back medians, and paced 4.5 % and 5.4 % off at 640x400
+and 20 % and 31 % at 1280x800, the governor lowering the clock by a step in three of the four cases
+[S: computed]. Its host call, for the clearing and the second launch, takes 0.009 to 0.010 ms more
+back to back and 0.013 to 0.024 ms more paced: its medians before were 0.011, 0.007, 0.012 and
+0.007 ms paced and 0.005 to 0.006 ms back to back [M 2026-11-15, 10:11 to 10:18, the same runs]. Two
+later runs of the same program gave back-to-back medians within 0.3 % of the table's [M 2026-11-15,
+10:36 and 10:47]. Tiles of 16 x 16 pixels gave 6.365, 17.955, 7.766 and 21.378 ms, within 0.3 %
+[M 2026-11-15, 10:18 to 10:22], so the tiles stay at 8 x 8. The depth interval reads every slot of
+the hash: the clearing of the tiles at 1280x800 and its kernel over empty slots took 0.045 ms for
+2^18 slots, the table's, and 0.260 ms for 2^21, the object classes' sparse TSDF at 2.0 GB, which
+therefore adds about 0.22 ms to the table's casts [M 2026-11-15, 11:08, back to back, a scratch
+program; S: computed]. Where the rest of the time goes and what was measured and not built:
+docs/methods/sparse-tsdf.md, "The ray cast". Before the depth interval, the march's cache of the
+last other block a voxel was found in took 11 % to 16 % off the back-to-back medians, and a jump
 over a block without voxels to the first sample past its exit, in place of stepping through its
 samples' indices, made them 7 % to 10 % longer, 9.569, 30.090, 11.118 and 33.717 ms back to back,
-the kernel at 68 registers a thread against 64 [M 2026-11-15, 07:00 to 07:04, as the table;
-B 2026-11-15: `cuobjdump -res-usage`], so it is not kept. How the rest of the time divides between
-the march through empty blocks, the samples in held blocks and the normal's 48 voxels was not
-measured [?].
+the kernel at 68 registers a thread against 64 [M 2026-11-15, 07:00 to 07:04; B 2026-11-15:
+`cuobjdump -res-usage`], so it is not kept.
 
-Back to back, the stages measured so far add up to 13.7 ms and 16.3 ms a frame at 640x400 and
-41.9 ms and 46.6 ms at 1280x800, at 2 mm and 8 mm voxels: the upload on an idle stream, the
+Back to back, the stages measured so far add up to 11.2 ms and 14.0 ms a frame at 640x400 and
+31.8 ms and 36.9 ms at 1280x800, at 2 mm and 8 mm voxels: the upload on an idle stream, the
 pyramid, the ray cast, the registration of the tabletop pair (below) and the integration
-[S: computed, the medians of this section; the stages' scenes differ]. At 1280x800 the path built
-so far does not fit a frame's 33 ms even at the full clock.
+[S: computed, the medians of this section; the stages' scenes differ]; with the march through every
+block 13.7, 16.3, 41.9 and 46.6 ms. At 1280x800 the path built so far fits a frame's 33 ms at the
+full clock only at 2 mm, with 1.5 ms to spare, before the slot scan's 0.22 ms at 2.0 GB
+[S: computed, 33.3 ms less the sum].
 
 **The registration of one frame** (docs/methods/registration.md): the host's call of
 `registration::align()` by the full method, both terms coarse to fine with the tabletop object's
@@ -481,5 +493,6 @@ list, is a stop condition (AGENTS.md §3).
 | `usb 1-2.N: USB disconnect` 2 to 4 s after plugging in, two or three times, then stable | benign [?] | the camera re-enumerates after power-up; seen on every plug-in on USB 2, not on USB 3 | [M 2026-11-13] |
 | `Failed to query (GET_INFO) UVC control 18 on unit 3: -32 (exp. 1).` | benign [?] | uvcvideo probes a control the camera does not answer; on every enumeration, before any program ran | [M 2026-11-13] |
 | `Found UVC 1.10 device Orbbec(R) Gemini 2 L(TM) (2bc5:0673)`, `hid-generic ... hidraw0` | benign | enumeration; also each time a program closes the camera and uvcvideo takes it back | [M 2026-11-13] |
+| `usb 1-N.M: new full-speed USB device number D using tegra-xusb`, then `input: ...` and `hid-generic ... USB HID ... Keyboard [...]`, and later that device's `usb 1-N.M: USB disconnect, device number D` | benign | a USB keyboard or other input device plugged in or out on the board's USB 2 bus, not the camera; the camera's own `USB disconnect` while it streams stays a stop condition (AGENTS.md §3) | [M 2026-11-15: usb 1-2.3, "SONiX QK65 KB", in at 12:00:09, out at 12:05:40, the camera on bus 2 at 5000M throughout (`lsusb -t`); the user's answer: they plugged the keyboard in and out] |
 | `uvcvideo 1-2.N:1.1:` or `2-1.N:1.1: Unknown video format 20343159-0000-0010-8000-00aa00389b71` | benign | uvcvideo does not know the depth format Y14 (the GUID starts with the FourCC `Y14 `); after a program closes the camera | [M 2026-11-13], [S] UVC GUID layout |
 | `perf: interrupt took too long (A > B), lowering kernel.perf_event_max_sample_rate to R` | benign while a profiler samples the CPU (`nsys profile`, `perf record`) [?: seen once]; with no profiler running, a stop condition | the kernel's handling of the profiler's samples took longer than `kernel.perf_cpu_time_max_percent` (25) allows, so it lowers the samples per second it grants [?: the sysctl's documented purpose, not read here]; the lowered rate stays: 30000 two hours later | [M 2026-11-14: five lines at 19:50:48 to 19:50:51, the only ones of that boot; an `nsys profile` session of a scratch timing program began at 19:50:48 and recorded 1979 CPU samples (its report's tables `TARGET_INFO_SESSION_START_TIME`, `SAMPLING_CALLCHAINS`); about 130 runs of the hash experiment that day, with no profiler, logged none; `sysctl kernel.perf_event_max_sample_rate` 30000 at 21:47] |

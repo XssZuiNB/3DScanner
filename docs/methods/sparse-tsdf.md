@@ -489,7 +489,47 @@ in the camera frame of the pose with its validity mark, a normal or none, and an
   A segment of length L visits at most sqrt(3) L / (8 v) + 4 blocks:
   125 at the tabletop object's live model, 0.30 m to 1.0 m at 2 mm voxels, and 116 at the large
   object's, 0.4 m to 3.0 m at 8 mm, along the camera's longest ray, |r| = 1.590 at either stream
-  size [S: computed]. No cap: the range is the object class's, and the time follows it.
+  size [S: computed]. No cap: the range is the object class's, and the time follows it. The walk
+  looks up only the blocks within its pixel's depth interval (the next point); the others it steps
+  past.
+* **The depth interval** [S: Kähler et al. 2015, InfiniTAM's ray cast on a hash of voxel blocks,
+  and Nießner et al. 2013, section 7, the method from the papers, no library's code read or
+  copied]: before the march, every block the hash holds is projected into the picture of level 0,
+  and each tile of 8 x 8 pixels [?: a choice; 16 x 16 took within 0.3 % of its times (M 2026-11-15,
+  docs/HARDWARE.md, "The ray cast")] keeps the least and the greatest depth, along the camera's z,
+  of the corners of the blocks whose projection covers it. A block's projection is the rectangle
+  around its 8 corners' projections, rounded out to whole pixels; a block whose corners all lie
+  nearer than one block before the near limit, or farther than one block past the march's end, is
+  left out; one that reaches nearer than one block before the near limit is clipped there, its
+  corners beyond that plane and its edges' crossings of it projected; and when the near limit lies
+  within a block and 1 mm of the camera's plane, a block that reaches within 1 mm of it covers the
+  whole picture [?: a choice]. A ray then steps past the blocks it leaves before its tile's least
+  depth, without a lookup or a sample, takes as its first sample the one the march through every
+  block reaches there (the least index whose depth is at or past the block's entry: the lattice's
+  depths never fall from one index to the next), and ends at the first block it enters past its
+  tile's greatest depth; a tile no block covers leaves its rays invalid without a march. Every
+  block a ray passes through is one whose projection covers its pixel and whose corners' depths
+  bound the depths the ray has in it [S: a block is the convex hull of its corners, and the depth
+  along the camera's z is linear], so the blocks stepped past and those after the end hold no
+  voxels: their samples would be none, and the pixel is the one the march through every block
+  gives, bit for bit [M 2026-11-15: 1272 casts of four walls and the two scenes of "What the ray
+  cast gives", from the walks' poses, poses between them, 24 turned up to 15° and shifted up to
+  0.1 m, poses 0.15 m to 1.28 m nearer the scene, and the walls from in front, behind, inside their
+  band, turned and shifted, each in the object class's range, from 0 to its far limit and a narrow
+  one, at both stream sizes: all four images of all three levels compared with the march through
+  every block, 1.07e9 pixels, none differed; `tests/test_sparse_tsdf_ray_cast.cpp` compares a
+  cast with one whose tiles a held block in front widens, bit for bit]. The comparisons of depth
+  allow for the rounding of the walk's depths and the corners', 4 times its bound
+  [?: a choice] (`march_to_surface()`): 0.12 mm and 0.23 mm at the live models' ranges with the
+  camera within 1 m of the models' origin [?: an assumption; S: computed], about 0.7 mm at 10 m,
+  which costs a few more lookups, not a surface [S: computed]. The rectangle needs no widening: a
+  pixel's ray lies at a whole u and v, so rounding the rectangle out to whole pixels takes every
+  pixel less than 1 px, less the projection's rounding, outside it, and the walk's rounding across
+  the ray, (n + 1) 2^-23 L f / z_near for a walk of n blocks along a segment of length L, stays
+  below 0.1 px at the live models' ranges [S: computed]. After a stretch stepped past, the first
+  block looked up holds no voxels, as its depths begin before the tile's least depth [S: the bound
+  above]: its samples are none. The projection reads every slot of the hash, so its time grows
+  with S (docs/HARDWARE.md, "The ray cast").
 * **In a block it holds**: samples at the depths near + i Δz, one lattice along the whole ray, with
   Δz = μ_min v / (2 |r|), so that the step is half the least truncation along the ray in space, 2
   voxels at μ_min = 4 [?: initial; Nießner et al. 2013, section 7: "we skip a predefined interval
@@ -584,15 +624,53 @@ in the camera frame of the pose with its validity mark, a normal or none, and an
   8.8 mm there (docs/methods/registration.md, "Accuracy"), and the color term's minimum moves with
   it; the tabletop object 0.077 mm against 0.059 mm.
 
-**On the GPU**: one kernel, one thread for each pixel of level 0 in the stages' block of 32 x 8,
-which reads the hash and the voxels and writes only the surface; it allocates nothing, waits for
-nothing and reads nothing back. A ray keeps the block it marches in and the last other block it
-found a voxel in, so that a sample's 8 voxels and a normal's 48, which lie in one or a few blocks,
-look each block up about once: back to back 11 % to 16 % shorter than one lookup for every voxel
-outside the march's block [M 2026-11-15: 9.945, 31.711, 12.044 and 36.772 ms against 8.809, 27.982,
-10.064 and 30.966 ms, the cases of docs/HARDWARE.md, "The ray cast"]. The kernel uses 64 registers
-a thread and 24 bytes of stack [B 2026-11-15: `cuobjdump -res-usage`]. Its time stands in
-docs/HARDWARE.md, "The ray cast".
+**On the GPU**: the clearing of the tiles (one `cudaMemsetAsync`, 8 bytes a tile), the depth
+interval's kernel, one thread for each slot of the hash, which reads the hash and writes only the
+tiles, and the march's kernel, one thread for each pixel of level 0 in the stages' block of 32 x 8,
+which reads the tiles, the hash and the voxels and writes only the surface; they allocate nothing,
+wait for nothing and read nothing back, and the tiles come from the pool with the surface. A ray
+keeps the block it marches in and the last other block it found a voxel in, so that a sample's 8
+voxels and a normal's 48, which lie in one or a few blocks, look each block up about once: back to
+back 11 % to 16 % shorter than one lookup for every voxel outside the march's block [M 2026-11-15:
+9.945, 31.711, 12.044 and 36.772 ms against 8.809, 27.982, 10.064 and 30.966 ms, the cases of
+docs/HARDWARE.md, "The ray cast", before the depth interval]. The depth interval took 23 % to 36 %
+off the back-to-back medians [M 2026-11-15: docs/HARDWARE.md, "The ray cast"]. The march's kernel
+uses 64 registers a thread and 32 bytes of stack, the depth interval's 43 registers
+[B 2026-11-15: `cuobjdump -res-usage`]. Its time stands in docs/HARDWARE.md, "The ray cast".
+
+**Where the time goes, and what was measured and not built** (`ray-cast-faster-by-measurement`;
+back-to-back medians at 640x400 and 1280x800, 2 mm then 8 mm, in the scenes of docs/HARDWARE.md,
+"The ray cast"; scratch copies of the kernel with one part taken out [M 2026-11-15, 09:55 to
+11:08]):
+
+* Before the depth interval, the march through blocks the hash does not hold, before a ray's first
+  held block and after its last, took 25 %, 33 %, 20 % and 28 % of the cast, the part the interval
+  takes out: about half the pixels of the scenes see no surface and walked 78 to 89 blocks, nearly
+  all without a held one, and 86 % to 88 % of a cast's lookups found no block.
+* With the depth interval, the normal's 48 voxels take 48 %, 48 %, 37 % and 36 % of the cast
+  (3.302, 9.347, 4.883 and 13.733 ms without them, against 6.354, 17.966, 7.747 and 21.402), and
+  the samples before the crossing's pair within the held blocks 24 %, 23 %, 33 % and 33 % of a
+  cast whose rays start at their first held block (each ray started at that pair instead). Each
+  voxel's read is followed by its check before the next voxel's read [B 2026-11-15: `cuobjdump
+  -sass`].
+* Not built, as none shortens the cast by more than 10 % at both stream sizes [?: initial, the
+  ticket's threshold], against the cast with the depth interval, each made to keep the cast bit for
+  bit (the three as first built compared as above: none differed): the 8 voxels of an interpolation
+  read before their checks, 5 % to 9 % longer at 80 registers a thread [B 2026-11-15: `cuobjdump
+  -res-usage`], 0.6 % to 2.1 % shorter held at 64 registers by the launch bounds (88 bytes of stack
+  [B 2026-11-15: `cuobjdump -res-usage`]), 23 % to 25 % longer together with the next; the crossing
+  and its normal computed after the march's loop, where a warp's threads meet again, 2.5 % to 4.0 %
+  shorter; the 2 x 2 x 2 blocks around a crossing each looked up once, 42 % to 52 % longer at 76
+  registers and 48 bytes of stack [B 2026-11-15: `cuobjdump -res-usage`]. Paced, where the governor
+  kept the clock, the second was 2.4 % to 4.1 % shorter; the others' paced times moved with the
+  clock the governor chose (the ticket's Comments). Their code is backed up outside the tree.
+* Not tried: starting a ray near the depth the last cast found at its pixel, and longer steps where
+  the samples' distance is truncated in front of the surface. Neither keeps every surface the march
+  through every block finds: the first misses a surface that came before the last depth, the second
+  one fused at a slant or thinner than its step, which tracking would show as drift. Their most is
+  the samples before the crossing's pair above; at the tabletop object's live model the truncation
+  is μ_min out to 0.52 m, so a sample's distance there is at most twice the step and a longer step
+  saves at most one sample in two [S: computed, "The truncation distance"].
 
 ## The extraction
 

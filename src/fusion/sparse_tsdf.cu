@@ -978,6 +978,8 @@ struct ray_march
     float far_m;        ///< the deepest crossing taken, along the camera's z, in m
     float step_z;       ///< the samples' step along the camera's z, in m: mu_min v / 2 / |r|
     float voxels_per_m; ///< 1 / v
+    float held_near_m;  ///< the least depth of the held blocks the ray's tile sees, in m
+    float held_far_m;   ///< their greatest depth, in m
 };
 
 /// Gives the depth of a sample of a march: the lattice near_m + i step_z along the whole ray.
@@ -988,6 +990,26 @@ struct ray_march
 __device__ inline float sample_depth(const ray_march &march, std::uint32_t i)
 {
     return march.near_m + static_cast<float>(i) * march.step_z;
+}
+
+/// Gives the first sample of a march at or past a depth: the index the march through every block
+/// reaches there, as its samples' depths never fall from one index to the next (sample_depth(), a
+/// sum and a product in float of a growing index, each rounded to the nearest [S]).
+/// @param march [in] the ray.
+/// @param depth [in] the depth, along the camera's z, in m, from near_m to one step past far_m.
+/// @return the least i with sample_depth(march, i) >= depth.
+/// @note Device code; allocates nothing. The estimate (depth - near_m) / step_z lies within a few
+///       indices of the answer, which the two loops then step to.
+__device__ inline std::uint32_t first_sample_at(const ray_march &march, float depth)
+{
+    const float estimate = (depth - march.near_m) / march.step_z;
+    // Below 2^32, so that the conversion is defined; the march's indices stay far below it.
+    std::uint32_t i = estimate > 0.0f ? static_cast<std::uint32_t>(fminf(estimate, 4.0e9f)) : 0u;
+    while (i > 0 && !(sample_depth(march, i - 1) < depth))
+        i--;
+    while (sample_depth(march, i) < depth)
+        i++;
+    return i;
 }
 
 /// Gives the point at a depth along a march's ray on the grid of the voxels' centres.
@@ -1044,21 +1066,34 @@ __device__ inline bool surface_between(const voxel_lookup &tsdf, const float_pos
 
 /// Marches one ray through the sparse TSDF to its surface (docs/methods/sparse-tsdf.md, "The ray
 /// cast"): the grid traversal of the allocation (block_walk) visits the blocks its segment from the
-/// near limit to one step past the far limit crosses, in order, one lookup each; in a block the
-/// hash holds no voxels for, every sample is none, without a voxel read, and ends the pair (the
-/// lattice's indices stepped through, faster than a jump to the block's exit, which took 7 % to
-/// 10 % longer [M 2026-11-15: docs/HARDWARE.md, "The ray cast"]); in a block it holds,
-/// the samples at the depths near_m + i step_z, one lattice along the whole ray, each the
-/// trilinear interpolation of 8 observed voxels or none, which also ends the pair. The first two
-/// consecutive samples from >= 0 to < 0 hold the surface (surface_between()); a change from < 0 to
-/// >= 0 before it is a back face, and the ray has none.
+/// near limit to one step past the far limit crosses, in order; in a block the hash holds no voxels
+/// for, every sample is none, without a voxel read, and ends the pair (the lattice's indices
+/// stepped through, faster than a jump to the block's exit, which took 7 % to 10 % longer
+/// [M 2026-11-15: docs/HARDWARE.md, "The ray cast"]); in a block it holds, the samples at the
+/// depths near_m + i step_z, one lattice along the whole ray, each the trilinear interpolation of
+/// 8 observed voxels or none, which also ends the pair. The first two consecutive samples from
+/// >= 0 to < 0 hold the surface (surface_between()); a change from < 0 to >= 0 before it is a back
+/// face, and the ray has none. The ray's tile bounds the blocks it looks up ("The depth
+/// interval"): a block it leaves before held_near_m less the margin is stepped past without a
+/// lookup or a sample, and the march ends at a block it enters after held_far_m plus the margin.
+/// Every block the ray crosses that the hash holds lies within that interval, so those it steps
+/// past and those after its end hold no voxels: their samples would be none, the pair is ended at
+/// the first block looked up, and the first sample there is the one the march through every block
+/// reaches (first_sample_at()): the ray's surface is the same bit for bit. The margin covers the
+/// rounding the walk's depths and the blocks' projected depths can gather: (n + 4) 2^-21 (z_end +
+/// |t|) for a walk of n blocks, z_end one step past the far limit and |t| the camera's distance
+/// from the models' origin, 4 times the walk's rounding after n additions and the corners'
+/// [?: a choice of the factor; the rounding S: float's, 2^-24 of a value for each operation].
+/// It is 0.12 mm and 0.23 mm at the live models' ranges, 125 and 116 blocks, with the camera within
+/// 1 m of the origin [?: an assumption; S: computed]; farther out it grows with |t|, about 0.7 mm
+/// at 10 m [S: computed], which costs lookups of a few more blocks, not a surface.
 /// @param tsdf [in] the hash and the voxels.
 /// @param pose [in] the camera's pose.
-/// @param march [in] the ray.
+/// @param march [in] the ray, with its tile's interval of held blocks.
 /// @param hit [out] the surface, when there is one.
 /// @return whether the ray meets the surface, from the front, within the range.
-/// @note Device code; allocates nothing. The thread visits the blocks the segment crosses, one
-///       lookup each, and a block's samples, 8 voxels each.
+/// @note Device code; allocates nothing. The thread visits the blocks the segment crosses, looks
+///       up those within the interval, one lookup each, and a held block's samples, 8 voxels each.
 __device__ inline bool march_to_surface(const voxel_lookup &tsdf, const float_pose &pose,
                                         const ray_march &march, ray_hit &hit)
 {
@@ -1070,17 +1105,37 @@ __device__ inline bool march_to_surface(const voxel_lookup &tsdf, const float_po
                     (march.origin + end_z * march.direction) * blocks_per_m, walk))
         return false;
     const float span = end_z - march.near_m;
+    const float margin =
+        static_cast<float>(walk.blocks + 4) * 0x1p-21f * (end_z + norm(march.origin));
+    const float first_m = march.held_near_m - margin;
+    const float last_m = march.held_far_m + margin;
     // Before the first block, the cache holds no block of the walk, so that each is looked up.
     block_cache cache{{{no_cell, no_cell, no_cell}, no_block},
                       {{no_cell, no_cell, no_cell}, no_block}};
-    bool paired = false; // whether the last sample is the one before the next
-    float before = 0.0f; // the last sample's distance, in voxels
-    std::uint32_t i = 0; // the next sample's index on the lattice
+    bool paired = false;          // whether the last sample is the one before the next
+    bool stepped_past = false;    // whether the last block was stepped past without a lookup
+    float before = 0.0f;          // the last sample's distance, in voxels
+    float entry_z = march.near_m; // the depth where the walk enters its block
+    std::uint32_t i = 0;          // the next sample's index on the lattice
     for (std::uint32_t visited = 0; visited < walk.blocks; visited++)
     {
         if (visited > 0)
             next_block(walk);
         const float exit_z = march.near_m + walk_exit(walk) * span;
+        if (exit_z < first_m)
+        {
+            stepped_past = true;
+            entry_z = exit_z;
+            continue;
+        }
+        if (entry_z > last_m)
+            return false;
+        if (stepped_past)
+        {
+            i = first_sample_at(march, entry_z);
+            stepped_past = false;
+        }
+        entry_z = exit_z;
         const block_coordinate b = walk_block(walk);
         if (same_block(b, cache.other.coordinate))
         {
@@ -1131,6 +1186,218 @@ struct cast_images
     cast_level levels[frame_pyramid::level_count]; ///< element l: level l
 };
 
+/// The tiles of the depth interval ("The depth interval"), by value as the kernels' argument.
+struct depth_tiles
+{
+    uint2 *codes;       ///< each tile's interval, rows dense: x the code of its least depth
+                        ///< (encoded_near()), y of its greatest (encoded_far()), both 0 when it
+                        ///< holds no block; device memory of the caller's model_surface
+    std::uint32_t wide; ///< the tiles in a row, >= 1: ceil(width / depth_tile_px)
+};
+
+/// Gives a tile.
+/// @param tiles [in] the tiles.
+/// @param x [in] the tile's column, below tiles.wide.
+/// @param y [in] its row, below the tiles' rows.
+/// @return the tile's two codes, in device memory.
+/// @note Device code; allocates nothing.
+__device__ inline uint2 &tile_at(const depth_tiles &tiles, std::uint32_t x, std::uint32_t y)
+{
+    return tiles.codes[static_cast<std::size_t>(y) * tiles.wide + x];
+}
+
+/// The picture the depth interval's tiles cover and how the march's segment lies in depth, by
+/// value as the depth interval's kernel's argument ("The depth interval").
+struct tile_view
+{
+    depth_tiles tiles; ///< the tiles, cleared to 0 before the kernel
+    frame_size size;   ///< level 0's width and height, in px
+    intrinsics k;      ///< level 0's intrinsics, in px, usable
+    float_pose pose;   ///< the camera's pose
+    float near_m;      ///< the march's first depth, in m
+    float end_m;       ///< its last, one step past the far limit, in m
+    float block_m;     ///< a block's edge, 8 v, in m
+};
+
+/// The least depth a corner of a block may have for the block to be projected, in m: a block that
+/// reaches nearer the camera's plane while the march starts within a block of it covers the whole
+/// picture [?: a choice, far below the object classes' near limits of 0.3 m and 0.4 m].
+constexpr float least_projected_depth_m = 1e-3f;
+
+/// Clamps a depth to +0 and above, so that its bits order as the depths do: a depth below 0, and
+/// -0, whose sign bit would make its code beat every other one, become +0; fmaxf(-0, 0) may give
+/// -0 [S: IEEE 754, the sign of a zero's maximum].
+/// @param depth_m [in] the depth, in m, finite.
+/// @return depth_m when > 0, else +0.
+/// @note Device code; allocates nothing.
+__device__ inline float at_least_zero(float depth_m)
+{
+    return depth_m > 0.0f ? depth_m : 0.0f;
+}
+
+/// Encodes a tile's least depth so that the atomic maximum of the codes keeps the least depth and
+/// 0 is no depth: the complement of the bits of the depth clamped to +0 and above
+/// (at_least_zero()), which order as the depths do [S: IEEE 754's layout].
+/// @param depth_m [in] the depth, in m, finite.
+/// @return its code, never 0.
+/// @note Device code; allocates nothing.
+__device__ inline std::uint32_t encoded_near(float depth_m)
+{
+    return ~__float_as_uint(at_least_zero(depth_m));
+}
+
+/// Encodes a tile's greatest depth so that the atomic maximum keeps the greatest depth and 0 is no
+/// depth: the bits of the depth clamped to +0 and above, plus 1.
+/// @param depth_m [in] the depth, in m, finite.
+/// @return its code, never 0.
+/// @note Device code; allocates nothing.
+__device__ inline std::uint32_t encoded_far(float depth_m)
+{
+    return __float_as_uint(at_least_zero(depth_m)) + 1u;
+}
+
+/// Says whether no block widened a tile since its clearing.
+/// @param tile [in] the tile's two codes.
+/// @return whether its codes are 0, which no encoded depth is.
+/// @note Device code; allocates nothing.
+__device__ inline bool holds_no_block(const uint2 &tile)
+{
+    return tile.y == 0u;
+}
+
+/// Gives a tile's least depth (encoded_near()).
+/// @param tile [in] the tile's two codes, of a tile that holds a block.
+/// @return the depth, in m, >= 0.
+/// @note Device code; allocates nothing.
+__device__ inline float decoded_near(const uint2 &tile)
+{
+    return __uint_as_float(~tile.x);
+}
+
+/// Gives a tile's greatest depth (encoded_far()).
+/// @param tile [in] the tile's two codes, of a tile that holds a block.
+/// @return the depth, in m, >= 0.
+/// @note Device code; allocates nothing.
+__device__ inline float decoded_far(const uint2 &tile)
+{
+    return __uint_as_float(tile.y - 1u);
+}
+
+/// Widens a tile's interval by a block's depths: the atomic maximum of each code.
+/// @param tile [in,out] the tile's codes, in device memory.
+/// @param near_m [in] the block's least corner depth, in m, finite.
+/// @param far_m [in] its greatest, in m, finite.
+/// @note Device code; allocates nothing.
+__device__ inline void widen_tile(uint2 &tile, float near_m, float far_m)
+{
+    atomicMax(&tile.x, encoded_near(near_m));
+    atomicMax(&tile.y, encoded_far(far_m));
+}
+
+/// Projects every block the hash holds into the picture of level 0 and widens the interval of each
+/// tile its projection covers by its depths (docs/methods/sparse-tsdf.md, "The ray cast", "The
+/// depth interval"), one thread for each slot. A block whose corners all lie nearer than one block
+/// before the march's first depth, or all farther than one block past its last, is left out; the
+/// rest is clipped at the plane one block before the first depth, or at least_projected_depth_m,
+/// and the rectangle around its corners' and its edges' crossings' projections, rounded out to
+/// whole pixels, covers the tiles; when the march starts within a block of the camera's plane and
+/// the block reaches nearer than least_projected_depth_m, it covers the whole picture. The depths
+/// are the least and the greatest of its corners'.
+/// @param hash [in] the hash; read only (block_in_slot()).
+/// @param view [in] the picture, its tiles, the pose and the march's depths; its tiles cleared to
+///        0 before the launch.
+/// @note Runs on the stream of its launch, sparse_tsdf::ray_cast()'s, after the tiles' clearing and
+///       the integrations it is to see. Reads the hash and writes only the tiles. A thread whose
+///       block covers many tiles widens each: a block near the camera covers more. Allocates
+///       nothing.
+__global__ void __launch_bounds__(threads_per_block)
+    depth_interval_kernel(block_hash_view hash, tile_view view)
+{
+    const std::size_t slot = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (slot >= hash.slot_count)
+        return;
+    const held_block held = block_in_slot(hash, static_cast<std::uint32_t>(slot));
+    if (held.number == no_block)
+        return;
+    const float block_m = view.block_m;
+    const float3 origin = make_float3(static_cast<float>(held.coordinate.x) * block_m,
+                                      static_cast<float>(held.coordinate.y) * block_m,
+                                      static_cast<float>(held.coordinate.z) * block_m);
+    float3 corners[8];
+    float block_near_m = INFINITY;
+    float block_far_m = -INFINITY;
+#pragma unroll
+    for (int c = 0; c < 8; c++)
+    {
+        corners[c] = into_camera(view.pose, origin + make_float3((c & 1) != 0 ? block_m : 0.0f,
+                                                                 (c & 2) != 0 ? block_m : 0.0f,
+                                                                 (c & 4) != 0 ? block_m : 0.0f));
+        block_near_m = fminf(block_near_m, corners[c].z);
+        block_far_m = fmaxf(block_far_m, corners[c].z);
+    }
+    const float clip_m = view.near_m - block_m;
+    if (!(block_far_m >= clip_m) || !(block_near_m <= view.end_m + block_m))
+        return;
+    const float plane_m = fmaxf(clip_m, least_projected_depth_m);
+    std::uint32_t first_x = 0;
+    std::uint32_t first_y = 0;
+    std::uint32_t last_x = view.tiles.wide - 1;
+    std::uint32_t last_y = (view.size.height - 1) / depth_tile_px;
+    if (!(block_near_m < plane_m && clip_m < least_projected_depth_m))
+    {
+        // The rectangle around the corners at or past the plane and the edges' crossings of it.
+        float u_low = INFINITY;
+        float u_high = -INFINITY;
+        float v_low = INFINITY;
+        float v_high = -INFINITY;
+        const auto take = [&](const float3 &q) {
+            const float u = view.k.fx * q.x / q.z + view.k.cx;
+            const float v = view.k.fy * q.y / q.z + view.k.cy;
+            u_low = fminf(u_low, u);
+            u_high = fmaxf(u_high, u);
+            v_low = fminf(v_low, v);
+            v_high = fmaxf(v_high, v);
+        };
+#pragma unroll
+        for (int c = 0; c < 8; c++)
+        {
+            if (corners[c].z >= plane_m)
+                take(corners[c]);
+#pragma unroll
+            for (int axis = 1; axis < 8; axis <<= 1)
+            {
+                const int d = c | axis;
+                // Each edge once, from its corner with the bit 0 to the one with it 1.
+                if ((c & axis) != 0 || (corners[c].z >= plane_m) == (corners[d].z >= plane_m))
+                    continue;
+                const float s = (plane_m - corners[c].z) / (corners[d].z - corners[c].z);
+                take(make_float3(corners[c].x + s * (corners[d].x - corners[c].x),
+                                 corners[c].y + s * (corners[d].y - corners[c].y), plane_m));
+            }
+        }
+        // Rounded out to whole pixels: a pixel's ray lies at a whole u and v, so every pixel less
+        // than 1 px, less the projection's rounding, outside the rectangle is taken, which covers
+        // the walk's rounding across the ray, below 0.1 px at the object classes' ranges
+        // [S: computed, docs/methods/sparse-tsdf.md, "The ray cast", "The depth interval"].
+        const float width = static_cast<float>(view.size.width);
+        const float height = static_cast<float>(view.size.height);
+        u_low = floorf(u_low);
+        u_high = ceilf(u_high);
+        v_low = floorf(v_low);
+        v_high = ceilf(v_high);
+        if (!(u_high >= 0.0f) || !(u_low <= width - 1.0f) || !(v_high >= 0.0f) ||
+            !(v_low <= height - 1.0f))
+            return;
+        first_x = static_cast<std::uint32_t>(fmaxf(u_low, 0.0f)) / depth_tile_px;
+        last_x = static_cast<std::uint32_t>(fminf(u_high, width - 1.0f)) / depth_tile_px;
+        first_y = static_cast<std::uint32_t>(fmaxf(v_low, 0.0f)) / depth_tile_px;
+        last_y = static_cast<std::uint32_t>(fminf(v_high, height - 1.0f)) / depth_tile_px;
+    }
+    for (std::uint32_t y = first_y; y <= last_y; y++)
+        for (std::uint32_t x = first_x; x <= last_x; x++)
+            widen_tile(tile_at(view.tiles, x, y), block_near_m, block_far_m);
+}
+
 /// Ray casts the model's surface, one thread for each pixel of level 0
 /// (docs/methods/sparse-tsdf.md, "The ray cast"; march_to_surface()). A pixel whose ray meets the
 /// surface gets the point at the surface's depth on its ray, in the camera frame, its mark 1, the
@@ -1147,12 +1414,16 @@ struct cast_images
 /// @param far_m [in] the deepest crossing taken, in m, > near_m.
 /// @param voxel_size_m [in] v, in m, > 0.
 /// @param step_m [in] the samples' step along the ray, mu_min v / 2, in m, > 0.
+/// @param tiles [in] each tile's interval of held blocks (depth_interval_kernel()): device memory
+///        of the caller's surface, which holds it until the kernel has run, rows of tiles.wide
+///        tiles, >= 1, ceil(width / depth_tile_px).
 /// @note Runs on the stream of its launch, sparse_tsdf::ray_cast()'s, after the integrations it is
-///       to see. A thread outside level 0 writes nothing. Reads the hash and the voxels and writes
-///       only out. Allocates nothing.
+///       to see and the depth interval's kernel. A thread outside level 0 writes nothing; a thread
+///       whose tile sees no held block writes its pixel invalid without a march. Reads the tiles,
+///       the hash and the voxels and writes only out. Allocates nothing.
 __global__ void __launch_bounds__(picture_block_width *picture_block_height)
     ray_cast_kernel(voxel_lookup tsdf, cast_images out, intrinsics k, float_pose pose, float near_m,
-                    float far_m, float voxel_size_m, float step_m)
+                    float far_m, float voxel_size_m, float step_m, depth_tiles tiles)
 {
     const std::uint32_t u = blockIdx.x * blockDim.x + threadIdx.x;
     const std::uint32_t v = blockIdx.y * blockDim.y + threadIdx.y;
@@ -1161,15 +1432,23 @@ __global__ void __launch_bounds__(picture_block_width *picture_block_height)
         return;
     const float3 ray = make_float3((static_cast<float>(u) - k.cx) / k.fx,
                                    (static_cast<float>(v) - k.cy) / k.fy, 1.0f);
-    const ray_march march{
-        pose.translation,
-        make_float3(dot(pose.row_x, ray), dot(pose.row_y, ray), dot(pose.row_z, ray)),
-        near_m,
-        far_m,
-        step_m / norm(ray),
-        1.0f / voxel_size_m};
+    const uint2 tile = tile_at(tiles, u / depth_tile_px, v / depth_tile_px);
     ray_hit hit{0.0f, make_float3(0.0f, 0.0f, 0.0f), 0.0f};
-    const bool found = march_to_surface(tsdf, pose, march, hit);
+    bool found = false;
+    // A tile that no held block's projection covers has no block on any of its rays to march.
+    if (!holds_no_block(tile))
+    {
+        const ray_march march{
+            pose.translation,
+            make_float3(dot(pose.row_x, ray), dot(pose.row_y, ray), dot(pose.row_z, ray)),
+            near_m,
+            far_m,
+            step_m / norm(ray),
+            1.0f / voxel_size_m,
+            decoded_near(tile),
+            decoded_far(tile)};
+        found = march_to_surface(tsdf, pose, march, hit);
+    }
     const float3 point = found ? hit.depth_m * ray : make_float3(0.0f, 0.0f, 0.0f);
     for (std::uint32_t level = 0; level < frame_pyramid::level_count; level++)
     {
@@ -1326,6 +1605,13 @@ request_result<model_surface> model_surface::request(gpu_pool &pool,
         granted.normals = std::move(normals.granted);
         granted.intensity = std::move(intensity.granted);
     }
+    // A tile for each depth_tile_px x depth_tile_px pixels of level 0, the last ones in a row and
+    // a column partly outside the picture (blocks_for()).
+    request_result<gpu_image<uint2>> tiles = pool.request<uint2>(
+        {blocks_for(size.width, depth_tile_px), blocks_for(size.height, depth_tile_px)});
+    if (tiles.status != request_status::granted)
+        return refused_as<model_surface>(tiles);
+    result.granted.m_depth_tiles = std::move(tiles.granted);
     result.status = request_status::granted;
     return result;
 }
@@ -1616,13 +1902,40 @@ step_result sparse_tsdf::ray_cast(const camera_pose &pose, const gca::intrinsics
         images.levels[level] = {l.points.data(), l.valid.data(), l.normals.data(),
                                 l.intensity.data(), l.points.size()};
     }
-    const dim3 block = picture_block();
+    // Nothing is queued after an earlier error, so that a refusal leaves the surface as it was;
+    // launch_kernel() asks again before each launch.
+    const cudaError_t earlier = cudaPeekAtLastError();
+    if (earlier != cudaSuccess)
+        return {false, cuda_failure("CUDA's last error, left by an earlier call, before the ray "
+                                    "cast",
+                                    earlier)};
+    gpu_image<uint2> &tile_image = out.m_depth_tiles;
+    const cudaError_t cleared =
+        cudaMemsetAsync(tile_image.data(), 0, tile_image.size_bytes(), stream);
+    if (cleared != cudaSuccess)
+        return {false, cuda_failure("CUDA refused to clear the ray cast's tiles", cleared)};
+    const depth_tiles tiles{tile_image.data(), tile_image.size().width};
     const truncation_parameters &t = m_parameters.truncation;
-    const step_result launched = launch_kernel(
-        "the ray cast's kernel", &ray_cast_kernel, grid_for(out.m_levels[0].points.size(), block),
-        block, stream, voxel_lookup{hash_view(), m_voxels.data()}, images, k, *rounded,
-        range.near_m, range.far_m, m_parameters.voxel_size_m,
-        0.5f * t.min_voxels * m_parameters.voxel_size_m);
+    const float step_m = 0.5f * t.min_voxels * m_parameters.voxel_size_m;
+    const frame_size size = out.m_levels[0].points.size();
+    const tile_view view{tiles,
+                         size,
+                         k,
+                         *rounded,
+                         range.near_m,
+                         range.far_m + step_m,
+                         8.0f * m_parameters.voxel_size_m};
+    const block_hash_view hash = hash_view();
+    const step_result projected =
+        launch_kernel("the depth interval's kernel", &depth_interval_kernel,
+                      grid_for_count(hash.slot_count), dim3(threads_per_block), stream, hash, view);
+    if (!projected.done)
+        return projected;
+    const dim3 block = picture_block();
+    const step_result launched =
+        launch_kernel("the ray cast's kernel", &ray_cast_kernel, grid_for(size, block), block,
+                      stream, voxel_lookup{hash, m_voxels.data()}, images, k, *rounded,
+                      range.near_m, range.far_m, m_parameters.voxel_size_m, step_m, tiles);
     if (launched.done)
     {
         for (std::size_t level = 0; level < frame_pyramid::level_count; level++)
