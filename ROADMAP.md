@@ -68,6 +68,13 @@ holds it yet. Done when `accept-the-colored-model` is done.
   or the floor (its ticket).
 * Optional, root: `sudo apt install earlyoom`, a guard against a frozen board (a build of six
   jobs froze it once, AGENTS.md §4).
+* Optional, root: the journal kept across boots, so that the next freeze leaves the kernel's
+  last lines on disk: the freeze of 2026-11-15 left only syslog, and its cause is unknown
+  (docs/HARDWARE.md, "Platform"). journald's `Storage` stands at its default, `auto`
+  [M 2026-11-15: /etc/systemd/journald.conf], which keeps the journal on disk once
+  `/var/log/journal` exists [?: journald.conf(5), not read here]: `sudo mkdir -p
+  /var/log/journal`, `sudo systemd-tmpfiles --create --prefix /var/log/journal`, `sudo systemctl
+  restart systemd-journald`.
 
 ## Candidates, once measured
 

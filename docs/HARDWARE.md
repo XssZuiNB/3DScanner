@@ -13,7 +13,8 @@ The board this tree runs on. Every fact carries its tag (AGENTS.md).
 | OS | L4T R36, revision 5.2 (JetPack 6), Ubuntu 22.04, kernel 5.15.199-tegra, aarch64 | [M 2026-11-13, since the boot at 20:13] `/etc/nv_tegra_release`, `uname -a` |
 | toolchain | CUDA 12.6.68, GCC 11.4.0, OpenCV 4.8.0; CMake 4.4.4 from PyPI in `~/.local/bin`, before apt's 3.22.1 in `/usr/bin` (CODING_STANDARDS.md, "Tools") | [M 2026-11-13]; CMake [M 2026-11-14] |
 | GPU | Ampere, compute capability 8.7 | [S] CUDA documentation |
-| camera | Orbbec Gemini 2 L, USB `2bc5:0673`, firmware 1.4.38 | [M 2026-11-13] `lsusb`, `orbbec_viewer --list` |
+| camera | Orbbec Gemini 2 L, USB `2bc5:0673`, firmware 1.5.02 since 2026-11-15, 1.4.38 before ("What the camera is and reports") | [M 2026-11-13] `lsusb`, `orbbec_viewer --list`; the firmware [M 2026-11-15] |
+| freezes | 2026-11-13 under a build of six jobs (AGENTS.md §4); 2026-11-15 at about 13:51 with no job running and the camera closed (at 13:47), cause unknown [?]: syslog's last line before it is a Wi-Fi rekey, followed by NUL bytes, and no OOM, nvgpu, Xid, thermal or hung-task line precedes it. The journal is kept in memory only (no `/var/log/journal`), so after a freeze only syslog remains; `/sys/fs/pstore` is root's | [M 2026-11-15] syslog, `last -x` |
 | camera SDK | OrbbecSDK v2.10.6, linux arm64, in `~/.local/share/3dscanner` | tools/fetch_deps.sh |
 
 ## Memory, storage, network
@@ -79,7 +80,14 @@ OrbbecSDK's warnings in these runs, the stream going on after each:
   after-cleanup session saw it in 8 of 10 runs, in both trees: before the first report line in
   3 runs, at stop in 6 (one run had both), none in 2; at stop it is an `[error]` line for each
   sensor, and the stream goes on until the program closes [M 2026-11-13]. `orbbec_device` takes
-  the jump out of the timestamps it delivers (src/camera/orbbec_rules.hpp).
+  the jump out of the timestamps it delivers (src/camera/orbbec_rules.hpp). On 1.4.38, on
+  2026-11-15, it came steadily, once every 4.29 s while the stream ran, and every frame after
+  the first carried the same timestamp, its low 32 bits standing at about 60 µs (in one run 61 ×
+  2^32 + 60 µs) [M 2026-11-15, 13:46 and 16:40, the camera power-cycled before the second;
+  OrbbecSDK's own `ob_color` the same]: `orbbec_device` skipped every frame as not after the last
+  taken frame's, so no frame came for 30 s, and it never recovers from that. On 1.5.02
+  `ob_color` ran 20 s without the line and `orbbec_device` streamed with the device's
+  timestamps, no frame skipped [M 2026-11-15, 16:51 to 17:01].
 * A depth frame dropped at the start. At 1280x800: `Update data size(1824744) > data buffer
   size! (1792000)`; 1792000 bytes is 1280 x 800 x 14 bit, one packed Y14 frame [S]. At 640x400
   too, under a second wording: `This frame will be dropped because the data size does not
@@ -129,6 +137,17 @@ OrbbecSDK on USB 3 with no stream running and no property set [M 2026-11-13].
   matrix the identity. The accel-to-color and gyro-to-color extrinsics equal depth-to-color
   to every digit and accel-to-gyro is the identity: where the IMU sits and how its axes lie
   is unverified [?].
+* **Firmware** [M 2026-11-15]: 1.5.02 since 2026-11-15, 16:50, updated on the user's word from
+  1.4.38, below OrbbecSDK v2's least firmware for the Gemini 2 L, 1.4.53 (its recommended:
+  1.5.2) [S: OrbbecSDK v2's README and release notes, web]. On 1.4.38 every frame's device
+  timestamp stood still ("The camera on USB 3", OrbbecSDK's warnings). The update:
+  `MFG_MX6600_Gemini2_L_1502.bin`, 327680 bytes, from github.com/orbbec/OrbbecFirmware, release
+  "Gemini2L-Firmware", kept outside the tree in `~/3DScanner-backup/camera-firmware/`, written by
+  OrbbecSDK's example `ob_device_firmware_update -f FILE`, built from the SDK's sources outside
+  the tree: "Update successfully" after 8 s, and the camera came back on USB 3 as 1.5.02. That
+  tool forces OrbbecSDK's libusb backend, and each of its opens made the camera leave and
+  re-enter USB 3 ("Kernel log"); its first device list found no camera, the second found it.
+  The measurements of this document dated before 2026-11-15, 16:50 were made on 1.4.38.
 
 | stream at 1280x800 | fx, fy, cx, cy | distortion |
 |---|---|---|
@@ -494,5 +513,6 @@ list, is a stop condition (AGENTS.md §3).
 | `Failed to query (GET_INFO) UVC control 18 on unit 3: -32 (exp. 1).` | benign [?] | uvcvideo probes a control the camera does not answer; on every enumeration, before any program ran | [M 2026-11-13] |
 | `Found UVC 1.10 device Orbbec(R) Gemini 2 L(TM) (2bc5:0673)`, `hid-generic ... hidraw0` | benign | enumeration; also each time a program closes the camera and uvcvideo takes it back | [M 2026-11-13] |
 | `usb 1-N.M: new full-speed USB device number D using tegra-xusb`, then `input: ...` and `hid-generic ... USB HID ... Keyboard [...]`, and later that device's `usb 1-N.M: USB disconnect, device number D` | benign | a USB keyboard or other input device plugged in or out on the board's USB 2 bus, not the camera; the camera's own `USB disconnect` while it streams stays a stop condition (AGENTS.md §3) | [M 2026-11-15: usb 1-2.3, "SONiX QK65 KB", in at 12:00:09, out at 12:05:40, the camera on bus 2 at 5000M throughout (`lsusb -t`); the user's answer: they plugged the keyboard in and out] |
+| `usb 2-1.N: USB disconnect, device number D`, then `Device not responding to setup address.` and `new SuperSpeed USB device number D using tegra-xusb`, while OrbbecSDK's libusb backend opens the camera without a stream (its firmware tool, `ob_device_firmware_update`) | benign [?] | the camera leaves USB 3 and comes back on each open by that tool; the camera's `USB disconnect` while it streams stays a stop condition (AGENTS.md §3) | [M 2026-11-15, 16:47 to 16:50, each open by the tool; the user's answer: benign while that tool opens it] |
 | `uvcvideo 1-2.N:1.1:` or `2-1.N:1.1: Unknown video format 20343159-0000-0010-8000-00aa00389b71` | benign | uvcvideo does not know the depth format Y14 (the GUID starts with the FourCC `Y14 `); after a program closes the camera | [M 2026-11-13], [S] UVC GUID layout |
 | `perf: interrupt took too long (A > B), lowering kernel.perf_event_max_sample_rate to R` | benign while a profiler samples the CPU (`nsys profile`, `perf record`) [?: seen once]; with no profiler running, a stop condition | the kernel's handling of the profiler's samples took longer than `kernel.perf_cpu_time_max_percent` (25) allows, so it lowers the samples per second it grants [?: the sysctl's documented purpose, not read here]; the lowered rate stays: 30000 two hours later | [M 2026-11-14: five lines at 19:50:48 to 19:50:51, the only ones of that boot; an `nsys profile` session of a scratch timing program began at 19:50:48 and recorded 1979 CPU samples (its report's tables `TARGET_INFO_SESSION_START_TIME`, `SAMPLING_CALLCHAINS`); about 130 runs of the hash experiment that day, with no profiler, logged none; `sysctl kernel.perf_event_max_sample_rate` 30000 at 21:47] |
