@@ -12,9 +12,12 @@ in double precision (R31). This tree's code is written from the sources named he
 reconstruction library's code is read or copied for it (docs/adr/0002-own-reconstruction-code.md).
 
 Built so far: the pose graph and its solve, on the host (`src/refinement/pose_graph.*`; the test
-`tests/test_pose_graph.cpp`). Left to `refinement-optimizes-the-trajectory`, with its part of this
-document: which pairs of keyframes get an edge and the weights, the frames that follow their
-keyframes ("How the other frames follow their keyframes" says how), and the fusion.
+`tests/test_pose_graph.cpp`), and the fusion of the sequence at the full voxel size with the
+trajectory as tracked (`src/refinement/sequence_fusion.*`; the test
+`tests/test_sequence_fusion.cpp`). Left to `refinement-optimizes-the-trajectory`, with its part of
+this document: which pairs of keyframes get an edge and the weights, the frames that follow their
+keyframes ("How the other frames follow their keyframes" says how), and the optimized poses put
+before the fusion.
 
 ## The graph
 
@@ -220,6 +223,61 @@ frame's pose follows its keyframe's"]. A frame marked as tracking loss has no po
 The correction T'_k T_k^-1 changes from one keyframe to the next by that pair's share of the drift;
 interpolating between two keyframes' corrections is a candidate built only on a measured benefit.
 
+## The fusion of the sequence
+
+The full model is fused anew from the scan's frames, read back from its sequence, at the object
+class's full voxel size (R12; the spec, "Refinement": "The frames are then read back from disk and
+fused at the full voxel size into a new sparse TSDF, and the full model is extracted from it").
+
+* **Input**: the sequence (docs/SEQUENCE_FILE.md) and its stream size; the full model's sparse
+  TSDF parameters and the depth range, both from the object class's set by their one conversion
+  (`src/scan/stage_parameters.hpp`, `fused_model::full`): the memory budget, the full voxel size,
+  the truncation's c, k and μ_min, the far depth, and the depth range from `min_depth_m` to
+  `max_depth_m`; and the caller's question, asked before each frame, whether to go on.
+* **Each frame in the sequence's order** (`src/camera/sequence_reader.hpp`):
+  * a frame with a pose is uploaded, its organized points are made within the depth range
+    (docs/methods/organized-points.md), and it is integrated at that pose
+    (docs/methods/sparse-tsdf.md, "Integration, and the weight of an observation"): the
+    allocation of the blocks near its surface, the truncation and the weights are the live
+    model's, at the full voxel size. No pyramid, normals, ray cast or registration: the pose is
+    given. Until `refinement-optimizes-the-trajectory` the poses are those tracking gave, as the
+    sequence holds them, bit for bit;
+  * a frame of tracking loss is read and skipped: nothing of it is fused, as nothing of it
+    entered the live model;
+  * a frame marked as tracked by nothing ends the fusion as failed, with the reason that names
+    it: a scan's sequence holds none (only the viewer writes such frames), and fusing the rest
+    would hide that the file is not a scan's [?: a choice]. The frame tracking failed on, which
+    ends a scan, is not in the sequence at all;
+  * the caller's answer no ends the fusion as cancelled, before the frame is read: the scan
+    interface asks it for a discard or a stop of the service while refining.
+* **A sequence cut off**, as a writer that was stopped leaves it, gives every whole frame and then
+  its early end (`sequence_reader::ended_early()`); the fusion takes those frames and ends done,
+  saying that the sequence ended early. Any other failure of the reading ends it as failed.
+* **A pool used up**: an integration skips a slot the pool had no block for and is done all the
+  same (docs/methods/sparse-tsdf.md, "The pool and the memory budget"), so after the last frame the
+  pool's usage is read once, and a coordinate that found no block, or an insertion the hash
+  refused, ends the fusion as failed, with the counts: the full model would lack surface. A
+  failed refinement is a value (the spec), and the scan stays unfinished.
+* **Failed or cancelled** gives neither a model nor a trajectory, so that no caller keeps a part of
+  either; the counts of the frames fused and skipped up to the end stay.
+* **The extraction** (docs/methods/sparse-tsdf.md, "The extraction") runs twice: into a buffer of
+  one point, which counts the surface's points, then into a buffer of exactly that count, so that
+  no capacity is guessed. The points are copied to the host and converted to model points
+  (`src/types/model_point.hpp`): the one conversion from the GPU's `surface_point` to the host's
+  type, so that the types module needs no CUDA. They come in no stated order. A sequence of which
+  no frame was fused gives no point, and the fusion is still done.
+* **The trajectory as read**: each frame's index, timestamp and pose, or none for tracking loss,
+  bit for bit as the sequence holds them, in its order (`src/types/trajectory_entry.hpp`).
+* **Memory**: one sparse TSDF exists at a time (docs/methods/sparse-tsdf.md, "The pool and the
+  memory budget"), so the live model's is freed before the full model's is requested; the full
+  model's takes the object class's memory budget (the spec: "the budget also has to hold what
+  refinement needs at the full voxel size"). Besides it the call holds a GPU frame and its
+  organized points at the stream size, the buffer of points, 28 bytes a point on the GPU, and the
+  points on the host, 28 bytes as copied and 28 as model points [S: `sizeof`, the static_assert of
+  `surface_point`; 3 floats, 3 floats and 3 bytes of a model point, padded].
+
+Its accuracy and time on the test's walk stand in "Accuracy" and "Time on the board".
+
 ## Constants and parameters
 
 The solve takes one parameter (`gca::pose_graph_parameters`), the most iterations, 1 to 1000; the
@@ -329,9 +387,27 @@ spans far less [?: not measured on an edge]: its centred system's eigenvalues li
 (|c| / ρ)², the centroid's distance over the points' spread. How refinement's edges span is
 refinement-optimizes-the-trajectory's to measure.
 
+**The fusion of the sequence** [M 2026-11-16: `tests/test_sequence_fusion.cpp`, frames of the
+synthetic source without noise at 640x400 with the camera's intrinsics, depth unit 1 mm, the
+tabletop object class's full model (1 mm voxels, c 0.01 /m, k 3, μ_min 4 voxels, the depth range
+0.25 m to 0.6 m) in a sparse TSDF of 273 MB]: the tabletop box on its plane from 24 known poses
+once around it, `tabletop_walk()` with 15° of azimuth between poses, and after every fourth a
+frame of a wall 0.35 m before the camera marked as tracking loss, 30 frames in all. The 24 frames
+with a pose were fused and the 6 walls skipped; the trajectory came back bit for bit. The full
+model's 863311 points lie at a median of 0.0754 mm from the nearest known surface, the 99th
+percentile at 0.675 mm and the largest at 8.77 mm; 0.26 % of them lie farther than 2 mm, all
+within 5 mm below the box's top edges and outside its sides: the band of the truncation behind a
+convex edge, which the extraction makes points of (docs/methods/sparse-tsdf.md, "The extraction").
+No point lies at a wall. Every normal is of unit length within 1.34e-7. The walk cut off within
+its 14th record gives its 13 whole frames and the same set of points, bit for bit, as a sequence of
+just those 13 frames. Four walls at 0.55 m, fused from poses 2 m apart into a budget of 140 MB
+(33123 blocks), used it up: 125233 coordinates found no block, and the fusion failed with those
+counts.
+
 ## Time on the board
 
-The graph of 300 keyframes above is solved in the time docs/HARDWARE.md, "Refinement", states.
+The graph of 300 keyframes above is solved in the time docs/HARDWARE.md, "Refinement", states; so
+is the fusion of the test's walk of "Accuracy".
 
 ## What the prototype did
 

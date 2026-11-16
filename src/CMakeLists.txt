@@ -8,7 +8,8 @@
 #   types <- camera <- gpu (CUDA runtime) <- geometry (Eigen) <- registration
 #   geometry <- fusion (the sparse TSDF, which takes a frame's organized points)
 #   fusion, registration <- tracking (the per-frame path's steps 1 to 6 and the check; no kernel)
-#   registration <- refinement (the pose graph, on the host; registration's SE(3) exponential)
+#   registration, fusion <- refinement (the pose graph, on the host; registration's SE(3)
+#                           exponential; the fusion of a scan's sequence at the full voxel size)
 #   types <- separation (the proposal of the support plane and the box, on the host; Eigen)
 #   types <- camera <- scan (Eigen, OpenCV's core)
 #   scan, tracking <- scan_interface (the stages' parameters of an object class's set)
@@ -145,11 +146,20 @@ target_link_libraries(tracking PUBLIC fusion registration Eigen3::Eigen)
 
 # ---------------------------------------------------------------- refinement
 # Refinement (docs/methods/refinement.md): today the pose graph of keyframes and its solve, on the
-# host in double; the SE(3) exponential and the check of a rigid transform are registration's
-# (registration/se3.hpp), their one copy.
-add_library(refinement STATIC refinement/pose_graph.cpp refinement/pose_graph.hpp)
-# PUBLIC: the header holds Eigen's types; types carries src/.
-target_link_libraries(refinement PUBLIC types Eigen3::Eigen PRIVATE registration)
+# host in double, and the fusion of a scan's sequence at the full voxel size, which reads the
+# sequence back (camera) and fuses it into a sparse TSDF (fusion); the SE(3) exponential and the
+# check of a rigid transform are registration's (registration/se3.hpp), their one copy.
+add_library(
+    refinement
+    STATIC
+    refinement/pose_graph.cpp
+    refinement/pose_graph.hpp
+    refinement/sequence_fusion.cpp
+    refinement/sequence_fusion.hpp
+)
+# PUBLIC: the headers hold Eigen's types, fusion's parameters and geometry's depth range, CUDA's
+# stream, and types' model point and trajectory entry; types carries src/.
+target_link_libraries(refinement PUBLIC types fusion Eigen3::Eigen PRIVATE registration)
 
 # ---------------------------------------------------------------- separation
 # Separation (docs/methods/separation.md): today the proposal of the support plane and the box from

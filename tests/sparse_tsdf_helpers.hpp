@@ -3,7 +3,8 @@
 /// The sparse TSDF tests' shared helpers (fusion/sparse_tsdf.hpp): the method's starting values of
 /// the truncation's rule, a pose as the sparse TSDF takes it, a frame's buffers on the GPU, a
 /// lookup of block coordinates on the GPU with its upload and its download of the numbers found,
-/// the extraction of the surface's points with their download, and the reading, printing and
+/// the extraction of the surface's points with their download, the points' bits as a sorted list,
+/// so that two extractions or models compare as sets bit for bit, and the reading, printing and
 /// comparison of the usage. A failure is a failed check, counted by check.hpp. Header only; each
 /// test program is one translation unit.
 
@@ -19,9 +20,13 @@
 #include "gpu_test_helpers.hpp"
 #include "types/camera_pose.hpp"
 #include "types/frame_description.hpp"
+#include "types/model_point.hpp"
 
 #include <cuda_runtime_api.h>
 
+#include <algorithm>
+#include <array>
+#include <bit>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -144,6 +149,60 @@ inline std::vector<gca::surface_point> extract_points(const gca::sparse_tsdf &ts
     if (!downloaded)
         points.clear();
     return points;
+}
+
+/// A point of a model as a comparable value: the bits of its position and its normal, and its
+/// color in one word.
+using point_key = std::array<std::uint32_t, 7>;
+
+/// Gives a point's key.
+/// @param position [in] its position's x, y and z.
+/// @param normal [in] its normal's x, y and z.
+/// @param color [in] its red, green and blue.
+/// @return the key: each float's bits, then the color as 0x00RRGGBB.
+inline point_key key_of(const std::array<float, 3> &position, const std::array<float, 3> &normal,
+                        const std::array<std::uint8_t, 3> &color)
+{
+    const auto bits = [](float value) { return std::bit_cast<std::uint32_t>(value); };
+    return {bits(position[0]),
+            bits(position[1]),
+            bits(position[2]),
+            bits(normal[0]),
+            bits(normal[1]),
+            bits(normal[2]),
+            (std::uint32_t{color[0]} << 16) | (std::uint32_t{color[1]} << 8) |
+                std::uint32_t{color[2]}};
+}
+
+/// Gives an extraction's points as a sorted list of their keys, so that two extractions compare as
+/// sets, bit for bit.
+/// @param points [in] the points, as the extraction gives them.
+/// @return their keys, sorted.
+inline std::vector<point_key> sorted_keys(const std::vector<gca::surface_point> &points)
+{
+    std::vector<point_key> keys;
+    keys.reserve(points.size());
+    for (const gca::surface_point &p : points)
+        keys.push_back(key_of({p.position_m.x, p.position_m.y, p.position_m.z},
+                              {p.normal.x, p.normal.y, p.normal.z},
+                              {p.color.x, p.color.y, p.color.z}));
+    std::sort(keys.begin(), keys.end());
+    return keys;
+}
+
+/// Gives a model's points as a sorted list of their keys, so that two models compare as sets, bit
+/// for bit.
+/// @param points [in] the points, as a model holds them.
+/// @return their keys, sorted.
+inline std::vector<point_key> sorted_keys(const std::vector<gca::model_point> &points)
+{
+    std::vector<point_key> keys;
+    keys.reserve(points.size());
+    for (const gca::model_point &p : points)
+        keys.push_back(key_of({p.position_m.x(), p.position_m.y(), p.position_m.z()},
+                              {p.normal.x(), p.normal.y(), p.normal.z()}, p.color));
+    std::sort(keys.begin(), keys.end());
+    return keys;
 }
 
 /// Reads the usage and checks that it was read.

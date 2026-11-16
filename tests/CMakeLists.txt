@@ -127,6 +127,13 @@ add_executable(test_pose_graph test_pose_graph.cpp)
 target_link_libraries(test_pose_graph PRIVATE refinement registration synthetic_source)
 add_test(NAME pose_graph COMMAND test_pose_graph)
 
+# Refinement's fusion of a scan's sequence at the full voxel size, on sequences the test writes
+# from frames of the synthetic source with their known poses; scan_interface gives the tabletop
+# object class's full model and depth range.
+add_executable(test_sequence_fusion test_sequence_fusion.cpp)
+target_link_libraries(test_sequence_fusion PRIVATE refinement scan_interface synthetic_source)
+add_test(NAME sequence_fusion COMMAND test_sequence_fusion)
+
 # The acceptance tool's box fit, on object models the test builds: boxes of both object classes'
 # sizes in several orientations with noise from a fixed seed, a remnant of the support plane, and
 # models that are no box; and the program box_fit on models the test writes. The synthetic source

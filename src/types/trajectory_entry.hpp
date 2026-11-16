@@ -3,7 +3,8 @@
 /// One frame of a scan's trajectory (GLOSSARY.md): the frame's index and timestamp with the
 /// camera's pose tracking gave it, or none when the frame is in tracking loss. The trajectory's
 /// file (scan/trajectory_file.hpp, docs/SCAN_FILES.md, "Trajectory") writes and reads a list of
-/// them, one for each frame the scanner took. A plain struct, header only.
+/// them, one for each frame the scanner took, and refinement's fusion of a sequence gives them as
+/// the sequence holds them (refinement/sequence_fusion.hpp). A plain struct, header only.
 
 #pragma once
 

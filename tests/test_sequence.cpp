@@ -63,7 +63,6 @@ namespace
 using gca_test::bytes_of;
 using gca_test::check;
 using gca_test::check_refusal;
-using gca_test::same_bits;
 using gca_test::same_samples;
 using gca_test::temporary_directory;
 using gca_test::write_bytes;
@@ -117,19 +116,7 @@ bool same_tracking(const gca::frame_tracking &a, const gca::frame_tracking &b)
         return false;
     const gca::camera_pose *pa = std::get_if<gca::camera_pose>(&a);
     const gca::camera_pose *pb = std::get_if<gca::camera_pose>(&b);
-    if (!pa)
-        return true;
-    for (int c = 0; c < 3; c++)
-    {
-        if (!same_bits(pa->position_m[c], pb->position_m[c]))
-            return false;
-    }
-    for (int c = 0; c < 4; c++)
-    {
-        if (!same_bits(pa->orientation.coeffs()[c], pb->orientation.coeffs()[c]))
-            return false;
-    }
-    return true;
+    return !pa || gca_test::same_pose(*pa, *pb);
 }
 
 /// Whether a frame read is the frame pushed, bit for bit.

@@ -54,11 +54,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <limits>
 #include <optional>
 #include <string>
-#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -747,37 +745,6 @@ void check_used_up(cudaStream_t stream)
     check(pool.refused_while_closed() == 0, "used-up pool: the closed pool asked for nothing");
 }
 
-/// Orders points by position, then normal, then color, so that two extractions of the same
-/// voxels compare as sets.
-/// @param points [in,out] the points, sorted.
-void sort_points(std::vector<gca::surface_point> &points)
-{
-    const auto as_tuple = [](const gca::surface_point &p) {
-        return std::make_tuple(p.position_m.x, p.position_m.y, p.position_m.z, p.normal.x,
-                               p.normal.y, p.normal.z, p.color.x, p.color.y, p.color.z);
-    };
-    std::sort(points.begin(), points.end(),
-              [&as_tuple](const gca::surface_point &a, const gca::surface_point &b) {
-                  return as_tuple(a) < as_tuple(b);
-              });
-}
-
-/// Says whether two sorted sets of points are the same, bit for bit in every field.
-/// @param a [in] one set.
-/// @param b [in] the other.
-/// @return whether they hold the same points.
-bool same_points(const std::vector<gca::surface_point> &a, const std::vector<gca::surface_point> &b)
-{
-    return a.size() == b.size() &&
-           std::equal(a.begin(), a.end(), b.begin(),
-                      [](const gca::surface_point &x, const gca::surface_point &y) {
-                          return std::memcmp(&x.position_m, &y.position_m, sizeof(float3)) == 0 &&
-                                 std::memcmp(&x.normal, &y.normal, sizeof(float3)) == 0 &&
-                                 x.color.x == y.color.x && x.color.y == y.color.y &&
-                                 x.color.z == y.color.z;
-                      });
-}
-
 /// Refusals as values, each leaving the counts and the points as they were and CUDA's last error
 /// clear: the integration into an empty sparse TSDF and one moved from, of a GPU frame that holds
 /// no frame, of organized points of another size, of a frame whose intrinsics cannot be used, at a
@@ -869,12 +836,10 @@ void check_refusals(cudaStream_t stream)
     const gca::sparse_tsdf_usage after = read_usage(tsdf, stream, what);
     print_usage("refusals, after them", after);
     check(same_usage(after, before), "refusals: the counts as they were");
-    std::vector<gca::surface_point> points_after =
+    const std::vector<gca::surface_point> points_after =
         extract_points(tsdf, buffer, stream, what + ", after");
-    std::vector<gca::surface_point> sorted_before = points_before;
-    sort_points(sorted_before);
-    sort_points(points_after);
-    check(same_points(sorted_before, points_after), "refusals: the points as they were");
+    check(gca_test::sorted_keys(points_before) == gca_test::sorted_keys(points_after),
+          "refusals: the points as they were");
 
     // A buffer of ten points: not done, every point found counted, ten written.
     const gca::extraction_result small = tsdf.extract(small_buffer, stream);

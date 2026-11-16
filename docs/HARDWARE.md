@@ -474,8 +474,10 @@ returns [S: computed, the path's median less the call's]. These are a first numb
 
 ## Refinement
 
-What refinement takes on the board after a scan (docs/methods/refinement.md), on the host's CPU,
-measured by a scratch program on graphs built as `tests/test_pose_graph.cpp` builds them.
+What refinement takes on the board after a scan (docs/methods/refinement.md), measured by scratch
+programs: the pose graph's solve on the host's CPU, on graphs built as `tests/test_pose_graph.cpp`
+builds them, and the fusion of the sequence on the GPU, on the walk `tests/test_sequence_fusion.cpp`
+writes.
 
 **The pose graph's solve** (`optimize_pose_graph()`, `src/refinement/pose_graph.hpp`), on the graph
 of `check_300_keyframes()` in `tests/test_pose_graph.cpp`:
@@ -499,8 +501,27 @@ It converged after 4 iterations, 64 runs: median 314.3 ms, p95 316.1 ms, max 316
 and at the end by `scaling_cur_freq`]. The undamped Gauss-Newton step that confirms the end
 (docs/methods/refinement.md, "The end") adds one factorization and solve: without it the same run
 took 255.2 / 256.9 / 257.7 ms [M 2026-11-15, 01:06:55 to 01:07:20], so it costs 59 ms, a fifth of
-the four iterations' time. Graphs of other sizes and shapes, and refinement's other
-steps, are unmeasured.
+the four iterations' time. Graphs of other sizes and shapes are unmeasured.
+
+**The fusion of the sequence** (`fuse_sequence()`, `src/refinement/sequence_fusion.hpp`), on the
+walk of `tests/test_sequence_fusion.cpp`: 30 frames of 640x400 in a sequence of 38.4 MB
+[M 2026-11-16: `ls -l`, 38402025 bytes], 24 fused at the tabletop object's full voxel size of 1 mm
+and 6 skipped as tracking loss, into a sparse TSDF of 273 MB, 863311 points extracted
+(docs/methods/refinement.md, "Accuracy"). Each call does all of it: it opens the sequence, which
+stands in the page cache, requests its buffers, fuses, reads the pool's usage, extracts twice,
+copies the points to the host and frees it all.
+
+* **The method**: a scratch program, built with g++ 11.4 `-O3 -DNDEBUG` against the Release build's
+  libraries, writes the sequence once and times each call by `std::chrono::steady_clock`, back to
+  back for 25 s, the first 3 calls not recorded. The run holds the build lock, so no compiler runs
+  beside it.
+
+The first call took 0.349 s; the next 68 recorded calls a median of 0.362 s, p95 0.374 s, max
+0.376 s, min 0.301 s [M 2026-11-16, 07:28:30 to 07:28:55, MAXN_SUPER by `nvpmodel -q`, the GPU's
+clock 306 to 1020 MHz at a call's start (`/sys/class/devfreq/17000000.gpu/cur_freq`); no kernel
+log line of usb, uvc, nvgpu or Xid], 15.1 ms a fused frame with everything else [S: computed,
+0.362 s / 24]. Its steps are not timed apart, and a scan's longest sequence, its reading from the
+drive past the page cache and the large object's full model are unmeasured.
 
 ## Separation
 

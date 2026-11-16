@@ -25,6 +25,7 @@
 /// The test prints its time; a scan-level test ends within 60 s on the board (the stage brief, §6).
 
 #include "check.hpp"
+#include "frame_copy.hpp"
 #include "fusion/sparse_tsdf.hpp"
 #include "gpu/gpu_pool.hpp"
 #include "gpu_test_helpers.hpp"
@@ -48,7 +49,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <limits>
 #include <optional>
 #include <string>
@@ -202,46 +202,17 @@ void open_case(tracking_case &c, const gca::tracking_parameters &parameters, cud
     c.pool.close();
 }
 
-/// A point of the model as a comparable value: its position's, its normal's and its color's bits.
-using point_key = std::array<std::uint32_t, 7>;
-
 /// Gives the model's points as a sorted list of their bits, so that two extractions compare as
-/// sets, bit for bit.
+/// sets, bit for bit (sparse_tsdf_helpers.hpp, sorted_keys()).
 /// @param c [in,out] the case.
 /// @param stream [in] the stream.
 /// @param what [in] the moment, named in the check lines.
 /// @return the points' keys, sorted.
-std::vector<point_key> model_points(tracking_case &c, cudaStream_t stream, const std::string &what)
+std::vector<gca_test::point_key> model_points(tracking_case &c, cudaStream_t stream,
+                                              const std::string &what)
 {
-    const std::vector<gca::surface_point> points =
-        gca_test::extract_points(c.tracker.live_model(), c.points, stream, c.name + ", " + what);
-    const auto bits = [](float value) {
-        std::uint32_t b = 0;
-        std::memcpy(&b, &value, sizeof(b));
-        return b;
-    };
-    std::vector<point_key> keys;
-    keys.reserve(points.size());
-    for (const gca::surface_point &p : points)
-        keys.push_back({bits(p.position_m.x), bits(p.position_m.y), bits(p.position_m.z),
-                        bits(p.normal.x), bits(p.normal.y), bits(p.normal.z),
-                        (std::uint32_t{p.color.x} << 16) | (std::uint32_t{p.color.y} << 8) |
-                            std::uint32_t{p.color.z}});
-    std::sort(keys.begin(), keys.end());
-    return keys;
-}
-
-/// Gives a frame again under another timestamp, as a frame source would deliver it later.
-/// @param host [in] the frame.
-/// @param timestamp_us [in] the new timestamp, in µs.
-/// @return a frame of the same description, index and pixels with the new timestamp.
-gca::frame stamped(const gca::frame &host, std::uint64_t timestamp_us)
-{
-    gca::frame copy;
-    copy.prepare(host.description(), host.index(), timestamp_us);
-    std::copy(host.color().begin(), host.color().end(), copy.color().begin());
-    std::copy(host.depth().begin(), host.depth().end(), copy.depth().begin());
-    return copy;
+    return gca_test::sorted_keys(
+        gca_test::extract_points(c.tracker.live_model(), c.points, stream, c.name + ", " + what));
 }
 
 /// Renders the frames of a source's options.
@@ -505,8 +476,8 @@ void check_refusals(cudaStream_t stream)
     check_refused_with("refusals, a frame of another size",
                        other_size.state == gca::tracking_state::failed && !other_size.pose,
                        other_size.message, "is not the tracker's 640x400 px");
-    const gca::tracking_result same_time =
-        c.tracker.track(stamped(frames[1], frames[0].timestamp_us()), stream);
+    const gca::tracking_result same_time = c.tracker.track(
+        gca_test::restamped(frames[1], frames[1].index(), frames[0].timestamp_us()), stream);
     check_refused_with("refusals, a frame not later than the one before",
                        same_time.state == gca::tracking_state::failed && !same_time.pose,
                        same_time.message, "is not later than that of the frame before it");
@@ -604,7 +575,8 @@ void check_walk(cudaStream_t stream)
                  walk_tolerance.translation_m);
 
     const gca::tracking_result again = c.tracker.track(
-        stamped(frames.back(), frames.back().timestamp_us() + gca_test::synthetic_frame_period_us),
+        gca_test::restamped(frames.back(), frames.back().index(),
+                            frames.back().timestamp_us() + gca_test::synthetic_frame_period_us),
         stream);
     print_tracked("walk, the last frame again", again);
     check(again.state == gca::tracking_state::tracking, "walk, the last frame again: tracking");
@@ -633,7 +605,7 @@ void check_depth_gap(cudaStream_t stream)
     tracking_case c;
     c.name = "depth gap";
     open_case(c, test_parameters(), stream);
-    std::vector<point_key> before;
+    std::vector<gca_test::point_key> before;
     for (std::size_t i = 0; i < frames.size(); i++)
     {
         const bool in_gap =
@@ -653,7 +625,7 @@ void check_depth_gap(cudaStream_t stream)
                   (what + ": tracking").c_str());
         if (i + 1 == depth_gap.first_frame + depth_gap.frame_count)
         {
-            const std::vector<point_key> after = model_points(c, stream, "after the gap");
+            const std::vector<gca_test::point_key> after = model_points(c, stream, "after the gap");
             std::printf("depth gap: %zu points before the gap, %zu after it\n", before.size(),
                         after.size());
             check(!before.empty() && after == before,
@@ -697,7 +669,7 @@ void check_grey_plane(cudaStream_t stream)
                   result.registration.end == gca::registration_end::degenerate,
               (what + ": tracking loss, degenerate, no pose").c_str());
     }
-    const std::vector<point_key> points = model_points(c, stream, "after the slide");
+    const std::vector<gca_test::point_key> points = model_points(c, stream, "after the slide");
     check(points.empty(), "grey plane: the model holds no point");
     check(c.pool.refused_while_closed() == 0, "grey plane: the closed pool asked for nothing");
 }
@@ -715,8 +687,9 @@ const Eigen::Vector3d sphere_move_m(0.02, 0.0, 0.0);
 /// @param fused_after [out] the model's points after the second.
 /// @return the second frame's result; failed when the frames could not be rendered.
 gca::tracking_result track_moved_sphere(double max_inlier_rmse_m, const std::string &name,
-                                        cudaStream_t stream, std::vector<point_key> &fused_before,
-                                        std::vector<point_key> &fused_after)
+                                        cudaStream_t stream,
+                                        std::vector<gca_test::point_key> &fused_before,
+                                        std::vector<gca_test::point_key> &fused_after)
 {
     const std::optional<Eigen::Isometry3d> pose_a = gca_test::tabletop_object_pose();
     check(pose_a.has_value(), (name + ": the pose").c_str());
@@ -755,8 +728,8 @@ gca::tracking_result track_moved_sphere(double max_inlier_rmse_m, const std::str
 /// @param stream [in] the stream.
 void check_moved_sphere(cudaStream_t stream)
 {
-    std::vector<point_key> before;
-    std::vector<point_key> after;
+    std::vector<gca_test::point_key> before;
+    std::vector<gca_test::point_key> after;
     const gca::tracking_result strict =
         track_moved_sphere(noise_free_rmse_m, "moved sphere at 1.0 mm", stream, before, after);
     check(strict.state == gca::tracking_state::lost && !strict.pose &&

@@ -29,6 +29,7 @@
 /// Needs no GPU and no camera.
 
 #include "check.hpp"
+#include "frame_copy.hpp"
 #include "ply_reader.hpp"
 #include "scan/file_io.hpp"
 #include "scan/model_file.hpp"
@@ -360,18 +361,8 @@ bool same_trajectory(const std::vector<gca::trajectory_entry> &read,
         if (a.index != b.index || a.timestamp_us != b.timestamp_us ||
             a.pose.has_value() != b.pose.has_value())
             return false;
-        if (!a.pose)
-            continue;
-        for (int c = 0; c < 3; c++)
-        {
-            if (!same_bits(a.pose->position_m[c], b.pose->position_m[c]))
-                return false;
-        }
-        for (int c = 0; c < 4; c++)
-        {
-            if (!same_bits(a.pose->orientation.coeffs()[c], b.pose->orientation.coeffs()[c]))
-                return false;
-        }
+        if (a.pose && !gca_test::same_pose(*a.pose, *b.pose))
+            return false;
     }
     return true;
 }
