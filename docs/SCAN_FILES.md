@@ -23,6 +23,38 @@ A writer and a reader never throw. Each one returns its failure as a value, with
 names the file and, for a reader, the line, the point, the entry or the key. A writer refuses
 a value its reader would refuse, and then writes nothing.
 
+## A scan's directory
+
+Each scan has a directory of its own in the scans directory (`~/3dscanner-scans/`, a start option
+of the service, the spec), named by the scan's start time in UTC, `YYYYMMDDTHHMMSS.ffffffZ`
+(`src/scan/utc_time.hpp`), so that the names sort as the scans began. The scan interface
+(`src/scan/scan_interface.hpp`) makes it once the frame source has given its first frame, and
+writes into it:
+
+| file | what | when |
+|---|---|---|
+| `frames.sequence` | the sequence (docs/SEQUENCE_FILE.md): every frame taken but the one tracking failed on, with its pose or the mark of tracking loss | while the scan runs |
+| `parameters.json` | the parameters ("Parameters" below) | at the scan's stop, before refining |
+| `trajectory.txt` | the trajectory ("Trajectory" below), as refinement read it back from the sequence | after refining |
+| `full.ply` | the full model ("Models" below) | after refining |
+
+A scan ends as one of these, which its directory shows:
+
+* **refined**: the four files;
+* **unfinished**: the sequence and the parameters, without a trajectory or a full model, when
+  refinement failed (the scan interface's state says why), when the scan interface ended during
+  the scan (`end` `shut_down`) or during refinement, or when the trajectory or the full model could
+  not be written (a trajectory written before a full model that failed is removed again); when the
+  parameters could not be written, the sequence alone;
+* **discarded**: nothing, the directory removed, at a discard while scanning or refining, one
+  that comes during refinement's last steps included; a discard given while the scan starts is
+  answered after its first frame. When the directory cannot be removed, the scan is unfinished,
+  with the reason in the scan interface's state, never reported as discarded.
+
+A start that fails (the GPU's buffers refused, the source refusing to open, giving no first frame
+or describing itself with a string the parameters cannot hold) leaves nothing on disk. The
+sequence stays after refining; the switch that deletes it then (R18) is not built.
+
 ## The models' frame
 
 Positions and poses are in the models' frame, the camera frame of the first fused frame: x
@@ -65,7 +97,9 @@ the point. The tests' own PLY reader (`tests/ply_reader.hpp`) reads this layout 
 ## Trajectory
 
 Text. The first line is the header, `# 3dscanner trajectory 1`, which names the format and its
-version. Then there is one line for each frame the scanner took, in the order taken:
+version. Then there is one line for each frame the scanner took, in the order taken, but for
+the frame tracking failed on, which ends a scan (`end` `tracking_failed` in the parameters) and
+has neither a pose nor the mark of tracking loss:
 
     <index> <timestamp_us> <tx> <ty> <tz> <qx> <qy> <qz> <qw>
     <index> <timestamp_us> lost
@@ -198,11 +232,11 @@ of it is another, stopped by the operator after five minutes:
 | `sdk_version` | OrbbecSDK's version |
 | `start_utc`, `stop_utc` | the times the scan started and stopped, in UTC to the microsecond as ISO 8601's basic format, `YYYYMMDDTHHMMSS.ffffffZ`, from `19700101T000000.000000Z` to `99991231T235959.999999Z` (`src/scan/utc_time.hpp`); the system's clock, which counts no leap second and may be set back, so the stop is not checked against the start |
 | `frames` | the frames of the scan, an object of the four counts below, each a whole number from 0 to 2^53 |
-| `taken` | the frames the scanner took, each of which entered the per-frame path: those fused, those lost, and, when the scan ended because tracking failed (`end` is `tracking_failed`), the frame it failed on, which tracking gave neither a pose nor tracking loss; so `taken` is `fused` and `lost` together, and 1 more then |
+| `taken` | the frames the scanner took, each of which entered the per-frame path: those fused, those lost, and, when the scan ended because tracking failed (`end` is `tracking_failed`), the frame it failed on, which tracking gave neither a pose nor tracking loss and which is in neither the sequence nor the trajectory; so `taken` is `fused` and `lost` together, and 1 more then |
 | `fused` | the frames tracking passed and fused into the live model |
 | `lost` | the frames in tracking loss, of which nothing was fused |
 | `not_taken` | the frames the scanner did not take: those the frame source delivered while the sequence's writer had no room, and the gaps in the frames' indices, frames the source did not deliver |
-| `end` | why the scan ended, one key of the closed set below |
+| `end` | why the scan ended, one key of the closed set below; a discarded scan has no parameters and so no end |
 
 Why a scan ended is one of seven keys, never free text: OpenCV writes only some strings as JSON
 ("Strings" below), and a reason in the operator's words belongs to the scan's state, not to its
@@ -215,7 +249,7 @@ file (`src/scan/parameters_file.hpp`, `scan_end`).
 | `source_failure` | the frame source failed |
 | `source_end` | the frame source had no frame left, as a sequence at its end |
 | `tracking_failed` | tracking failed on a frame (`src/tracking/tracker.hpp`, `tracking_state::failed`) |
-| `writer_failed` | the sequence's writer failed |
+| `writer_failed` | the sequence's writer failed; the frame it failed on was fused into the live model and counted before the writer refused it, so the sequence and the trajectory may lack the last frame counted as fused |
 | `shut_down` | the service was asked to stop during the scan |
 
 The ranges each stage takes these values in are the stage's own, narrower than the file's: the

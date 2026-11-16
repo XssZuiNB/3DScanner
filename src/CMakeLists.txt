@@ -12,7 +12,8 @@
 #                           exponential; the fusion of a scan's sequence at the full voxel size)
 #   types <- separation (the proposal of the support plane and the box, on the host; Eigen)
 #   types <- camera <- scan (Eigen, OpenCV's core)
-#   scan, tracking <- scan_interface (the stages' parameters of an object class's set)
+#   scan, tracking, refinement <- scan_interface (the scan interface with its scan thread, the
+#                                  stages' parameters of an object class's set)
 # Every library includes from src/ ("gpu/gpu_pool.hpp"); types carries that directory.
 
 # ---------------------------------------------------------------- types (header only)
@@ -201,11 +202,21 @@ add_library(
 target_link_libraries(scan PUBLIC types camera Eigen3::Eigen PRIVATE opencv_core)
 
 # ---------------------------------------------------------------- scan_interface
-# The scan interface's library, beside the host-only scan: today the stages' parameters of an object
-# class's set (scan/stage_parameters.hpp), the one copy of each conversion.
-add_library(scan_interface STATIC scan/stage_parameters.cpp scan/stage_parameters.hpp)
-# PUBLIC: the header holds scan's object class, tracking's, registration's and fusion's parameters.
-target_link_libraries(scan_interface PUBLIC scan tracking)
+# The scan interface's library, beside the host-only scan: the scan interface with its scan thread
+# (scan/scan_interface.hpp), which runs tracking and refinement, and the stages' parameters of an
+# object class's set (scan/stage_parameters.hpp), the one copy of each conversion.
+add_library(
+    scan_interface
+    STATIC
+    scan/scan_interface.cpp
+    scan/scan_interface.hpp
+    scan/stage_parameters.cpp
+    scan/stage_parameters.hpp
+)
+# PUBLIC: the headers hold scan's object class and parameters, camera's frame source and writer,
+# tracking's, registration's and fusion's parameters; refinement fuses the sequence; the thread
+# library for the scan thread.
+target_link_libraries(scan_interface PUBLIC scan tracking refinement Threads::Threads)
 
 # Separable compilation stays off: no device function or variable is used outside the
 # translation unit that defines it, so nothing needs a device link [M 2026-11-13: every test

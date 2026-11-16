@@ -437,21 +437,6 @@ std::array<decltype(&std::declval<Source &>().camera), 3> strings_of(Source &sou
     return {&source.camera, &source.firmware_version, &source.sdk_version};
 }
 
-/// Checks that each string of a source's description is one the file holds (string_refusal()).
-/// @param source [in] the description.
-/// @return the reason one is not, naming its key; empty when each is.
-std::string source_refusal(const source_description &source)
-{
-    const std::array<const std::string *, 3> strings = strings_of(source);
-    for (std::size_t k = 0; k < source_keys.size(); k++)
-    {
-        std::string reason = string_refusal(key_in(source_keys[k], source_key), *strings[k]);
-        if (!reason.empty())
-            return reason;
-    }
-    return {};
-}
-
 /// Gives the text of a time for the file, or why it has none.
 /// @param key [in] the time's key, for the reason.
 /// @param time [in] the time.
@@ -825,6 +810,18 @@ std::optional<scan_end> scan_end_named(std::string_view name) noexcept
         if (*key == name)
             return end;
     }
+}
+
+std::string source_refusal(const source_description &source) noexcept
+{
+    const std::array<const std::string *, 3> strings = strings_of(source);
+    for (std::size_t k = 0; k < source_keys.size(); k++)
+    {
+        std::string reason = string_refusal(key_in(source_keys[k], source_key), *strings[k]);
+        if (!reason.empty())
+            return reason;
+    }
+    return {};
 }
 
 write_result write_parameters(const std::filesystem::path &path,

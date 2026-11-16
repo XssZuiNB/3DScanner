@@ -185,3 +185,10 @@ add_test(NAME tracking COMMAND test_tracking)
 add_executable(test_stage_parameters test_stage_parameters.cpp)
 target_link_libraries(test_stage_parameters PRIVATE scan_interface synthetic_source)
 add_test(NAME stage_parameters COMMAND test_stage_parameters)
+
+# The scan interface in process, the spec's main seam: whole scans on the synthetic source into a
+# temporary scans directory, with a source and a writer in front of the real ones that the test
+# controls.
+add_executable(test_scan_interface test_scan_interface.cpp)
+target_link_libraries(test_scan_interface PRIVATE scan_interface synthetic_source)
+add_test(NAME scan_interface COMMAND test_scan_interface)

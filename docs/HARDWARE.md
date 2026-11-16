@@ -472,6 +472,22 @@ other ones, and its host adds the check and the pose. The fusion runs 0.7 to 1.1
 returns [S: computed, the path's median less the call's]. These are a first number for
 `per-stage-times-from-replay`, which settles the stream size on real sequences.
 
+**The "too close" notice** (docs/methods/tracking.md, "The scan's loop"; `too_close()`,
+`src/scan/scan_interface.hpp`): one pass over a frame's depth on the host, by the scan thread before
+tracking, on frames of random depth, a tenth of their pixels without depth; a scratch program
+pinned to cpu0 by `taskset -c 0`, each size called back to back for 10 s, the first 100 calls not
+recorded [M 2026-11-16, 07:48:24 to 07:48:44, MAXN_SUPER, cpu0 at 1728 MHz by `scaling_cur_freq`,
+under the build lock, no compiler running]:
+
+| size | calls | median | p95 | max |
+|---|---|---|---|---|
+| 640x400 | 117931 | 0.084 ms | 0.084 ms | 0.211 ms |
+| 1280x800 | 29601 | 0.335 ms | 0.340 ms | 0.550 ms |
+
+Counted in 64 bits with a 32-bit compare the same pass took 0.176 ms and 0.704 ms (medians); counts
+of 32 bits a row and a 16-bit compare let the compiler vectorize it [M 2026-11-16, 07:47:14 to
+07:47:34 and a scratch comparison of the three loops at 1280x800: 0.704, 0.408 and 0.334 ms].
+
 ## Refinement
 
 What refinement takes on the board after a scan (docs/methods/refinement.md), measured by scratch

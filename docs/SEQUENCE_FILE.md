@@ -6,10 +6,12 @@ The format of a sequence (GLOSSARY.md, "Sequence"): the frames a scan took, in o
 with its index, timestamp, the IMU's samples taken since the frame before
 (docs/methods/imu-samples.md), depth and color, and with the pose tracking gave it, the mark of
 tracking loss or the mark that nothing tracked it; once, the frames' size, intrinsics and depth
-unit and the format's version. The viewer writes it (`orbbec_viewer --sequence`, AGENTS.md §3),
-and refinement reads a scan's back to fuse it at the full voxel size, refusing a frame that
-nothing tracked (docs/methods/refinement.md, "The fusion of the sequence"); the scanner and the
-replay tool are planned to write or read it. It has one writer and one reader, in `src/camera/` (`sequence_writer`, `sequence_reader`, the
+unit and the format's version. The viewer writes it (`orbbec_viewer --sequence`, AGENTS.md §3);
+a scan writes its own while it runs (`frames.sequence` in its directory, docs/SCAN_FILES.md, "A
+scan's directory"), every frame it took but the one tracking failed on, which ends a scan and
+gets neither a pose nor the mark of tracking loss; refinement reads a scan's back to fuse it at
+the full voxel size, refusing a frame that nothing tracked (docs/methods/refinement.md, "The
+fusion of the sequence"); the replay tool is planned to read it. It has one writer and one reader, in `src/camera/` (`sequence_writer`, `sequence_reader`, the
 layout in `sequence_format`); the frames are stored uncompressed. ctest `sequence` pins the
 format: it writes frames and reads them back bit for bit, and compares the writer's bytes with
 bytes it builds from the tables below. The format has one version, 2, which added the IMU's

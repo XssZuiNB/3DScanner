@@ -14,12 +14,13 @@ al., "KinectFusion: Real-time dense surface mapping and tracking", ISMAR 2011, s
 tree's code is written from the sources named here; no reconstruction library's code is read or
 copied for it (docs/adr/0002-own-reconstruction-code.md).
 
-Built: the tracker and the check (`src/tracking/tracker.*`; the test `tests/test_tracking.cpp`).
-Left to `relocalize-from-keyframes`: keyframes and the candidates they add for a lost frame. Left
-to `tracking-thresholds-from-real-sequences`: the thresholds' values and ε, measured on real
-sequences. Left to the scan interface (`scan-interface-first-whole-scan`): the scan's steps 7 and
-8, the sequence's writer and the published state, and the "too close" notice (R36), whose
-threshold the object class holds ("Parameters").
+Built: the tracker and the check (`src/tracking/tracker.*`; the test `tests/test_tracking.cpp`),
+and the scan's loop around them, with the path's steps 7 and 8, the sequence's writer, the
+published state and the "too close" notice (R36) ("The scan's loop"; `src/scan/scan_interface.*`;
+the test `tests/test_scan_interface.cpp`). Left to `relocalize-from-keyframes`: keyframes and the
+candidates they add for a lost frame. Left to `tracking-thresholds-from-real-sequences`: the
+thresholds' values and ε, measured on real sequences. Left to `live-model-snapshots`: the live
+model published twice a second.
 
 ## Input
 
@@ -275,6 +276,52 @@ stages": on the synthetic walk at the tabletop object's values, a median of 12.5
 34.9 ms at 1280x800 back to back, and 20.9 ms paced at 30 fps at 640x400, the governor's clock at
 510 to 918 MHz [M 2026-11-15]. At 1280x800 the path does not fit a frame's 33.3 ms; the stream
 size is `per-stage-times-from-replay`'s to settle on real sequences.
+
+## The scan's loop
+
+The scan interface (`src/scan/scan_interface.hpp`; the spec, "The scan interface") runs the path
+on its scan thread, which owns the source, the GPU's work, the writer's calls and the scan's files.
+Before the first frame it requests the tracker's buffers and the live model from a pool it then
+closes, opens the source and takes its first frame. Then, for each frame the source delivers, in
+this order:
+
+1. **A gap** in the frames' indices, the frames the source did not deliver since the frame before,
+   counts as not taken. The camera's source gives the oldest frame of OrbbecSDK's queue of up to
+   10, which drops its oldest when it is full [S: OrbbecSDK_v2 v2.10.6, Pipeline.cpp, per
+   `orbbec-device-on-frame-source`'s Comments], so a loop that falls behind runs up to 10 frames
+   late and the frames dropped arrive as such gaps. The newest frame is not taken by a mailbox in
+   front of the camera: at 640x400 the path takes 20.9 ms paced, within the frame's 33 ms
+   [M 2026-11-15: "On the GPU, and the time"], and a mailbox comes only on a measured backlog that
+   hurts (`hardware-check-orbbec-on-seam`).
+2. **The writer's room** (`src/camera/sequence_writer.hpp`, `has_room()`): a frame the writer has
+   no room for counts as not taken and goes no further, so that no frame is fused that is not
+   written.
+3. **The "too close" notice**: at least a quarter of the frame's pixels with depth lie nearer than
+   the object class's `too_close_depth_m` ("Parameters"); a pixel with depth is one whose value is
+   above 0, beyond the far depth too. One pass over the depth on the host, 0.084 ms at 640x400 and
+   0.335 ms at 1280x800 [M 2026-11-16: docs/HARDWARE.md, "The per-frame path's stages"].
+4. **Tracking** (`tracker::track()`, steps 1 to 6 above). The frame counts as taken, and as fused
+   or lost. A frame tracking fails on ends the scan (`end` `tracking_failed`): it counts as taken,
+   neither fused nor lost, and goes neither into the sequence nor into the trajectory.
+5. **The writer** takes the frame with its pose or the mark of tracking loss (step 7); a failure
+   ends the scan (`writer_failed`).
+6. **The state** is published for the frame (step 8): the counts, the tracking state with the
+   condition that failed when lost, and the notice; no lock is held while the listener runs.
+7. **The commands** queued meanwhile are answered: a second start is refused, a stop or a discard
+   ends the scan before the next frame; a stop or a discard given while the scan was starting is
+   answered here, after the first frame. Then the next frame is asked for; a timeout, a failure or
+   the end of the source ends the scan with its reason.
+
+After the loop the source is closed and the writer closed, so that the sequence holds every frame
+taken but the one tracking failed on; the last frame's GPU work is waited for and the tracker,
+which holds the live model, is freed as the function that runs the loop returns, so that it
+cannot outlive the loop, as one sparse TSDF exists at a time; the parameters are written
+(docs/SCAN_FILES.md); refinement fuses the sequence at the full voxel size
+(docs/methods/refinement.md, "The fusion of the sequence"), answering the commands before each
+frame, and the scan answers them once more before it is idle, so that a discard that comes during
+the extraction or the writes still discards it. A discard removes the
+scan's directory; the end of the scan interface during a scan or a refinement leaves the scan
+unfinished, without a trajectory or a full model.
 
 ## What the prototype did, and what is not carried
 

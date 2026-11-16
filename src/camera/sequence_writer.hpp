@@ -8,7 +8,8 @@
 /// told before a frame's stages run (has_room()); when the queue is full the push says so too,
 /// and the writer loses no frame it accepted: close() writes every one of them, in the order
 /// accepted, before the end. A failure is a value with its reason (CODING_STANDARDS.md,
-/// "The rewrite's code"); no exception leaves the writer.
+/// "The rewrite's code"); no exception leaves the writer. A scan takes its writer through the
+/// seam sequence_sink, which holds the calls it makes.
 
 #pragma once
 
@@ -55,21 +56,60 @@ struct push_result
                         ///< accepted or the queue was full
 };
 
+/// The writer's calls a scan makes, in their order for each frame (sequence_writer::has_room()
+/// says why): open() once, has_room() and push() for each frame, close() at the end. The scan
+/// interface (scan/scan_interface.hpp) takes its writer through this seam, so that its test can
+/// make the writer slow, as the camera's run-time properties have their seam for the test of the
+/// hold (camera/camera_properties.hpp). sequence_writer is the one implementation; each function's
+/// contract is sequence_writer's below.
+class sequence_sink
+{
+public:
+    /// Builds the seam's part of a writer, which holds nothing.
+    sequence_sink() = default;
+
+    /// A writer is not copied: it stands for one file and its thread.
+    sequence_sink(const sequence_sink &) = delete;
+    sequence_sink &operator=(const sequence_sink &) = delete;
+
+    /// Ends the writer; an implementation's destructor closes it when it is open.
+    virtual ~sequence_sink() = default;
+
+    /// Creates a sequence and starts writing (sequence_writer::open()).
+    /// @param path [in] the sequence's path; its directory exists, and no file stands there.
+    /// @param description [in] the size, intrinsics and depth unit of every frame it takes.
+    /// @param queue_frames [in] the queue's size, in frames, >= 1.
+    /// @return opened, or not with the reason.
+    virtual open_result open(const std::filesystem::path &path,
+                             const frame_description &description,
+                             std::size_t queue_frames) noexcept = 0;
+
+    /// Tells whether the queue has room for a frame (sequence_writer::has_room()).
+    /// @return true when a frame can be pushed.
+    virtual bool has_room() noexcept = 0;
+
+    /// Puts a frame into the queue by swapping buffers (sequence_writer::push()).
+    /// @param in_out [in,out] the frame; swapped when accepted.
+    /// @param tracking [in] the frame's pose or its mark.
+    /// @return accepted, full or failure with the reason.
+    virtual push_result push(frame &in_out, const frame_tracking &tracking) noexcept = 0;
+
+    /// Writes what is queued and the end, and stops writing (sequence_writer::close()).
+    /// @return written, or the reason.
+    virtual write_result close() noexcept = 0;
+};
+
 /// Writes one sequence at a time. One thread at a time calls open(), push() and close(); the
 /// writer's own thread writes the frames between open() and close().
-class sequence_writer
+class sequence_writer final : public sequence_sink
 {
 public:
     /// Builds a writer that is not open and holds nothing.
     sequence_writer() = default;
 
-    /// A writer is not copied: it stands for one file and its thread.
-    sequence_writer(const sequence_writer &) = delete;
-    sequence_writer &operator=(const sequence_writer &) = delete;
-
     /// Closes the writer when it is open (close()), so that its thread ends; what close() gives
     /// is lost then, so a caller that needs it calls close() first.
-    ~sequence_writer();
+    ~sequence_writer() override;
 
     /// Creates a sequence and starts the writer's thread. The file is created under its name,
     /// never over a file that stands there, and its header is written; its directory is synced,
@@ -87,7 +127,7 @@ public:
     /// @note Allocates queue_frames frames of the description's size. A failed allocation ends
     ///       the program (std::terminate): the function is noexcept.
     open_result open(const std::filesystem::path &path, const frame_description &description,
-                     std::size_t queue_frames) noexcept;
+                     std::size_t queue_frames) noexcept override;
 
     /// Tells whether the queue has room for a frame. Room seen stays until the caller's next
     /// push(), because only the caller fills the queue and the writer's thread only empties it.
@@ -99,7 +139,7 @@ public:
     ///         reports; false when every slot holds a frame not yet written, or the writer is not
     ///         open.
     /// @note Allocates nothing. Takes the queue's lock; waits for nothing else.
-    bool has_room() noexcept;
+    bool has_room() noexcept override;
 
     /// Puts a frame into the queue by swapping buffers with a free slot: the caller's frame goes
     /// into the queue as it is, and the caller gets the slot's frame in exchange, of the same
@@ -119,7 +159,7 @@ public:
     /// @note Allocates nothing when the frame is accepted or the queue is full; allocates for a
     ///       failure's reason. A failed allocation ends the program (std::terminate): the
     ///       function is noexcept. Takes the queue's lock for the swap; waits for nothing else.
-    push_result push(frame &in_out, const frame_tracking &tracking) noexcept;
+    push_result push(frame &in_out, const frame_tracking &tracking) noexcept override;
 
     /// Writes every frame still in the queue, in order, then the end of the sequence, syncs the
     /// file to disk and ends the writer's thread. The writer is not open afterwards, and its
@@ -129,7 +169,7 @@ public:
     ///         frames queued after it are lost); the end's write, the sync or the close failed.
     /// @note Waits for the writer's thread to write the queue. Allocates for a reason. A failed
     ///       allocation ends the program (std::terminate): the function is noexcept.
-    write_result close() noexcept;
+    write_result close() noexcept override;
 
     /// Tells how many frames stand whole in the file: the records the writer's thread has written
     /// since the last open(), in the order accepted. After close() they are the frames the file

@@ -41,9 +41,10 @@ come without samples [?: a choice, the orchestrator's, 2026-11-15]: a refusal of
 make it unusable wherever its IMU does not stream (on a USB 2 link, unverified), whereas the scan
 goes on and the source says what it went without. The opening names the reason
 (`orbbec_opening::imu_refusal`, `src/camera/orbbec_imu.hpp`, `imu_refusal()`), and
-`orbbec_viewer` prints it as `No IMU: <reason>; the frames come without its samples`. Whether a
-scan without samples is refused is for its readers to decide: separation's up from gravity and
-the scan interface.
+`orbbec_viewer` prints it as `No IMU: <reason>; the frames come without its samples`. A scan
+without samples runs and is refined as usual (the scan interface refuses none); separation then
+proposes no support plane and box, without gravity (the user's decision of 2026-11-16,
+`separation-up-from-gravity`).
 
 ## A sample
 

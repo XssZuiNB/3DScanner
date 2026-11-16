@@ -76,9 +76,10 @@ struct scan_frame_counts
 /// What a scan's parameters file holds.
 struct scan_parameters
 {
-    std::string commit; ///< the tree's commit the scanner was built from: at most 4095
-                        ///< characters of printable ASCII (0x20 to 0x7e) without the
-                        ///< apostrophe, not bounded by double quotes (docs/SCAN_FILES.md)
+    /// The tree's commit the scanner was built from: at most 4095 characters [M 2026-11-14:
+    /// OpenCV 4.8.0 reads no longer string back] of printable ASCII, 0x20 to 0x7e [S: ASCII],
+    /// without the apostrophe, not bounded by double quotes (docs/SCAN_FILES.md, "Strings").
+    std::string commit;
     gca::object_class object_class;     ///< the object class the operator chose
     object_class_parameters parameters; ///< the set in force, which need not be the class's own
     /// The frames' size, intrinsics and depth unit, the stream size the source was opened for:
@@ -99,6 +100,17 @@ struct scan_parameters
     bool operator==(const scan_parameters &other) const = default;
 };
 
+/// Checks that the file holds each string of a source's description: at most 4095 characters
+/// [M 2026-11-14: OpenCV 4.8.0 reads no longer string back] of printable ASCII, 0x20 to 0x7e
+/// [S: ASCII], without the apostrophe, not bounded by double quotes (docs/SCAN_FILES.md,
+/// "Strings"). A scan checks its source's description with it at its start,
+/// before it writes anything, so that a scan whose parameters could not be written never starts.
+/// @param source [in] the description, as the source gives it (camera/frame_source.hpp).
+/// @return the reason one is not, naming its key in "source"; empty when each is.
+/// @note Allocates for the reason. A failed allocation ends the program (std::terminate): the
+///       function is noexcept.
+std::string source_refusal(const source_description &source) noexcept;
+
 /// Writes a scan's parameters as JSON (docs/SCAN_FILES.md), the doubles exactly.
 /// @param path [in] the file's path; its directory exists. A file there is replaced.
 /// @param parameters [in] the parameters.
@@ -108,10 +120,9 @@ struct scan_parameters
 ///         the stream's width or height is 0, fx or fy is not finite and > 0, cx or cy not finite,
 ///         the depth unit not finite and > 0; a time lies outside 1970 to 9999; why the scan
 ///         ended is no enumerator; a count of frames lies above 2^53, or taken is not fused + lost,
-///         and 1 more when the scan ended because tracking failed; the
-///         commit or a string of the source holds more than 4095 characters, a byte outside
-///         printable ASCII or an apostrophe, or starts and ends with a double quote (nothing is
-///         written then); or OpenCV could not write the JSON; or the file could not be written
+///         and 1 more when the scan ended because tracking failed; the commit or a string of the
+///         source is one the file does not hold (source_refusal() says which; nothing is written
+///         then); or OpenCV could not write the JSON; or the file could not be written
 ///         (scan/file_io.hpp, write_file()).
 /// @note Allocates. A failed allocation ends the program (std::terminate): the function is
 ///       noexcept.

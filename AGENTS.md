@@ -19,8 +19,8 @@ written for Intel RealSense (its history ends at 5e568d9).
 What the rewrite builds: an operator scans a tabletop object or a large object with the
 hand-held camera and works the scan from a web page the Jetson serves (the terms: GLOSSARY.md;
 the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the libraries below and four
-programs, each with its offline tests; the scan interface, the web page and the service are not
-built yet. The tree began as CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to
+programs, each with its offline tests, and the scan interface, which runs a whole scan offline
+(its test drives it with the synthetic source); the web page and the service are not built yet. The tree began as CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to
 build here and given the Orbbec camera: the rewrite's prototype, whose methods carry over. Its
 library was the test oracle of the organized points, the normals, the pyramid's intensity and the
 registration until each agreed with it, and is deleted; each method document keeps the agreement
@@ -45,7 +45,7 @@ scan's files link no CUDA. Each library links only libraries above it in this ta
 | `refinement` | the pose graph of keyframes and its solve, on the host; the fusion of a scan's sequence at the full voxel size, with the full model's extraction to the host | `types`, `registration` for the SE(3) exponential, `fusion` for the sparse TSDF and through it `camera` for the sequence's reader |
 | `separation` | the proposal of the support plane and the box from a full model and its trajectory, the least-squares plane, on the host | `types` only, so that the scan can call it |
 | `scan` | the files a scan keeps, a scan's time in UTC, the parameters of each object class; host only, so that `box_fit` and the viewer's loop link no CUDA | `types`, `camera` for the POSIX file calls and the source's description |
-| `scan_interface` | the scan interface's library: today the stages' parameters of an object class's set, the one copy of each conversion | `scan`, `tracking` |
+| `scan_interface` | the scan interface: its scan thread, commands and state, a scan's phases from its start to its refinement, the "too close" notice; and the stages' parameters of an object class's set, the one copy of each conversion | `scan`, `tracking`, `refinement` |
 
 The programs in `apps/` keep their command lines and their work (the viewer's loop, the three
 measurements) in libraries of their own, which the offline tests drive. `orbbec_viewer` runs its
@@ -254,6 +254,7 @@ checkers; these are the rules no checker holds.
    | camera parameters, a frame's description, the camera's pose, a trajectory's entry, an IMU sample and a model's point (plain structs), the value comparison of the intrinsics and of a frame's description (`operator==`, which a parameters file's round trip uses; a sequence compares descriptions bit for bit, `src/camera/sequence_format.*`), the one check that intrinsics can be used, the one check of a pose, console colors | `src/types/` |
    | the frame with its lists of IMU samples and their reserve; the frame source seam | `src/camera/frame.*`; `src/camera/frame_source.hpp` |
    | the sequence on disk (docs/SEQUENCE_FILE.md): its layout, writer and reader, the comparison of two frames' descriptions bit for bit, the rule of each sensor's samples' order (`src/camera/sequence_format.*`); the POSIX file calls the writers and readers share | `src/camera/sequence_*`; `src/camera/posix_file.*` |
+   | the writer's calls a scan makes, a seam (`sequence_sink`) that the sequence's writer implements, so that the scan interface's test can make the writer slow, as the camera's run-time properties have their seam for the test of the hold | `src/camera/sequence_writer.hpp` |
    | Orbbec: alignment, color decoding, the IMU's sensors and their callbacks, OrbbecSDK's report as plain data, the color properties read and written | `src/camera/orbbec_device.*` |
    | the camera's run-time properties: their numbers, names, the one table of which is a switch and which control each belongs to, and their seam; the hold of the color exposure and white balance in front of a camera, its report and lines | `src/camera/camera_properties.hpp`; `src/camera/color_hold.*` |
    | Orbbec: the choice of streams, the checks of a frame, the rule for timestamps, which also places an IMU reading's time, the refusals of an opening | `src/camera/orbbec_rules.*` |
@@ -273,6 +274,7 @@ checkers; these are the rules no checker holds.
    | separation's proposal (docs/methods/separation.md): the trajectory's up and meeting point, the window, the support plane and its conditions, the footprint's pieces, the box, its parameters, result and constants; the orthogonal least-squares plane, which distortion_check's measurement, the acceptance tool's box fit and depth_noise's measurement call too | `src/separation/proposal.*`; `src/separation/plane_fit.*` |
    | the files a scan keeps (docs/SCAN_FILES.md), with the closed set of why a scan ended; a scan's time in UTC and its one text; the parameters of each object class | `src/scan/file_io.*`, `model_file.*`, `trajectory_file.*`, `parameters_file.*`; `src/scan/utc_time.*`; `src/scan/object_class.*` |
    | the stages' parameters of an object class's set: tracking's, the registration's and the sparse TSDF's of the live or the full model, the one copy of each conversion | `src/scan/stage_parameters.*` |
+   | the scan interface (the spec, "The scan interface"; docs/methods/tracking.md, "The scan's loop"): its commands and their answers, its state and its snapshots, the scan thread with its two locks, a scan's phases, its directory and files (docs/SCAN_FILES.md, "A scan's directory"), the frames counted as taken or not, the "too close" rule | `src/scan/scan_interface.*` |
    | the acceptance tool's box fit: the box's axes from the normals, its faces, their planes and spreads, its edges, its refusals and the lines the hardware acceptance reads | `apps/box_measure.*` |
    | `depth_noise`'s measurement of c (docs/methods/depth-noise.md): the sequence read twice, each pixel's sums, the pixels kept, the depth bins, the rounding's share, the drift between the halves, the spatial error from the plane, the fit of c, its refusals and the lines the measurement on the camera reads | `apps/depth_noise_measure.*` |
    | `orbbec_viewer`'s loop on a frame source: the first frame, its GPU path (a stream, the organized points, the snapshot's normals), the report line, the window, the snapshots as a model's PLY, the sequence it writes | `apps/viewer_loop.*` |
