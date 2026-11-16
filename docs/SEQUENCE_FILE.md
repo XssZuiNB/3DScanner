@@ -31,7 +31,10 @@ same size back, its pixels unspecified. When the queue is full the writer says s
 take the frame. The writer tells whether its queue has room, and room it has told of stays until
 the caller's next frame, because only the caller fills the queue. In the scanner a frame enters
 the per-frame path only when the queue has room for it; after tracking it goes to the writer with
-its pose or mark, and no frame is fused that is not written. The viewer fuses nothing: it shows
+its pose or mark, and no frame is fused that is not written. A writer for a sequence as the
+source, the replay tool's, waits for room instead of saying the queue is full (`queue_full::wait`),
+so that a replay takes every frame; its thread wakes the wait after each frame it writes and when a
+write fails. The viewer fuses nothing: it shows
 every frame it takes, pushes it after its last use, and counts the frames a full queue refused
 (AGENTS.md §3). The writer refuses a frame of another size, intrinsics or depth unit than the
 header's (bit for bit, `same_description()` in `src/camera/sequence_format.hpp`), a frame

@@ -488,6 +488,51 @@ Counted in 64 bits with a 32-bit compare the same pass took 0.176 ms and 0.704 m
 of 32 bits a row and a 16-bit compare let the compiler vectorize it [M 2026-11-16, 07:47:14 to
 07:47:34 and a scratch comparison of the three loops at 1280x800: 0.704, 0.408 and 0.334 ms].
 
+**The replay's frame time** (`build/apps/replay`; docs/methods/tracking.md, "The stages' times"),
+with and without `--times`: the walk around the tabletop box of `tests/test_scan_interface.cpp`
+(240 poses 1.5° apart) played forth and back, 1440 frames at 640x400 and 720 at 1280x800, written
+as sequences by a scratch program, every frame tracked and fused; the tabletop object class's set
+with a budget of 1.0 GB (10^9 bytes) from a parameters file the scratch program wrote; each size
+replayed without `--times`, with it, and without again; MAXN_SUPER by `nvpmodel -q`, under the
+build lock, nothing else running; the GPU clock sampled every 0.5 s from `cur_freq` over each
+whole run, refinement included [M 2026-11-16, 10:18:55 to 10:21:45; the kernel log empty after
+it]. "A frame" is the last line's: the scanning phase's time over the frames taken, the source's
+reads included.
+
+| size | `--times` | a frame | GPU clock samples |
+|---|---|---|---|
+| 640x400 | no (1) | 12.738 ms | 42 of 49 at 1020 MHz |
+| 640x400 | yes | 15.071 ms | 29 of 55 at 1020 MHz, 13 at 918, 10 at 816 |
+| 640x400 | no | 11.172 ms | 39 of 44 at 1020 MHz |
+| 1280x800 | no | 36.961 ms | 56 of 63 at 1020 MHz |
+| 1280x800 | yes | 37.813 ms | 57 of 64 at 1020 MHz |
+| 1280x800 | no | 35.758 ms | 52 of 61 at 1020 MHz |
+
+(1) Part of its sequence came from the disk: the 3.5 GB of 1280x800 written after it had pushed it
+out of the page cache [?: inferred from the second run].
+
+The time lines' medians in the runs with `--times`, in ms:
+
+| size | room | too_close | upload | pyramid | ray_cast | registration | check | fusion | writer | total |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 640x400 | 0.001 | 0.230 | 0.349 | 1.587 | 5.989 | 2.095 | 0.002 | 0.786 | 0.015 | 11.068 |
+| 1280x800 | 0.003 | 0.821 | 1.170 | 4.825 | 15.526 | 5.380 | 0.004 | 1.142 | 0.019 | 29.072 |
+
+The waits cost 3.9 ms a frame at 640x400 (15.071 against 11.172 ms, 35 %) and 0.9 to 2.1 ms at
+1280x800 (2 % to 6 %) [S: computed]: they keep the host's "too close" pass and upload from running
+beside the frame before's fusion, and with the GPU idle between stages the governor lowered its
+clock (29 of 55 samples at 1020 MHz against 39 of 44). So the time lines give each stage's time,
+and the frame time of a scan without them is the last line's. At 1280x800 a time line's total,
+29.1 ms, lies 8.7 ms below a frame's 37.8 ms [S: computed, the tables]: the source's read of 5.12 MB a frame, outside the
+per-frame path, came from the disk, the sequence being larger than the page cache [?: inferred, not
+timed by itself]. A stage's time differs between frames by up to several times its median (the
+registration's largest 17.7 ms and 33.1 ms against its medians 2.095 ms and 5.380 ms), the largest
+difference between a frame's total and its stages' sum was 0.027 ms, and `room` printed 0.000 in 2
+of the 1440 frames at 640x400, the smallest `check` 0.001 ms [M 2026-11-16: the time lines of the
+runs with `--times` above]. The "too close" pass took 0.230 ms and 0.821 ms on the scan
+thread, against the 0.084 ms and 0.335 ms above on cpu0 at 1728 MHz [?: the scan thread is not
+pinned, its core's clock not recorded].
+
 ## Refinement
 
 What refinement takes on the board after a scan (docs/methods/refinement.md), measured by scratch

@@ -11,7 +11,8 @@
 /// the registration's result alone, check_registration(). The tracker holds every buffer of the
 /// path and the live model's sparse TSDF, all requested from the pool that closes before the
 /// first frame; track() allocates nothing, launches no kernel of its own and waits only where the
-/// upload and the registration wait.
+/// upload and the registration wait, and, for the replay tool's measurement alone, where a stage
+/// clock waits after each stage (tracking/stage_clock.hpp).
 
 #pragma once
 
@@ -34,6 +35,8 @@
 
 namespace gca
 {
+class stage_clock;
+
 /// The check's thresholds (docs/methods/tracking.md, "Parameters"), each the object class's
 /// (scan/object_class.hpp); the tracker refuses a value outside its range.
 struct tracking_thresholds
@@ -218,6 +221,9 @@ public:
     ///        (camera/frame_source.hpp); owned by the caller and read only during the call.
     /// @param stream [in] the CUDA stream of the current device the work is queued on, the
     ///        request's or one ordered after it; owned by the caller.
+    /// @param clock [in,out] the stage clock that times the stages (tracking/stage_clock.hpp), for
+    ///        the replay tool's measurement only; owned by the caller. nullptr, the default and a
+    ///        live scan's: nothing is timed and nothing more is waited for.
     /// @return tracking, with the pose; lost, with the condition that failed; each with the
     ///         registration's result, the step and Δt. Failed, with the reason and nothing fused or
     ///         changed, when the tracker is empty, the frame's size is not the tracker's, or its
@@ -233,12 +239,16 @@ public:
     ///       the fusion's memset and two kernels, on stream. Waits where the upload waits for its
     ///       staging buffer and where the registration waits once per iteration
     ///       (cudaStreamSynchronize, which also waits for the stream's earlier work, the frame
-    ///       before's fusion included); the fusion is queued and not waited for. Reads back only
-    ///       the registration's 280 bytes per iteration. Allocates nothing when tracking or lost;
-    ///       allocates for the message when failed, and a failed allocation ends the program
-    ///       (std::terminate): the function is noexcept. Not while another thread uses this
-    ///       tracker.
-    tracking_result track(const frame &frame, cudaStream_t stream) noexcept;
+    ///       before's fusion included); the fusion is queued and not waited for. With a stage
+    ///       clock it also waits for the stream after the upload, the pyramid, the ray cast, the
+    ///       registration and the fusion (stage_clock::mark_after()), the measurement's waits,
+    ///       which a live scan must not have; a failed wait fails the frame with CUDA's error,
+    ///       naming the stage. Reads back only the registration's 280 bytes per iteration.
+    ///       Allocates nothing when tracking or lost; allocates for the message when failed, and a
+    ///       failed allocation ends the program (std::terminate): the function is noexcept. Not
+    ///       while another thread uses this tracker.
+    tracking_result track(const frame &frame, cudaStream_t stream,
+                          stage_clock *clock = nullptr) noexcept;
 
     /// Gives the live model, for its extraction or its usage (fusion/sparse_tsdf.hpp).
     /// @return the sparse TSDF the frames are fused into; empty when the tracker is. Valid as

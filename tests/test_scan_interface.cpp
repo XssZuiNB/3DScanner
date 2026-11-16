@@ -294,10 +294,10 @@ private:
     std::size_t m_calls = 0;      ///< has_room()'s calls so far
 };
 
-/// A writer in front of the real one that waits for room in its queue instead of reporting it
-/// full, as a disk that keeps up does, so that a case's counts do not hang on the disk's speed, as
-/// during a build beside the test; it can also refuse to open, or fail at its close after the real
-/// writer's, with a reason of its case's.
+/// A writer in front of a real one that waits for room in its queue instead of reporting it full
+/// (gca::queue_full::wait), as a disk that keeps up does, so that a case's counts do not hang on
+/// the disk's speed, as during a build beside the test; it can also refuse to open, or fail at its
+/// close after the real writer's, with a reason of its case's.
 class patient_writer final : public gca::sequence_sink
 {
 public:
@@ -321,17 +321,12 @@ public:
     {
         if (!m_open_refusal.empty())
             return {false, m_open_refusal};
-        const gca::open_result opened = m_inner.open(path, description, queue_frames);
-        m_open = opened.opened;
-        return opened;
+        return m_inner.open(path, description, queue_frames);
     }
 
     bool has_room() noexcept override
     {
-        // The writer's thread empties the queue; a failed writer has room, its push says why.
-        while (m_open && !m_inner.has_room())
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        return m_open;
+        return m_inner.has_room();
     }
 
     gca::push_result push(gca::frame &in_out, const gca::frame_tracking &tracking) noexcept override
@@ -341,7 +336,6 @@ public:
 
     gca::write_result close() noexcept override
     {
-        m_open = false;
         const gca::write_result closed = m_inner.close();
         if (closed.written && !m_close_failure.empty())
             return {false, m_close_failure};
@@ -349,10 +343,9 @@ public:
     }
 
 private:
-    gca::sequence_writer m_inner; ///< the real writer
-    bool m_open = false;          ///< whether the real writer is open
-    std::string m_open_refusal;   ///< the reason open() refuses with; empty: it opens
-    std::string m_close_failure;  ///< the reason close() fails with; empty: as the real one
+    gca::sequence_writer m_inner{gca::queue_full::wait}; ///< the real writer, which waits
+    std::string m_open_refusal;  ///< the reason open() refuses with; empty: it opens
+    std::string m_close_failure; ///< the reason close() fails with; empty: as the real one
 };
 
 /// The phases a case's states went through, each once where it repeats.

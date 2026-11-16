@@ -606,7 +606,7 @@ bool run_loop(gca::frame_source &source, pictures &current, gpu_path &gpu, seque
 } // namespace
 
 sequence_file::sequence_file(const std::filesystem::path &directory)
-    : m_path(directory / sequence_file_name)
+    : m_path(directory / gca::sequence_file_name)
 {
 }
 

@@ -105,7 +105,8 @@ every parameter without device memory (`sparse_tsdf::request()`).
 before was waited for (`src/gpu/gpu_frame.hpp`), and the registration's one written wait per
 iteration, which also waits for the stream's earlier work, the previous frame's fusion included.
 Nothing else waits: the fusion is queued and the call returns; the next frame's registration, or
-the caller's own wait, finds it done. What comes back to the host is the registration's 280 bytes
+the caller's own wait, finds it done. A replay's measurement alone adds a wait after each stage
+("The stages' times"). What comes back to the host is the registration's 280 bytes
 per iteration (docs/methods/registration.md, "On the GPU") and nothing more.
 
 ## The models' frame and the first frame
@@ -295,7 +296,9 @@ this order:
    hurts (`hardware-check-orbbec-on-seam`).
 2. **The writer's room** (`src/camera/sequence_writer.hpp`, `has_room()`): a frame the writer has
    no room for counts as not taken and goes no further, so that no frame is fused that is not
-   written.
+   written. When the source is a sequence, as in the replay tool, the writer waits for room
+   instead (`queue_full::wait`): the frames wait on the disk, not on a camera, so a replay takes
+   every frame the sequence holds and its scan is the scan made in process on those frames.
 3. **The "too close" notice**: at least a quarter of the frame's pixels with depth lie nearer than
    the object class's `too_close_depth_m` ("Parameters"); a pixel with depth is one whose value is
    above 0, beyond the far depth too. One pass over the depth on the host, 0.084 ms at 640x400 and
@@ -322,6 +325,69 @@ frame, and the scan answers them once more before it is idle, so that a discard 
 the extraction or the writes still discards it. A discard removes the
 scan's directory; the end of the scan interface during a scan or a refinement leaves the scan
 unfinished, without a trajectory or a full model.
+
+## The stages' times
+
+For a measurement, the replay tool hands the scan interface a stage clock
+(`src/tracking/stage_clock.hpp`; `scan_options::stage_times`), which `tracker::track()` takes too.
+The scan's loop begins a frame's clock once its gap is counted, before the writer's room, and
+marks the end of each stage; after a stage that queues work on the GPU the clock waits for the
+stream (`cudaStreamSynchronize`), so that the stage's time holds that work, and each stage's time
+is the time since the mark before. A frame's time runs from its beginning to the end of step 7
+above, the commands answered; the stages leave out only the state's publication and the commands.
+The stages, each by the name the time lines print:
+
+| name | step | waits for the GPU |
+|---|---|---|
+| `room` | the scan's loop, step 2: the writer's room | no |
+| `too_close` | the scan's loop, step 3: the "too close" notice | no |
+| `upload` | the path, step 1: the upload | yes |
+| `pyramid` | the path, step 2: the pyramid | yes |
+| `ray_cast` | the path, step 3: the surface, the live model's ray cast | yes |
+| `registration` | the path, step 4: the registration | yes, already idle |
+| `check` | the path, step 5: the check | no |
+| `fusion` | the path, step 6: the fusion | yes |
+| `writer` | the scan's loop, step 5: the writer takes the frame | no |
+
+A stage a frame does not run takes 0: the ray cast before the first fused frame, the fusion of a
+frame in tracking loss, the stages after the one that failed. Every other stage takes more than 0
+but `room` and `check`, host steps that can take less than the lines' 0.0005 ms and print 0.000
+(`room` did in 2 of 1440 frames [M 2026-11-16: docs/HARDWARE.md, "The replay's frame time"]).
+The waits serialize the host and the GPU, which overlap without them (the fusion runs while the
+next frame's "too close" pass and upload run on the host), so a frame takes longer with the clock
+than without it (docs/HARDWARE.md, "The replay's frame time"). A live scan has no clock: each use
+is behind a test of a null pointer, and nothing more waits.
+
+## The replay tool's lines
+
+`build/apps/replay` (AGENTS.md §3) prints these lines, an interface (AGENTS.md §7 rule 5): the
+measurement tickets read them, and ctest `replay` parses them as written here.
+
+- With `--times`, one time line on stdout for each frame the loop handles, as the frame ends:
+
+      frame <index> <state> room <t> too_close <t> upload <t> pyramid <t> ray_cast <t> registration <t> check <t> fusion <t> writer <t> total <t>
+
+  `<index>` is the frame's index, `<state>` `tracking`, `lost`, `failed` or `not_taken` (a frame
+  the writer had no room for, which a replay does not have), each `<t>` a time in ms with three
+  decimals, the stages in the table's order and `total` the frame's time. The stages add up to
+  `total` within 0.1 ms, the margin ctest `replay` checks: 0.027 ms at most in replays of 1440
+  frames at 640x400 and 720 at 1280x800, 0.004 ms in 6 runs of the test's 30 frames
+  [M 2026-11-16: docs/HARDWARE.md, "The replay's frame time"], the rounding of ten times to
+  0.001 ms among it.
+- Last, when the scan was refined, on stdout:
+
+      replay: <OUT>/<scan>: refined, end <end>, frames taken <T> fused <F> lost <L> not taken <N>, <x> ms a frame
+
+  `<scan>` is the scan's directory's name, `<end>` the key of why the scan ended
+  (docs/SCAN_FILES.md, "Parameters"), the counts the parameters', and `<x>` the scanning phase's
+  time, from its first state to its last frame's, divided by the frames taken, with three
+  decimals: the frame time with the source's reads, and with the time lines' printing when they
+  are asked for. When the scan ended other than at the sequence's end, stderr adds `replay: the
+  scan ended before the sequence's end: <message>`.
+- A failure, on stderr: `replay: ` and the reason (the parameters' reader's, the sequence's
+  header's, `the scan's start was refused: <reason>`, or `<OUT>/<scan>: unfinished: <message>`)
+  with exit 1; a command line refused, `replay: <reason>` and the usage, with exit 2
+  (`apps/replay_options.hpp`).
 
 ## What the prototype did, and what is not carried
 

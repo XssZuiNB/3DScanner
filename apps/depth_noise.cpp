@@ -6,6 +6,7 @@
 /// bin's noise and the spatial error; the measurement on the camera reads these lines. Opens no
 /// camera and no GPU.
 
+#include "camera/sequence_format.hpp"
 #include "depth_noise_measure.hpp"
 #include "depth_noise_options.hpp"
 
@@ -26,7 +27,8 @@ int main(int argc, char *argv[])
         gca::read_depth_noise_options(argc, argv, std::cerr);
     if (!directory)
         return 2;
-    const gca::depth_noise_result result = gca::measure_depth_noise(*directory / "frames.sequence");
+    const gca::depth_noise_result result =
+        gca::measure_depth_noise(*directory / gca::sequence_file_name);
     if (!result.measurement)
     {
         std::cerr << "depth_noise: " << result.refusal << std::endl;

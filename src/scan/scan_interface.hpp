@@ -19,6 +19,7 @@
 #include "camera/sequence_writer.hpp"
 #include "scan/object_class.hpp"
 #include "scan/parameters_file.hpp"
+#include "tracking/stage_clock.hpp"
 #include "tracking/tracker.hpp"
 #include "types/frame_description.hpp"
 
@@ -116,6 +117,12 @@ struct scan_options
     /// good, and the destructor's join with it), and must not destroy the scan interface. Empty:
     /// no call.
     std::function<void(const scan_state &)> on_state;
+    /// The stage clock that times each frame's stages (tracking/stage_clock.hpp), for the replay
+    /// tool's measurement alone: it waits for the GPU after each stage that queues work, which a
+    /// live scan must not do. nullptr, the default and a live scan's: nothing is timed and
+    /// nothing more is waited for. Owned by the caller, which keeps it alive as long as the scan
+    /// interface; the scan thread alone uses it, and calls its listener for each frame.
+    stage_clock *stage_times = nullptr;
 };
 
 /// The scan interface. One scan at a time; its thread lives as long as it does.

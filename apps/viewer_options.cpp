@@ -1,20 +1,15 @@
 // SPDX-License-Identifier: 0BSD
 /// @file viewer_options.cpp
 /// orbbec_viewer's command line: one table of the options, from which the reader and the usage
-/// line both come, and the check of the sequence's directory (see viewer_options.hpp).
+/// line both come, and the check of the sequence's directory, output_directory.hpp's (see
+/// viewer_options.hpp).
 
 #include "viewer_options.hpp"
 
-#include "camera/posix_file.hpp"
+#include "output_directory.hpp"
 
-#include <cerrno>
 #include <cstdlib>
-#include <cstring>
 #include <string>
-
-#include <dirent.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 namespace gca_viewer
 {
@@ -53,54 +48,6 @@ const option_spec *find_option(const std::string &name)
             return &spec;
     }
     return nullptr;
-}
-
-/// Says why the viewer cannot write its sequence into a directory: it does not exist or is no
-/// directory, it cannot be listed, it holds something already, or it cannot be written. Writing
-/// stands for creating a file in it (access() with W_OK and X_OK), so a directory on a read-only
-/// mount is refused too. It looks only and changes nothing on disk.
-/// @param directory [in] the directory --sequence names.
-/// @return the reason, without the option's name; empty when the viewer can write there.
-std::string directory_refusal(const std::filesystem::path &directory)
-{
-    struct stat status
-    {
-    };
-    if (::stat(directory.c_str(), &status) != 0)
-        return errno == ENOENT ? "no such directory" : "cannot be read: " + gca::system_message();
-    if (!S_ISDIR(status.st_mode))
-        return "is no directory";
-    DIR *listing = ::opendir(directory.c_str());
-    if (listing == nullptr)
-        return "cannot be read: " + gca::system_message();
-    bool holds_something = false;
-    int read_error = 0;
-    for (;;)
-    {
-        errno = 0;
-        const dirent *entry = ::readdir(listing);
-        if (entry == nullptr)
-        {
-            read_error = errno;
-            break;
-        }
-        if (std::strcmp(entry->d_name, ".") != 0 && std::strcmp(entry->d_name, "..") != 0)
-        {
-            holds_something = true;
-            break;
-        }
-    }
-    ::closedir(listing);
-    if (read_error != 0)
-    {
-        errno = read_error;
-        return "cannot be read: " + gca::system_message();
-    }
-    if (holds_something)
-        return "holds something already";
-    if (::access(directory.c_str(), W_OK | X_OK) != 0)
-        return "cannot be written: " + gca::system_message();
-    return {};
 }
 
 /// Prints a refusal: the reason, then the usage line.
@@ -145,7 +92,7 @@ std::optional<options> read_options(int argc, const char *const argv[], bool hea
     }
     if (opt.sequence_directory)
     {
-        const std::string refusal = directory_refusal(*opt.sequence_directory);
+        const std::string refusal = gca::output_directory_refusal(*opt.sequence_directory);
         if (!refusal.empty())
             return refuse(err, "--sequence " + opt.sequence_directory->string() + ": " + refusal);
     }

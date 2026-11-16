@@ -565,14 +565,14 @@ void test_program(const std::string &program)
     check(gca::write_model(box_path, box).written, "test setup: the box's model written");
     check(gca::write_model(sphere_path, sphere).written, "test setup: the sphere's model written");
 
-    const program_run measured = run_program(program, box_path.string());
+    const program_run measured = run_program(program, {box_path.string()});
     const gca::box_result box_result = gca::measure_box(box);
     std::printf("box_fit on a box, exit %d:\n%s", measured.exit_status, measured.output.c_str());
     check(measured.exit_status == 0 && box_result.measurement &&
               measured.output == gca::box_report(box_path.string(), *box_result.measurement) + "\n",
           "box_fit on a box: its lines, exit 0");
 
-    const program_run refused = run_program(program, sphere_path.string());
+    const program_run refused = run_program(program, {sphere_path.string()});
     std::printf("box_fit on a sphere, exit %d: %s", refused.exit_status, refused.output.c_str());
     check(refused.exit_status == 1 &&
               refused.output == "box_fit: " + sphere_path.string() +
@@ -580,7 +580,7 @@ void test_program(const std::string &program)
           "box_fit on a sphere: no box, exit 1");
 
     const std::string missing = (directory / "missing.ply").string();
-    const program_run unread = run_program(program, missing);
+    const program_run unread = run_program(program, {missing});
     std::printf("box_fit on a missing file, exit %d: %s", unread.exit_status,
                 unread.output.c_str());
     check(unread.exit_status == 2 &&

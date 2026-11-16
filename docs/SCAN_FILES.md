@@ -198,7 +198,7 @@ of it is another, stopped by the operator after five minutes:
 | key | what |
 |---|---|
 | `format_version` | the integer 1 |
-| `commit` | a string, the tree's commit the scanner was built from |
+| `commit` | a string, the tree's commit the scanner was built from; a program's is its build's (`apps/build_commit.hpp`): the short hash, with `-dirty` when the tree held changes not committed or files untracked by git, or `unknown` when built without the git repository |
 | `object_class` | the object class the operator chose: `tabletop_object` or `large_object` |
 | `parameters` | the set of parameters in force, an object of the twenty-four keys below |
 | `live_voxel_size_m` | the voxel edge of the live model, in m, finite and > 0 |

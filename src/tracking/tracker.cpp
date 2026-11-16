@@ -7,6 +7,7 @@
 
 #include "geometry/organized_normals.hpp"
 #include "geometry/organized_points.hpp"
+#include "tracking/stage_clock.hpp"
 
 #include <cmath>
 #include <numbers>
@@ -159,13 +160,17 @@ request_result<tracker> tracker::request(gpu_pool &pool, const frame_size &size,
     return result;
 }
 
-tracking_result tracker::track(const frame &frame, cudaStream_t stream) noexcept
+tracking_result tracker::track(const frame &frame, cudaStream_t stream, stage_clock *clock) noexcept
 {
     tracking_result result;
     const auto fail = [&result](std::string message) {
         result.state = tracking_state::failed;
         result.message = std::move(message);
         return result;
+    };
+    // The measurement's wait after a stage that queues work on the GPU, with a stage clock alone.
+    const auto timed = [clock, stream](path_stage stage) {
+        return clock == nullptr ? step_result{true, {}} : clock->mark_after(stage, stream);
     };
     if (m_frame.color().empty())
         return fail("the tracker holds no buffers");
@@ -180,15 +185,21 @@ tracking_result tracker::track(const frame &frame, cudaStream_t stream) noexcept
     m_last_frame_us = time_us;
 
     step_result made = m_frame.upload(frame, stream);
+    if (made.done)
+        made = timed(path_stage::upload);
     if (!made.done)
         return fail("the upload: " + made.message);
     made = m_pyramid.build(m_frame, m_parameters.pyramid, stream);
+    if (made.done)
+        made = timed(path_stage::pyramid);
     if (!made.done)
         return fail("the pyramid: " + made.message);
     if (m_model_holds_frame)
     {
         made = m_model.ray_cast(m_last_pose, m_frame.description().intrinsics,
                                 m_parameters.pyramid.range, m_surface, stream);
+        if (made.done)
+            made = timed(path_stage::ray_cast);
         if (!made.done)
             return fail("the ray cast: " + made.message);
     }
@@ -201,6 +212,9 @@ tracking_result tracker::track(const frame &frame, cudaStream_t stream) noexcept
     if (result.registration.end == registration_end::refused ||
         result.registration.end == registration_end::failed)
         return fail("the registration: " + result.registration.message);
+    made = timed(path_stage::registration);
+    if (!made.done)
+        return fail("the registration: " + made.message);
     result.step = step_of(result.registration.transform);
     if (m_model_holds_frame)
         result.interval_s =
@@ -208,6 +222,8 @@ tracking_result tracker::track(const frame &frame, cudaStream_t stream) noexcept
 
     result.outcome =
         check_registration(result.registration, result.interval_s, m_parameters.thresholds);
+    if (clock != nullptr)
+        clock->mark(path_stage::check);
     if (result.outcome != check_outcome::passed)
     {
         result.state = tracking_state::lost;
@@ -218,6 +234,8 @@ tracking_result tracker::track(const frame &frame, cudaStream_t stream) noexcept
         m_model_holds_frame ? composed(m_last_pose, result.registration.transform)
                             : camera_pose{Eigen::Vector3d::Zero(), Eigen::Quaterniond::Identity()};
     made = m_model.integrate(m_frame, m_pyramid.points(0), pose, stream);
+    if (made.done)
+        made = timed(path_stage::fusion);
     if (!made.done)
         return fail("the fusion: " + made.message);
     m_model_holds_frame = true;

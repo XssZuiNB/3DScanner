@@ -20,6 +20,16 @@
 
 namespace gca
 {
+/// Reads the description of a sequence's frames from its header, so that its reader can be
+/// opened for its size.
+/// @param path [in] the sequence's path.
+/// @return the size, intrinsics and depth unit of its frames; or the reason, naming the file, as
+///         sequence_reader::open() gives it: the file cannot be opened or read, with the system's
+///         message; it is no sequence; it is of another version; it ends within its header.
+/// @note Reads the header alone, and closes the file. Allocates for a reason. A failed allocation
+///       ends the program (std::terminate): the function is noexcept.
+sequence_header_result read_sequence_header(const std::filesystem::path &path) noexcept;
+
 /// A sequence on disk as a frame source.
 class sequence_reader final : public frame_source
 {

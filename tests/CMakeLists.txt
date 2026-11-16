@@ -16,6 +16,11 @@ add_executable(test_viewer_options test_viewer_options.cpp)
 target_link_libraries(test_viewer_options PRIVATE viewer_options)
 add_test(NAME viewer_options COMMAND test_viewer_options)
 
+# The replay tool's command line, on paths the test makes; needs no GPU.
+add_executable(test_replay_options test_replay_options.cpp)
+target_link_libraries(test_replay_options PRIVATE replay_options)
+add_test(NAME replay_options COMMAND test_replay_options)
+
 # The tests' synthetic source of frames, for every test that needs frames; host only.
 add_library(synthetic_source STATIC synthetic_source.cpp synthetic_source.hpp)
 target_link_libraries(synthetic_source PUBLIC camera Eigen3::Eigen)
@@ -180,6 +185,12 @@ add_executable(test_tracking test_tracking.cpp)
 target_link_libraries(test_tracking PRIVATE tracking scan_interface synthetic_source)
 add_test(NAME tracking COMMAND test_tracking)
 
+# The stage clock that times the per-frame path's stages for the replay tool: its names, a stage
+# that queues work on the GPU, the host's stages.
+add_executable(test_stage_clock test_stage_clock.cpp)
+target_link_libraries(test_stage_clock PRIVATE tracking)
+add_test(NAME stage_clock COMMAND test_stage_clock)
+
 # The stages' parameters of an object class's set, and each stage taking each object class's from
 # a closed pool, without device memory; the stage frames give the tests' stream size.
 add_executable(test_stage_parameters test_stage_parameters.cpp)
@@ -192,3 +203,17 @@ add_test(NAME stage_parameters COMMAND test_stage_parameters)
 add_executable(test_scan_interface test_scan_interface.cpp)
 target_link_libraries(test_scan_interface PRIVATE scan_interface synthetic_source)
 add_test(NAME scan_interface COMMAND test_scan_interface)
+
+# The replay tool run as a program on a short synthetic sequence the test writes, against the same
+# scan made in process through the scan interface; replay_options gives its usage, build_commit
+# the commit its scans' parameters hold.
+add_executable(test_replay test_replay.cpp)
+target_link_libraries(
+    test_replay
+    PRIVATE
+    build_commit
+    replay_options
+    scan_interface
+    synthetic_source
+)
+add_test(NAME replay COMMAND test_replay $<TARGET_FILE:replay>)

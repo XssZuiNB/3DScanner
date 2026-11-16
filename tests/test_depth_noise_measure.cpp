@@ -417,7 +417,7 @@ void test_program(const std::string &program, const gca_test::temporary_director
     std::filesystem::copy_file(still_sequence, still_directory / "frames.sequence");
     std::filesystem::copy_file(moving_sequence, moving_directory / "frames.sequence");
 
-    const program_run measured = run_program(program, still_directory.string());
+    const program_run measured = run_program(program, {still_directory.string()});
     const gca::depth_noise_result still_result =
         gca::measure_depth_noise(still_directory / "frames.sequence");
     std::printf("depth_noise on a still sequence, exit %d:\n%s", measured.exit_status,
@@ -428,7 +428,7 @@ void test_program(const std::string &program, const gca_test::temporary_director
                       "\n",
           "depth_noise on a still sequence: its lines, exit 0");
 
-    const program_run refused = run_program(program, moving_directory.string());
+    const program_run refused = run_program(program, {moving_directory.string()});
     std::printf("depth_noise on a moving camera, exit %d: %s", refused.exit_status,
                 refused.output.c_str());
     check(refused.exit_status == 1 &&
@@ -438,7 +438,7 @@ void test_program(const std::string &program, const gca_test::temporary_director
           "depth_noise on a moving camera: the refusal, exit 1");
 
     const std::string missing = (directory / "missing").string();
-    const program_run unread = run_program(program, missing);
+    const program_run unread = run_program(program, {missing});
     std::printf("depth_noise on a missing directory, exit %d: %s", unread.exit_status,
                 unread.output.c_str());
     check(unread.exit_status == 2 &&

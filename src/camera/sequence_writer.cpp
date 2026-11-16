@@ -57,6 +57,11 @@ bool write_samples(int fd, std::span<const imu_sample> samples)
 
 } // namespace
 
+sequence_writer::sequence_writer(queue_full when_full) noexcept
+    : m_when_full(when_full)
+{
+}
+
 sequence_writer::~sequence_writer()
 {
     if (m_open)
@@ -181,7 +186,11 @@ bool sequence_writer::has_room() noexcept
 {
     if (!m_open)
         return false;
-    const std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
+    // The writer's thread frees a slot or fails, and wakes this wait either way: a failure empties
+    // the queue (write_queue()).
+    if (m_when_full == queue_full::wait)
+        m_room.wait(lock, [this] { return m_count < m_slots.size(); });
     return m_count < m_slots.size();
 }
 
@@ -237,11 +246,13 @@ void sequence_writer::write_queue() noexcept
             m_failure = m_path.string() + ": the write of frame index " +
                         std::to_string(queued.queued_frame.index()) + " failed: " + message;
             m_count = 0;
+            m_room.notify_all();
             return;
         }
         m_written++;
         m_head = (m_head + 1) % m_slots.size();
         m_count--;
+        m_room.notify_all();
     }
 }
 

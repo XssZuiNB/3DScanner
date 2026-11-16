@@ -17,7 +17,7 @@ later a mesh and measurements ([GLOSSARY.md](GLOSSARY.md), [docs/adr/](docs/adr/
 | directory | what |
 |---|---|
 | `src/` | one library per directory: `types/` (camera parameters, a frame's description, the camera's pose, a trajectory's entry, an IMU sample, a model's point and console colors, header only), `camera/`, `gpu/` (the GPU array and image, the pool that closes, a frame's upload), `geometry/` (a frame's organized points, their normals and the frame's pyramid with the intensity), `registration/` (the registration of a frame against a surface by colored ICP coarse to fine, its normal equations and the SE(3) exponential), `fusion/` (the sparse TSDF: today its hash of blocks, its pool, the allocation of the blocks near a frame's surface, the integration of a frame, the ray cast of the model's surface and the extraction of the surface's points), `tracking/` (each frame registered against the live model, checked and fused only when the check passes), `refinement/` (today the pose graph of keyframes and its solve, on the host, and the fusion of a scan's sequence at the full voxel size), `separation/` (today the proposal of the support plane and the box from a full model and its trajectory, and the least-squares plane, on the host), `scan/` (the files a scan keeps, a scan's time in UTC, the parameters of each object class, the stages' parameters of an object class's set, and the scan interface, which runs a scan from its start to its refinement); `camera/` holds two, so that only the Orbbec camera links OrbbecSDK: `camera` (the frame with its IMU samples, the frame source seam, the sequence and the Orbbec camera's rules and its IMU's queue, which need no camera) and `orbbec_camera` (the Orbbec camera as a frame source); `scan/` holds two, so that the programs that only read and write a scan's files link no CUDA: `scan` (the files, the time, the object classes) and `scan_interface` (the scan interface and the stages' parameters) |
-| `apps/` | `orbbec_viewer` (camera test: each frame's organized points live, a snapshot as a model's PLY), its command line, `viewer_options`, and its loop on a frame source, `viewer_loop`; `distortion_check` (whether the aligned frames are distorted, from a snapshot of a checkerboard), its measurement, `checkerboard_measure`, and its command line, `distortion_options`; `box_fit` (the acceptance tool: the edges of the box in an object model), its measurement, `box_measure`, and its command line, `box_fit_options`; `depth_noise` (the depth noise's c from a sequence taken with the camera at rest), its measurement, `depth_noise_measure`, and its command line, `depth_noise_options` |
+| `apps/` | `orbbec_viewer` (camera test: each frame's organized points live, a snapshot as a model's PLY), its command line, `viewer_options`, and its loop on a frame source, `viewer_loop`; `distortion_check` (whether the aligned frames are distorted, from a snapshot of a checkerboard), its measurement, `checkerboard_measure`, and its command line, `distortion_options`; `box_fit` (the acceptance tool: the edges of the box in an object model), its measurement, `box_measure`, and its command line, `box_fit_options`; `depth_noise` (the depth noise's c from a sequence taken with the camera at rest), its measurement, `depth_noise_measure`, and its command line, `depth_noise_options`; `replay` (the replay tool: a sequence through the scan interface, with each stage's time on request), its command line, `replay_options`; `output_directory`, the check of the directory a command line names for what a program writes; `build_commit`, the tree's commit the programs are built from |
 | `tests/` | offline tests, run by ctest; they need the GPU, no camera; the synthetic source that renders their frames; the Orbbec camera's rules fed with plain data; the viewer's loop on the synthetic source |
 | `tools/` | fetch the dependencies, build, verify (AGENTS.md §4) |
 | `docs/` | the hardware, the files a scan keeps, the sequence, the decisions (`adr/`), each stage's method (`methods/`), the workflow's tracker and domain conventions |
@@ -64,6 +64,17 @@ The depth noise's c, which sets the sparse TSDF's truncation, from a sequence of
 floor seen obliquely by the camera at rest (docs/methods/depth-noise.md), without the camera:
 
     <repo>/build/apps/depth_noise <dir>      # reads <dir>/frames.sequence
+
+A sequence replayed through the scanner without the camera (docs/methods/tracking.md, "The replay
+tool's lines"): with an object class's own set, or with a kept scan's parameters, which may be a
+copy with one value changed; `--times` prints each frame's stage times. `<out>` exists and is
+empty, outside the repository as `<dir>` is:
+
+    <repo>/build/apps/replay --sequence <dir> --object-class tabletop_object --scans <out>
+    <repo>/build/apps/replay --sequence <scan> --parameters <scan>/parameters.json --scans <out> --times
+
+Each scan's parameters hold the tree's commit the program was built from, in the form
+docs/SCAN_FILES.md, "Parameters", gives for `commit`.
 
 ## License
 

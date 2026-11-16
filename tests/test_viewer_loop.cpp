@@ -1199,8 +1199,7 @@ void check_sequence_written()
           "\"Saved ...\", then \"Wrote 4 frames to <file>, 0 not written because ...\"");
     check(sink.pushes() == 4 && sink.closes() == 1,
           "sequence: each of the four frames pushed once, the sequence closed once");
-    check(files_in(sequence_directory.path()) ==
-              std::vector<std::string>{gca_viewer::sequence_file_name},
+    check(files_in(sequence_directory.path()) == std::vector<std::string>{gca::sequence_file_name},
           "sequence: the sequence's file alone in its directory");
     if (!lines_as_expected)
         return;

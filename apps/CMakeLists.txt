@@ -8,13 +8,21 @@
 # measurement box_measure and its command-line reader box_fit_options, which the offline tests
 # drive too; depth_noise, which takes the depth noise's c from a still sequence, its measurement
 # depth_noise_measure and its command-line reader depth_noise_options, which the offline tests
-# drive too.
+# drive too; replay, the replay tool, which runs a sequence through the scan interface, its
+# command-line reader replay_options, which the offline tests drive too, and build_commit, the
+# tree's commit the programs are built from; output_directory, the check of the directory a
+# command line names for what a program writes, which the viewer and the replay share.
 
-# The viewer's command line, host only: built and tested without the camera backend too; camera
-# gives it the system's message for a directory it refuses.
+# The check of the directory a program's command line names for what it writes, host only;
+# camera gives it the system's message for a directory it refuses.
+add_library(output_directory STATIC output_directory.cpp output_directory.hpp)
+target_include_directories(output_directory PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(output_directory PRIVATE camera)
+
+# The viewer's command line, host only: built and tested without the camera backend too.
 add_library(viewer_options STATIC viewer_options.cpp viewer_options.hpp)
 target_include_directories(viewer_options PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(viewer_options PRIVATE camera)
+target_link_libraries(viewer_options PRIVATE output_directory)
 
 # The viewer's loop on any frame source, without the camera backend: the offline tests run it on
 # the synthetic source. geometry gives it the organized points and normals, scan the models' PLY
@@ -94,6 +102,33 @@ target_include_directories(depth_noise_options PUBLIC ${CMAKE_CURRENT_SOURCE_DIR
 # The depth noise's c from a still sequence; opens no camera and no GPU.
 add_executable(depth_noise depth_noise.cpp)
 target_link_libraries(depth_noise PRIVATE depth_noise_measure depth_noise_options)
+
+# The tree's commit the programs are built from (build_commit.hpp): build_commit.cmake writes its
+# definition into the build directory at every build, replacing it only when its text changes, so
+# that an unchanged tree relinks no program.
+set(GCA_BUILD_COMMIT_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/build_commit.cpp")
+add_custom_target(
+    build_commit_stamp
+    COMMAND
+        ${CMAKE_COMMAND} -DSOURCE_DIR=${PROJECT_SOURCE_DIR} -DOUTPUT=${GCA_BUILD_COMMIT_SOURCE}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/build_commit.cmake
+    BYPRODUCTS ${GCA_BUILD_COMMIT_SOURCE}
+    VERBATIM
+)
+add_library(build_commit STATIC ${GCA_BUILD_COMMIT_SOURCE} build_commit.hpp)
+add_dependencies(build_commit build_commit_stamp)
+target_include_directories(build_commit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+# The replay tool's command line, host only: built and tested without the GPU; scan gives it the
+# object classes' names, camera the sequence's file name.
+add_library(replay_options STATIC replay_options.cpp replay_options.hpp)
+target_include_directories(replay_options PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(replay_options PUBLIC scan PRIVATE camera output_directory)
+
+# The replay tool (R19): a sequence through the scan interface, its scan's directory written into
+# a directory it is given; links no OrbbecSDK.
+add_executable(replay replay.cpp)
+target_link_libraries(replay PRIVATE build_commit replay_options scan_interface)
 
 # The Orbbec camera test: the viewer's loop on the camera.
 if(GCA_WITH_ORBBEC)

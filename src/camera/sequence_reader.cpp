@@ -65,7 +65,36 @@ samples_read read_samples(int fd, std::span<imu_sample> samples)
     }
     return samples_read::whole;
 }
+/// Reads a sequence's header from a file at its start.
+/// @param fd [in] the file, open for reading, at its first byte; left after the header.
+/// @return the frames' description; or the reason, to follow the file's path: ": cannot read: "
+///         and the system's message, or " " and decode_sequence_header()'s reason.
+/// @note Allocates for a reason.
+sequence_header_result read_header(int fd)
+{
+    std::array<std::uint8_t, sequence_header_bytes> bytes{};
+    const std::optional<std::size_t> read = read_up_to(fd, bytes.data(), bytes.size());
+    if (!read)
+        return {std::nullopt, ": cannot read: " + system_message()};
+    sequence_header_result header =
+        decode_sequence_header(std::span<const std::uint8_t>(bytes.data(), *read));
+    if (!header.description)
+        header.reason = " " + header.reason;
+    return header;
+}
 } // namespace
+
+sequence_header_result read_sequence_header(const std::filesystem::path &path) noexcept
+{
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return {std::nullopt, path.string() + ": cannot open: " + system_message()};
+    sequence_header_result header = read_header(fd);
+    ::close(fd);
+    if (!header.description)
+        header.reason = path.string() + header.reason;
+    return header;
+}
 
 sequence_reader::sequence_reader(std::filesystem::path path)
     : m_path(std::move(path))
@@ -87,19 +116,13 @@ open_result sequence_reader::open(const frame_size &size) noexcept
         const std::string message = system_message();
         return {false, m_path.string() + ": cannot open: " + message};
     }
-    std::array<std::uint8_t, sequence_header_bytes> bytes{};
-    const std::optional<std::size_t> read = read_up_to(fd, bytes.data(), bytes.size());
-    const std::string message = read ? std::string() : system_message();
+    const sequence_header_result header = read_header(fd);
     const auto refuse = [&](const std::string &reason) {
         ::close(fd);
         return open_result{false, m_path.string() + reason};
     };
-    if (!read)
-        return refuse(": cannot read: " + message);
-    const sequence_header_result header =
-        decode_sequence_header(std::span<const std::uint8_t>(bytes.data(), *read));
     if (!header.description)
-        return refuse(" " + header.reason);
+        return refuse(header.reason);
     if (header.description->size != size)
         return refuse(": its frames are " + size_name(header.description->size) + ", not the " +
                       size_name(size) + " asked");

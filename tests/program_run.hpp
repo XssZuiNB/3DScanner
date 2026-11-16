@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include <sys/wait.h>
 
@@ -21,13 +22,17 @@ struct program_run
     std::string output; ///< what it printed, stdout and stderr together
 };
 
-/// Runs the program on one argument through the shell.
+/// Runs the program on its arguments through the shell.
 /// @param program [in] the program's path, without a single quote.
-/// @param argument [in] its argument, without a single quote.
+/// @param arguments [in] its arguments, in order, each without a single quote.
 /// @return its exit status and what it printed.
-inline program_run run_program(const std::string &program, const std::string &argument)
+inline program_run run_program(const std::string &program,
+                               const std::vector<std::string> &arguments)
 {
-    const std::string command = "'" + program + "' '" + argument + "' 2>&1";
+    std::string command = "'" + program + "'";
+    for (const std::string &argument : arguments)
+        command += " '" + argument + "'";
+    command += " 2>&1";
     FILE *pipe = ::popen(command.c_str(), "r");
     if (pipe == nullptr)
         return {-1, "popen failed"};

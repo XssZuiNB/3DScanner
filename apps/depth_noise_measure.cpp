@@ -15,7 +15,6 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -98,21 +97,6 @@ Eigen::Vector3d pixel_ray(const intrinsics &k, std::uint32_t width, std::uint32_
     return Eigen::Vector3d((u - k.cx) / k.fx, (v - k.cy) / k.fy, 1.0);
 }
 
-/// Reads the description from a sequence's header, so that its reader can be opened for its size.
-/// @param path [in] the sequence's path.
-/// @return the description; nothing when the header cannot be read or is refused, which the
-///     reader's opening then names.
-/// @note Allocates the file's stream; std::ifstream reports a failure to open or read by its state,
-///       and a failed allocation ends the program (std::terminate), as its caller is noexcept.
-std::optional<frame_description> header_description(const std::filesystem::path &path)
-{
-    std::array<std::uint8_t, sequence_header_bytes> bytes{};
-    std::ifstream file(path, std::ios::binary);
-    file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    const std::size_t read = file ? bytes.size() : static_cast<std::size_t>(file.gcount());
-    return decode_sequence_header(std::span<const std::uint8_t>(bytes.data(), read)).description;
-}
-
 /// Reads a sequence once, to its end, handing each frame to a function.
 /// @param reader [in,out] the sequence's reader, closed; open while it reads, closed after.
 /// @param size [in] the frames' size, in px.
@@ -178,11 +162,10 @@ depth_noise_result measure_depth_noise(const std::filesystem::path &sequence) no
         return depth_noise_result{std::nullopt, sequence.string() + ": " + reason};
     };
     sequence_reader reader(sequence);
-    const std::optional<frame_description> header = header_description(sequence);
-    // Without a header, the reader's opening names what is wrong with the file.
-    if (!header)
-        return {std::nullopt, reader.open(frame_size{0, 0}).refusal};
-    const frame_description description = *header;
+    const sequence_header_result header = read_sequence_header(sequence);
+    if (!header.description)
+        return {std::nullopt, header.reason};
+    const frame_description description = *header.description;
     const frame_size size = description.size;
     frame buffer;
     std::uint64_t frames = 0;

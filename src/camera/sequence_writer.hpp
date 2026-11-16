@@ -5,7 +5,8 @@
 /// uncompressed, on a thread of its own, so that the per-frame path does not wait for the disk. A
 /// frame enters the queue by a swap of buffers, samples included, so a push neither copies nor
 /// allocates. Whether the queue has room is
-/// told before a frame's stages run (has_room()); when the queue is full the push says so too,
+/// told before a frame's stages run (has_room()), or waited for, when the source is a sequence
+/// (queue_full::wait); when the queue is full the push says so too,
 /// and the writer loses no frame it accepted: close() writes every one of them, in the order
 /// accepted, before the end. A failure is a value with its reason (CODING_STANDARDS.md,
 /// "The rewrite's code"); no exception leaves the writer. A scan takes its writer through the
@@ -38,6 +39,14 @@ namespace gca
 /// minutes, about 46 GB, past the drive's own cache, and the per-frame path running beside the
 /// writer.
 inline constexpr std::size_t sequence_queue_frames = 16;
+
+/// What the writer's has_room() does when every slot of its queue holds a frame not yet written.
+enum class queue_full
+{
+    report, ///< it says so at once: a live source, whose frame that finds no room is not taken
+    wait,   ///< it waits until a slot is free: a sequence as the source, so that a replay takes
+            ///< every frame, as fast as the disk writes them
+};
 
 /// Whether push() took the frame.
 enum class push_status
@@ -104,8 +113,13 @@ public:
 class sequence_writer final : public sequence_sink
 {
 public:
-    /// Builds a writer that is not open and holds nothing.
+    /// Builds a writer that is not open and holds nothing, which reports a full queue.
     sequence_writer() = default;
+
+    /// Builds a writer that is not open and holds nothing, with what has_room() does when the
+    /// queue is full.
+    /// @param when_full [in] report for a live source, wait for a sequence as the source.
+    explicit sequence_writer(queue_full when_full) noexcept;
 
     /// Closes the writer when it is open (close()), so that its thread ends; what close() gives
     /// is lost then, so a caller that needs it calls close() first.
@@ -134,11 +148,15 @@ public:
     /// So the per-frame path keeps this order, and no frame is fused that is not written:
     /// has_room(); the frame's upload (gpu/gpu_frame.hpp, which stages it on the host); the
     /// stages, of which tracking gives the frame its pose or a mark; push() with that pose or
-    /// mark. A frame that finds no room is not taken.
+    /// mark. A frame that finds no room is not taken. A writer built with queue_full::wait waits
+    /// instead until a slot is free: the writer's thread wakes it after each frame it writes and
+    /// when a write fails, the only way its thread ends with the queue full; close(), which
+    /// comes from the caller's thread too, cannot come while it waits.
     /// @return true when a slot is free, also after a write failure, which the next push()
-    ///         reports; false when every slot holds a frame not yet written, or the writer is not
-    ///         open.
-    /// @note Allocates nothing. Takes the queue's lock; waits for nothing else.
+    ///         reports; false when every slot holds a frame not yet written (never with
+    ///         queue_full::wait), or the writer is not open.
+    /// @note Allocates nothing. Takes the queue's lock; with queue_full::wait waits on the
+    ///       writer's thread while the queue is full, and for nothing else.
     bool has_room() noexcept override;
 
     /// Puts a frame into the queue by swapping buffers with a free slot: the caller's frame goes
@@ -203,6 +221,8 @@ private:
     std::vector<slot> m_slots;         ///< the queue's places, a ring
     std::thread m_thread;              ///< the writer's thread while open
 
+    queue_full m_when_full = queue_full::report; ///< what has_room() does with a full queue
+
     // The caller's thread's own.
     bool m_open = false;                   ///< whether open() succeeded and close() has not run
     bool m_accepted_any = false;           ///< whether a frame was accepted since open()
@@ -215,10 +235,12 @@ private:
     // [head, head + count), the writer's thread writes only the slot at head while it is counted.
     std::mutex m_mutex;
     std::condition_variable m_wake; ///< wakes the writer's thread: a frame queued, or close()
-    std::size_t m_head = 0;         ///< the slot written next
-    std::size_t m_count = 0;        ///< the slots that hold a frame not yet written
-    bool m_closing = false;         ///< whether close() has been asked
-    std::string m_failure;          ///< why a write failed; empty while none has
-    std::uint64_t m_written = 0;    ///< the records written whole since open()
+    /// Wakes a has_room() that waits: a frame written, so a slot freed, or a write failed.
+    std::condition_variable m_room;
+    std::size_t m_head = 0;      ///< the slot written next
+    std::size_t m_count = 0;     ///< the slots that hold a frame not yet written
+    bool m_closing = false;      ///< whether close() has been asked
+    std::string m_failure;       ///< why a write failed; empty while none has
+    std::uint64_t m_written = 0; ///< the records written whole since open()
 };
 } // namespace gca

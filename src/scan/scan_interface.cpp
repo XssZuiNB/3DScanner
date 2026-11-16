@@ -32,7 +32,6 @@ namespace gca
 namespace
 {
 /// The files of a scan's directory (docs/SCAN_FILES.md, "A scan's directory").
-constexpr const char *sequence_name = "frames.sequence";
 constexpr const char *parameters_name = "parameters.json";
 constexpr const char *trajectory_name = "trajectory.txt";
 constexpr const char *full_model_name = "full.ply";
@@ -359,7 +358,7 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
             " could not be made: " + (error ? error.message() : std::string("it exists")));
     }
     const open_result writing =
-        m_writer.open(made.directory / sequence_name, made.frames, sequence_queue_frames);
+        m_writer.open(made.directory / sequence_file_name, made.frames, sequence_queue_frames);
     if (!writing.opened)
     {
         m_source.close();
@@ -379,28 +378,43 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
     // loop falls behind, so a frame the source did not deliver shows as a gap in the indices and
     // counts as not taken, as does a frame the writer had no room for (the newest frame is not
     // taken by a mailbox: the scan-interface-first-whole-scan plan check, 2026-11-16).
+    // A replay's measurement times each frame's stages (docs/methods/tracking.md, "The stages'
+    // times"); a live scan has no clock, and each use below is skipped.
+    stage_clock *const clock = m_options.stage_times;
     std::optional<std::uint64_t> last_index;
     while (true)
     {
         if (last_index && current.index() > *last_index + 1)
             m_working.frames.not_taken += current.index() - *last_index - 1;
         last_index = current.index();
+        if (clock != nullptr)
+            clock->begin(current.index());
+        // What tracking made of the frame; none while it is not taken.
+        std::optional<tracking_state> fate;
         // Room first, then the stages, then the push, so that no frame is fused that is not
         // written (camera/sequence_writer.hpp, has_room()); a frame fused and then refused by a
         // failing writer is the one exception (docs/SCAN_FILES.md, "Parameters").
-        if (!m_writer.has_room())
+        const bool room = m_writer.has_room();
+        if (clock != nullptr)
+            clock->mark(path_stage::room);
+        if (!room)
             m_working.frames.not_taken++;
         else
         {
             m_working.too_close = too_close(current, set.too_close_depth_m);
-            const tracking_result tracked = live.track(current, stream);
+            if (clock != nullptr)
+                clock->mark(path_stage::too_close);
+            const tracking_result tracked = live.track(current, stream, clock);
             m_working.frames.taken++;
+            fate = tracked.state;
             if (tracked.state == tracking_state::failed)
             {
                 // Taken, neither fused nor lost, and written nowhere: the scan ends at it.
                 made.end = scan_end::tracking_failed;
                 made.end_message = tracked.message;
                 publish_frame();
+                if (clock != nullptr)
+                    clock->end(fate);
                 break;
             }
             const bool fused = tracked.state == tracking_state::tracking;
@@ -410,17 +424,23 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
             m_working.lost_cause = tracked.outcome;
             const push_result pushed = m_writer.push(
                 current, fused ? frame_tracking{*tracked.pose} : frame_tracking{tracking_loss{}});
+            if (clock != nullptr)
+                clock->mark(path_stage::writer);
             if (pushed.status != push_status::accepted)
             {
                 made.end = scan_end::writer_failed;
                 made.end_message = pushed.reason;
                 publish_frame();
+                if (clock != nullptr)
+                    clock->end(fate);
                 break;
             }
         }
         publish_frame();
         // The commands between two frames: a stop or a discard ends the scan before the next.
         answer_commands(scan_phase::scanning, requests);
+        if (clock != nullptr)
+            clock->end(fate);
         if (requests.discard || requests.shut_down || requests.stop)
         {
             made.end = requests.shut_down ? scan_end::shut_down : scan_end::stopped;
@@ -494,7 +514,7 @@ void scan_interface::run_scan(command &c, cudaStream_t stream) noexcept
     publish();
     const object_class_parameters &set = request.set;
     const sequence_fusion_result refined = fuse_sequence(
-        scan.directory / sequence_name, m_options.stream_size,
+        scan.directory / sequence_file_name, m_options.stream_size,
         sparse_tsdf_parameters_of(set, fused_model::full),
         tracking_parameters_of(set).pyramid.range,
         [this, &requests] {

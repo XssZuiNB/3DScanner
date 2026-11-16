@@ -32,6 +32,11 @@ namespace gca
 static_assert(std::endian::native == std::endian::little,
               "the sequence's depth is written as it lies in memory, little-endian");
 
+/// The name of a sequence's file in its directory: a scan's (docs/SCAN_FILES.md, "A scan's
+/// directory"), the one orbbec_viewer's --sequence names, the one depth_noise and the replay tool
+/// read [?: a choice; the ending is the one ctest `sequence` gives its files].
+inline constexpr const char *sequence_file_name = "frames.sequence";
+
 /// The mark of tracking loss: tracking gave the frame no pose (GLOSSARY.md, "Tracking loss").
 struct tracking_loss
 {

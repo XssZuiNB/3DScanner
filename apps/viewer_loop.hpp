@@ -38,10 +38,6 @@ constexpr std::chrono::seconds report_period{1};
 /// prototype's start waited up to 100 times 200 ms for its first frameset].
 constexpr std::chrono::seconds first_frame_time_limit{20};
 
-/// The name of the file the viewer writes its sequence to, in the directory --sequence names
-/// [?: a choice; the ending is the one ctest `sequence` gives its files].
-inline constexpr const char *sequence_file_name = "frames.sequence";
-
 /// Where the loop writes the frames it takes when --sequence names a directory. The seam exists
 /// so that the offline tests run the loop with a scripted sink, which answers chosen pushes with
 /// a full queue or a failure: a real writer is not full at a test's frame size and pace, since a
@@ -90,7 +86,8 @@ public:
     virtual const std::filesystem::path &path() const noexcept = 0;
 };
 
-/// The sequence the viewer writes: the file sequence_file_name in the directory --sequence names,
+/// The sequence the viewer writes: the file gca::sequence_file_name (camera/sequence_format.hpp) in
+/// the directory --sequence names,
 /// written by gca::sequence_writer with a queue of gca::sequence_queue_frames, every frame marked
 /// gca::not_tracked.
 class sequence_file final : public sequence_sink

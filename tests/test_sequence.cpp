@@ -13,6 +13,9 @@
 /// - A queue of 2 frames reports full to the caller, through has_room() and push(); a push after
 ///   has_room() said yes is accepted; after close() every accepted frame is on disk, in order,
 ///   and no other, and frames_written() counts them.
+/// - A writer that waits for room (queue_full::wait) says yes at each has_room() of frames pushed
+///   back to back into a queue of 1, and writes them all; a write that fails while has_room()
+///   waits wakes it, and the next push and close() give the reason.
 /// - The writer refuses, as a value with the reason: not open, a queue of 0, a file that cannot
 ///   be created (it exists, no directory, a directory it cannot write), a header the disk
 ///   refuses (no file is left), a second open, a frame of other intrinsics or another depth
@@ -49,7 +52,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <future>
 #include <optional>
 #include <string>
 #include <thread>
@@ -521,6 +526,95 @@ gca::frame small_frame(const gca::frame_description &description, std::uint64_t 
 /// The small frames' description: 4x3 px [?: a choice].
 const gca::frame_description small = {{4, 3}, {3.0f, 3.0f, 1.5f, 1.0f}, 0.001f};
 
+/// The frames of 640x400 the waiting writer's cases push [?: a choice, the smaller stream].
+const gca::frame_description waiting_description = {
+    {640, 400}, {500.0f, 500.0f, 319.5f, 199.5f}, 0.001f};
+
+/// A writer that waits for room (queue_full::wait), with a queue of 1 frame: has_room() says yes
+/// before each of 24 frames [?: a choice] pushed back to back, each push is accepted, and after
+/// close() every frame is on disk, in order. A frame of 640x400, 1.28 MB, takes the writer's
+/// thread far longer to write than a push takes [S: computed, as test_full_queue()], so a
+/// has_room() that did not wait would say no right after a push.
+/// @param directory [in] the test's directory.
+void test_waiting_queue(const temporary_directory &directory)
+{
+    const std::filesystem::path path = directory / "waiting.sequence";
+    constexpr std::uint64_t frames = 24;
+    int no_room = 0;
+    int not_accepted = 0;
+    {
+        gca::sequence_writer writer(gca::queue_full::wait);
+        check(writer.open(path, waiting_description, 1).opened, "waiting queue: the writer opened");
+        gca::frame one_frame;
+        for (std::uint64_t index = 0; index < frames; index++)
+        {
+            one_frame.prepare(waiting_description, index, 1000 + 33333 * index);
+            stamp_index(one_frame);
+            no_room += !writer.has_room();
+            not_accepted +=
+                writer.push(one_frame, gca::not_tracked{}).status != gca::push_status::accepted;
+        }
+        const gca::write_result closed = writer.close();
+        check(closed.written, ("waiting queue: the writer closed; " + closed.reason).c_str());
+        check(writer.frames_written() == frames, "waiting queue: every frame counted as written");
+        check(!writer.has_room(), "waiting queue: no room, and no wait, once the writer is closed");
+    }
+    std::printf("waiting queue: has_room() said no %d times, %d pushes not accepted\n", no_room,
+                not_accepted);
+    check(no_room == 0, "waiting queue: has_room() waits for room and says yes");
+    check(not_accepted == 0, "waiting queue: every push after a yes is accepted");
+
+    gca::sequence_reader reader(path);
+    check(reader.open(waiting_description.size).opened, "waiting queue: the reader opened");
+    gca::frame read;
+    std::uint64_t found = 0;
+    bool in_order = true;
+    while (reader.next(read).status == gca::next_status::frame)
+        in_order = in_order && read.index() == found++ && has_own_stamp(read);
+    check(found == frames && in_order, "waiting queue: every frame on disk, in order");
+}
+
+/// A writer that waits for room and fails while has_room() waits: a file size limit cuts the
+/// first frame of 640x400 in its middle, after the queue of 1 frame was filled; the writer's
+/// failure wakes has_room(), which says yes, and the next push and close() give the reason.
+/// has_room() runs on a thread of its own, the caller's thread doing nothing meanwhile; when it
+/// has not returned within 10 s [?: a choice, thousands of times the write of half a frame], the
+/// test reports the failure and ends the program, since a writer cannot be destroyed while a call
+/// waits in it.
+/// @param directory [in] the test's directory.
+void test_failure_wakes_waiting(const temporary_directory &directory)
+{
+    const std::filesystem::path path = directory / "waiting_cut.sequence";
+    // The header, 50 bytes, and half of the first frame's 1 280 000 bytes of pictures
+    // [S: docs/SEQUENCE_FILE.md].
+    const gca_test::file_size_limit limit(50 + 640000);
+    gca::sequence_writer writer(gca::queue_full::wait);
+    check(writer.open(path, waiting_description, 1).opened,
+          "waiting, the write fails: the writer opened");
+    gca::frame one_frame;
+    one_frame.prepare(waiting_description, 0, 1000);
+    check(writer.has_room() &&
+              writer.push(one_frame, gca::not_tracked{}).status == gca::push_status::accepted,
+          "waiting, the write fails: the first frame accepted");
+    std::future<bool> room =
+        std::async(std::launch::async, [&writer] { return writer.has_room(); });
+    if (room.wait_for(std::chrono::seconds(10)) != std::future_status::ready)
+    {
+        std::fprintf(stderr, "FAIL: waiting, the write fails: has_room() still waits after 10 s\n");
+        std::fflush(nullptr);
+        std::_Exit(1);
+    }
+    check(room.get(), "waiting, the write fails: has_room() wakes and says yes");
+    one_frame.prepare(waiting_description, 1, 34333);
+    const gca::push_result refused = writer.push(one_frame, gca::not_tracked{});
+    check_refusal("waiting, the write fails: the next push",
+                  refused.status == gca::push_status::failure, refused.reason,
+                  refused.reason.find("the write of frame index 0 failed") != std::string::npos);
+    const gca::write_result closed = writer.close();
+    check_refusal("waiting, the write fails: close()", !closed.written, closed.reason,
+                  closed.reason.find("the write of frame index 0 failed") != std::string::npos);
+}
+
 /// A push refused by the writer: failure with the expected part of the reason, and the frame
 /// left as it was.
 /// @param what [in] the case.
@@ -986,6 +1080,8 @@ int main()
     test_round_trip(directory);
     test_bytes_as_documented(directory);
     test_full_queue(directory);
+    test_waiting_queue(directory);
+    test_failure_wakes_waiting(directory);
     test_writer_refusals(directory);
     test_disk_refuses(directory);
     test_reader_refusals(directory);
