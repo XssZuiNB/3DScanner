@@ -18,6 +18,11 @@ struct intrinsics
     float fy; ///< focal length along y, in px, > 0
     float cx; ///< principal point's column, in px, pixel centres at whole numbers
     float cy; ///< principal point's row, in px, pixel centres at whole numbers
+
+    /// Compares two cameras' intrinsics value by value.
+    /// @param other [in] the other intrinsics.
+    /// @return whether fx, fy, cx and cy are equal; false where one is a NaN.
+    bool operator==(const intrinsics &other) const = default;
 };
 
 /// Says whether intrinsics describe a pinhole camera by the one convention: the one check of

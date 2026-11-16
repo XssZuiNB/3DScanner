@@ -2,11 +2,11 @@
 /// @file object_class.hpp
 /// The object class (GLOSSARY.md), the one choice an operator makes before a scan, and the set
 /// of parameters it puts in force: the voxel sizes, the depth range, the memory budget, the "too
-/// close" notice's threshold, the registration's values and tracking's thresholds. The
-/// sets stand in one place, object_class.cpp, each value with its evidence above it (AGENTS.md
-/// §7 rule 8). A scan stores the set it was made with in its parameters (scan/parameters_file.hpp),
-/// and a stored set is read back as it stands, so a set is a value that need not be an object
-/// class's own.
+/// close" notice's threshold, the sparse TSDF's truncation, the normals' window, the
+/// registration's values and tracking's thresholds. The sets stand in one place,
+/// object_class.cpp, each value with its evidence above it (AGENTS.md §7 rule 8). A scan stores
+/// the set it was made with in its parameters (scan/parameters_file.hpp), and a stored set is
+/// read back as it stands, so a set is a value that need not be an object class's own.
 
 #pragma once
 
@@ -43,6 +43,20 @@ struct object_class_parameters
     /// at least a quarter of its pixels with depth lie nearer (R36); the scan raises the notice,
     /// tracking does not read it.
     double too_close_depth_m;
+    /// The sparse TSDF's c, the depth noise's coefficient, σ(z) = c z², in 1/m
+    /// (docs/methods/sparse-tsdf.md, "The truncation distance").
+    double depth_noise_per_m;
+    /// The sparse TSDF's k, the depth noise's standard deviations within the truncation distance.
+    double truncation_noise_multiple;
+    /// The sparse TSDF's μ_min, the least truncation distance, in voxels.
+    double truncation_min_voxels;
+    /// The normals' window's half size R, in px (docs/methods/normals.md, "Input").
+    std::uint32_t normals_radius_px;
+    /// The normals' fewest points of a neighbourhood that give a normal.
+    std::uint32_t normals_min_points;
+    /// The normals' steepest incidence at which two neighbouring points still count as one
+    /// surface, in degrees.
+    double normals_max_incidence_deg;
     /// The registration's d_max_l at levels 0, 1 and 2, in m (docs/methods/registration.md,
     /// "Parameters").
     std::array<double, 3> max_distance_m;

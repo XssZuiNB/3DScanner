@@ -31,5 +31,10 @@ struct frame_description
     frame_size size;            ///< the size of the color and the depth picture
     gca::intrinsics intrinsics; ///< the camera's intrinsics at this size
     float depth_unit_m;         ///< meters per depth value, > 0: depth in m = value * depth_unit_m
+
+    /// Compares two descriptions value by value.
+    /// @param other [in] the other description.
+    /// @return whether the size, the intrinsics and the depth unit are equal.
+    bool operator==(const frame_description &other) const = default;
 };
 } // namespace gca

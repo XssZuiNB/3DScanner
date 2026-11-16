@@ -91,9 +91,9 @@ target_link_libraries(test_frame_pyramid PRIVATE geometry synthetic_source)
 add_test(NAME frame_pyramid COMMAND test_frame_pyramid)
 
 # The registration of a frame against a surface, on pairs of frames of the synthetic source whose
-# transform is known; scan gives the object classes' values of the registration.
+# transform is known; scan_interface gives the object classes' values of the registration.
 add_executable(test_registration test_registration.cpp)
-target_link_libraries(test_registration PRIVATE registration scan synthetic_source)
+target_link_libraries(test_registration PRIVATE registration scan_interface synthetic_source)
 add_test(NAME registration COMMAND test_registration)
 
 # The sparse TSDF's hash of blocks and its pool, fed with block coordinates the test builds.
@@ -152,8 +152,8 @@ add_test(NAME depth_noise_options COMMAND test_depth_noise_options)
 
 # The sparse TSDF's ray cast of the model's surface, on sparse TSDFs fused from frames of the
 # synthetic source at their known poses and from built walls, and through the registration of a
-# frame against it, the cast's levels as tracking hands them over; scan gives the object classes'
-# voxel sizes and registration's values.
+# frame against it, the cast's levels as tracking hands them over; scan_interface gives the object
+# classes' voxel sizes and registration's values.
 add_executable(test_sparse_tsdf_ray_cast test_sparse_tsdf_ray_cast.cpp)
 target_link_libraries(
     test_sparse_tsdf_ray_cast
@@ -161,14 +161,20 @@ target_link_libraries(
     fusion
     registration
     tracking
-    scan
+    scan_interface
     synthetic_source
 )
 add_test(NAME sparse_tsdf_ray_cast COMMAND test_sparse_tsdf_ray_cast)
 
 # Tracking: each frame of the synthetic source registered against the live model, checked, and
-# fused only when the check passes, with the pool closed before the first frame; scan gives the
-# tabletop object class's values.
+# fused only when the check passes, with the pool closed before the first frame; scan_interface
+# gives the tabletop object class's values as tracking's and the live model's parameters.
 add_executable(test_tracking test_tracking.cpp)
-target_link_libraries(test_tracking PRIVATE tracking scan synthetic_source)
+target_link_libraries(test_tracking PRIVATE tracking scan_interface synthetic_source)
 add_test(NAME tracking COMMAND test_tracking)
+
+# The stages' parameters of an object class's set, and each stage taking each object class's from
+# a closed pool, without device memory; the stage frames give the tests' stream size.
+add_executable(test_stage_parameters test_stage_parameters.cpp)
+target_link_libraries(test_stage_parameters PRIVATE scan_interface synthetic_source)
+add_test(NAME stage_parameters COMMAND test_stage_parameters)

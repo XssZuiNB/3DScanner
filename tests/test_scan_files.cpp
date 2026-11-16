@@ -11,13 +11,18 @@
 ///   and written as it shows it; the reader refuses another header, a line of neither form, a
 ///   pose that is not finite or not unit, a file that ends within a line; the writer refuses such
 ///   a pose and writes nothing;
-/// - the parameters of each object class, a set of neither and commits at the edges of the
-///   strings the file holds are read back equal; the document's example is read as the document
-///   says, also after white space, and written as it shows it; the reader refuses a text that
-///   does not start with '{' (YAML, XML), a key it does not know, a key twice, a missing key,
-///   another version, a value of another type, an unknown object class, a commit OpenCV does not
-///   write as JSON and each value out of range; the writer refuses such a commit or set and
-///   writes nothing;
+/// - a time in UTC is written and read as its text at the edges and between, worked out by hand;
+///   a time outside 1970 to 9999 has no text, and a text of another form or a day the calendar
+///   lacks is no time;
+/// - the parameters of each object class, a set of neither, commits at the edges of the strings
+///   the file holds and the scan's facts at their edges, each key of why a scan ended among them,
+///   are read back equal; the document's example is read as the document says, also after white
+///   space, and written as it shows it; the reader refuses a text that does not start with '{'
+///   (YAML, XML), a key it does not know, a key twice, a missing key (a file written before the
+///   keys of 2026-11-16 among them), another version, a value of another type, an unknown object
+///   class or key of why a scan ended, a string OpenCV does not write as JSON, a time of another
+///   form and each value out of range; the writer refuses such a string, set or fact and writes
+///   nothing;
 /// - a writer whose file cannot be created or whose write fails says why, leaves nothing beside
 ///   the file, and leaves a file already there as it was; a longer part file left behind is
 ///   truncated; a directory at the name makes the rename fail.
@@ -30,8 +35,11 @@
 #include "scan/object_class.hpp"
 #include "scan/parameters_file.hpp"
 #include "scan/trajectory_file.hpp"
+#include "scan/utc_time.hpp"
 #include "test_files.hpp"
 
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -63,6 +71,23 @@ std::string replaced(std::string text, const std::string &from, const std::strin
     check(at != std::string::npos, ("test setup: the file holds " + from).c_str());
     if (at != std::string::npos)
         text.replace(at, from.size(), to);
+    return text;
+}
+
+/// Replaces a map of the top level, from its key to its closing brace, for a case built from a
+/// valid file.
+/// @param text [in] the valid file.
+/// @param key [in] the map's key.
+/// @param value [in] the text that stands after the key in the map's place.
+/// @return the changed file.
+std::string map_replaced(std::string text, const std::string &key, const std::string &value)
+{
+    const std::size_t at = text.find("\"" + key + "\": {");
+    const std::size_t end = text.find("\n    }", at);
+    check(at != std::string::npos && end != std::string::npos,
+          ("test setup: the file holds the map " + key).c_str());
+    if (at != std::string::npos && end != std::string::npos)
+        text.replace(at, end + 6 - at, "\"" + key + "\": " + value);
     return text;
 }
 
@@ -466,9 +491,77 @@ void test_trajectory_refusals(const temporary_directory &directory)
     }
 }
 
+// ------------------------------------------------------------------------------------- times
+
+/// A time and its text, as the document's examples give them.
+struct time_case
+{
+    std::int64_t us;  ///< microseconds since 1970-01-01T00:00:00Z
+    std::string text; ///< its text
+};
+
+/// The times at the edges and between, each with its text worked out by hand
+/// [S: computed, 365 days a year and 366 in a leap year]: the clock's epoch;
+/// 2026-11-16T10:20:30.123456Z, 20773 days after it (56 years with 14 leap days, then 304 days of
+/// January to October and 15 of November); the last microsecond of 2024-02-29, a leap day, 19782
+/// days after the epoch; and the last microsecond of 9999-12-31, 253402300799 s after the epoch.
+const std::vector<time_case> known_times = {
+    {0, "19700101T000000.000000Z"},
+    {(20773LL * 86400 + 10 * 3600 + 20 * 60 + 30) * 1000000 + 123456, "20261116T102030.123456Z"},
+    {(19782LL * 86400 + 86399) * 1000000 + 999999, "20240229T235959.999999Z"},
+    {253402300799LL * 1000000 + 999999, "99991231T235959.999999Z"},
+};
+
+/// Gives a time from its microseconds since the epoch.
+/// @param us [in] the microseconds.
+/// @return the time.
+gca::utc_time at_us(std::int64_t us)
+{
+    return gca::utc_time(std::chrono::microseconds(us));
+}
+
+/// A time's text is written and read as worked out by hand at the edges and between; a time
+/// before 1970 or after 9999 has no text; a text of another form, a day the calendar lacks, an
+/// hour, minute or second out of range, or a year before 1970 is no time.
+void test_utc_time()
+{
+    for (const time_case &known : known_times)
+    {
+        const std::optional<std::string> text = gca::utc_text(at_us(known.us));
+        check(text && *text == known.text, ("utc time: " + known.text + " written").c_str());
+        const std::optional<gca::utc_time> time = gca::utc_time_of(known.text);
+        check(time && *time == at_us(known.us), ("utc time: " + known.text + " read").c_str());
+    }
+    check(!gca::utc_text(at_us(-1)), "utc time: 1 us before 1970 has no text");
+    check(!gca::utc_text(at_us(253402300800LL * 1000000)), "utc time: 10000-01-01 has no text");
+    const std::vector<std::string> refused = {
+        "20261116T102030Z",
+        "20261116T102030.12345Z",
+        "20261116T102030.1234567Z",
+        "2026-11-16T10:20:30.123Z",
+        "20261116t102030.123456Z",
+        "20261116T102030.123456z",
+        "20261116T102030,123456Z",
+        " 20261116T102030.12345Z",
+        "2026111+T102030.123456Z",
+        "20261131T000000.000000Z",
+        "20250229T000000.000000Z",
+        "20261100T000000.000000Z",
+        "20261316T000000.000000Z",
+        "20261116T240000.000000Z",
+        "20261116T106000.000000Z",
+        "20261116T102060.000000Z",
+        "19691231T235959.999999Z",
+        "00001116T102030.123456Z",
+        "",
+    };
+    for (const std::string &text : refused)
+        check(!gca::utc_time_of(text), ("utc time: \"" + text + "\" is no time").c_str());
+}
+
 // ------------------------------------------------------------------------------- parameters
 
-/// The document's example of the parameters, a large object's set, as written there.
+/// The document's example of the parameters, a large object's scan, as written there.
 const std::string parameters_by_hand = R"({
     "format_version": 1,
     "commit": "db91e0d",
@@ -480,6 +573,12 @@ const std::string parameters_by_hand = R"({
         "max_depth_m": 3.0,
         "memory_budget_bytes": 2000000000.0,
         "too_close_depth_m": 4.0000000000000002e-01,
+        "depth_noise_per_m": 4.0000000000000001e-03,
+        "truncation_noise_multiple": 2.5000000000000000e+00,
+        "truncation_min_voxels": 3.0,
+        "normals_radius_px": 2.0,
+        "normals_min_points": 16.0,
+        "normals_max_incidence_deg": 70.0,
         "max_distance_level_0_m": 1.0000000000000001e-01,
         "max_distance_level_1_m": 2.0000000000000001e-01,
         "max_distance_level_2_m": 3.4999999999999998e-01,
@@ -492,17 +591,45 @@ const std::string parameters_by_hand = R"({
         "max_inlier_rmse_m": 2.0000000000000000e-02,
         "max_turn_rate_deg_s": 90.0,
         "max_speed_m_s": 1.5000000000000000e+00
-    }
+    },
+    "stream": {
+        "width_px": 640.0,
+        "height_px": 400.0,
+        "fx_px": 5.1725000000000000e+02,
+        "fy_px": 5.1750000000000000e+02,
+        "cx_px": 3.1975000000000000e+02,
+        "cy_px": 2.0125000000000000e+02,
+        "depth_unit_m": 1.0000000474974513e-03
+    },
+    "source": {
+        "camera": "Orbbec Gemini 2 L",
+        "firmware_version": "1.5.02",
+        "sdk_version": "2.10.6"
+    },
+    "start_utc": "20261116T093012.250000Z",
+    "stop_utc": "20261116T093512.750000Z",
+    "frames": {
+        "taken": 8990.0,
+        "fused": 8950.0,
+        "lost": 40.0,
+        "not_taken": 12.0
+    },
+    "end": "stopped"
 }
 )";
 
-/// The example's text of six values, which the refusal cases replace.
+/// The example's text of some values, which the refusal cases replace.
 const std::string live_text = "8.0000000000000002e-03";
 const std::string full_text = "4.0000000000000001e-03";
 const std::string min_text = "2.5000000000000000e-01";
 const std::string too_close_text = "4.0000000000000002e-01";
 const std::string iterations_text = "\"max_iterations_level_0\": 20.0";
 const std::string weight_text = "9.6799999999999997e-01";
+const std::string fx_text = "5.1725000000000000e+02";
+const std::string cx_text = "3.1975000000000000e+02";
+const std::string unit_text = "1.0000000474974513e-03";
+const std::string start_text = "20261116T093012.250000Z";
+const std::string stop_text = "20261116T093512.750000Z";
 
 /// The set of the document's example, a large object's scan, each value written out here and
 /// every one another, so that two keys swapped show [S: docs/SCAN_FILES.md, "Parameters"].
@@ -512,6 +639,12 @@ const gca::object_class_parameters example_set = {.live_voxel_size_m = 0.008,
                                                   .max_depth_m = 3.0,
                                                   .memory_budget_bytes = 2000000000u,
                                                   .too_close_depth_m = 0.4,
+                                                  .depth_noise_per_m = 0.004,
+                                                  .truncation_noise_multiple = 2.5,
+                                                  .truncation_min_voxels = 3.0,
+                                                  .normals_radius_px = 2,
+                                                  .normals_min_points = 16,
+                                                  .normals_max_incidence_deg = 70.0,
                                                   .max_distance_m = {0.1, 0.2, 0.35},
                                                   .max_iterations = {20, 10, 5},
                                                   .huber_threshold_m = 0.03,
@@ -530,8 +663,14 @@ const gca::object_class_parameters odd_set = {.live_voxel_size_m = 1.0 / 3.0,
                                               .max_depth_m = 2.9999999999999996,
                                               .memory_budget_bytes = 9007199254740992u,
                                               .too_close_depth_m = 1.0 / 7.0 + 0.3,
+                                              .depth_noise_per_m = 0.01 / 7.0,
+                                              .truncation_noise_multiple = 10.0 / 3.0,
+                                              .truncation_min_voxels = 11.0 / 3.0,
+                                              .normals_radius_px = 4294967294u,
+                                              .normals_min_points = 0,
+                                              .normals_max_incidence_deg = 200.0 / 3.0,
                                               .max_distance_m = {0.1 / 3.0, 0.2 / 3.0, 0.4 / 3.0},
-                                              .max_iterations = {4294967295u, 0, 7},
+                                              .max_iterations = {4294967295u, 1, 7},
                                               .huber_threshold_m = 0.01 / 3.0,
                                               .point_to_plane_weight = 2.0 / 3.0,
                                               .min_fitness = 5.0 / 9.0,
@@ -539,48 +678,125 @@ const gca::object_class_parameters odd_set = {.live_voxel_size_m = 1.0 / 3.0,
                                               .max_turn_rate_deg_s = 100.0 / 7.0,
                                               .max_speed_m_s = 10.0 / 11.0};
 
+/// The scan's facts of the document's example: 640x400 with intrinsics a float holds in few
+/// digits, the depth unit 1 mm as a float, the camera with its versions, five minutes and half a
+/// second, the frames counted, stopped by the operator [S: docs/SCAN_FILES.md, "Parameters"].
+gca::scan_parameters example_parameters()
+{
+    return {"db91e0d",
+            gca::object_class::large_object,
+            example_set,
+            {{640, 400}, {517.25f, 517.5f, 319.75f, 201.25f}, 0.001f},
+            {"Orbbec Gemini 2 L", "1.5.02", "2.10.6"},
+            *gca::utc_time_of(start_text),
+            *gca::utc_time_of(stop_text),
+            {8990, 8950, 40, 12},
+            gca::scan_end::stopped};
+}
+
+/// Gives a scan's parameters with the scan's facts of the document's example.
+/// @param commit [in] the commit.
+/// @param kind [in] the object class.
+/// @param set [in] the set.
+/// @return the parameters.
+gca::scan_parameters scan_of(const std::string &commit, gca::object_class kind,
+                             const gca::object_class_parameters &set)
+{
+    gca::scan_parameters parameters = example_parameters();
+    parameters.commit = commit;
+    parameters.object_class = kind;
+    parameters.parameters = set;
+    return parameters;
+}
+
 /// The parameters of each object class, and a set of neither whose doubles need all 17 digits
 /// with the largest budget JSON holds exactly and every value another, are written and read back
-/// equal; commits at the
-/// edges of the strings the file holds too: one that starts with '{' and holds double quotes, a
-/// backslash and every other printable ASCII character but the apostrophe, an empty one and one
-/// of 4095 characters; the document's example is read as the document says, also after white
+/// equal; commits at the edges of the strings the file holds too: one that starts with '{' and
+/// holds double quotes, a backslash and every other printable ASCII character but the
+/// apostrophe, an empty one and one of 4095 characters; the scan's facts at their edges: the
+/// largest width and height, a float's smallest and largest values and negative coordinates in
+/// the intrinsics, empty strings of the source and one of 4095 characters, the first and the last
+/// time the file holds, the stop before the start, the largest counts of frames, and each key of
+/// why a scan ended; the document's example is read as the document says, also after white
 /// space, and written as the document shows it.
 /// @param directory [in] the test's directory.
 void test_parameters_round_trip(const temporary_directory &directory)
 {
-    const std::vector<gca::scan_parameters> cases = {
-        {"db91e0d0123456789abcdef0123456789abcdef0", gca::object_class::tabletop_object,
-         gca::parameters_of(gca::object_class::tabletop_object)},
-        {"831f06a", gca::object_class::large_object,
-         gca::parameters_of(gca::object_class::large_object)},
-        {"{\"not a map\" [", gca::object_class::tabletop_object, odd_set},
-        {" !\"#$%&()*+,-./0123456789:;<=>?@AZ[\\]^_`az{|}~", gca::object_class::large_object,
-         gca::parameters_of(gca::object_class::large_object)},
-        {"", gca::object_class::large_object, gca::parameters_of(gca::object_class::large_object)},
-        {std::string(4095, 'x'), gca::object_class::large_object,
-         gca::parameters_of(gca::object_class::large_object)},
+    std::vector<gca::scan_parameters> cases = {
+        scan_of("db91e0d0123456789abcdef0123456789abcdef0", gca::object_class::tabletop_object,
+                gca::parameters_of(gca::object_class::tabletop_object)),
+        scan_of("831f06a", gca::object_class::large_object,
+                gca::parameters_of(gca::object_class::large_object)),
+        scan_of("{\"not a map\" [", gca::object_class::tabletop_object, odd_set),
+        scan_of(" !\"#$%&()*+,-./0123456789:;<=>?@AZ[\\]^_`az{|}~", gca::object_class::large_object,
+                gca::parameters_of(gca::object_class::large_object)),
+        scan_of("", gca::object_class::large_object,
+                gca::parameters_of(gca::object_class::large_object)),
+        scan_of(std::string(4095, 'x'), gca::object_class::large_object,
+                gca::parameters_of(gca::object_class::large_object)),
     };
     check(!(cases[0].parameters == cases[1].parameters),
           "parameters: the two object classes' sets differ");
+    gca::scan_parameters edges = scan_of("db91e0d", gca::object_class::tabletop_object, odd_set);
+    edges.stream = {{4294967295u, 1},
+                    {std::numeric_limits<float>::max(), std::numeric_limits<float>::denorm_min(),
+                     -std::numeric_limits<float>::max(), -1.0f / 3.0f},
+                    std::numeric_limits<float>::min()};
+    edges.source = {"", std::string(4095, 'v'), ""};
+    edges.start = at_us(known_times.back().us);
+    edges.stop = at_us(0);
+    edges.frames = {9007199254740992u, 9007199254740985u, 7, 9007199254740992u};
+    cases.push_back(edges);
+    for (int k = 0; !gca::name_of(static_cast<gca::scan_end>(k)).empty(); k++)
+    {
+        gca::scan_parameters ended = example_parameters();
+        ended.end = static_cast<gca::scan_end>(k);
+        // The frame tracking failed on is taken, neither fused nor lost.
+        ended.frames = {ended.end == gca::scan_end::tracking_failed ? 1u : 0u, 0, 0, 0};
+        ended.source = {"synthetic source", "", ""};
+        cases.push_back(ended);
+    }
+    check(cases.size() == 14, "parameters: seven keys of why a scan ended");
+    gca::scan_parameters failed = example_parameters();
+    failed.frames = {120, 100, 19, 3};
+    failed.end = gca::scan_end::tracking_failed;
+    cases.push_back(failed);
     for (const gca::scan_parameters &parameters : cases)
     {
-        const std::string what = "parameters, " +
-                                 std::string(gca::name_of(parameters.object_class)) + ", commit " +
-                                 parameters.commit.substr(0, 60) + " (" +
-                                 std::to_string(parameters.commit.size()) + " characters)";
+        const std::string what =
+            "parameters, " + std::string(gca::name_of(parameters.object_class)) + ", commit " +
+            parameters.commit.substr(0, 60) + " (" + std::to_string(parameters.commit.size()) +
+            " characters), " + std::to_string(parameters.stream.size.width) + " px wide, ended " +
+            std::string(gca::name_of(parameters.end));
         const std::filesystem::path path = directory / "parameters.json";
         const gca::write_result written = gca::write_parameters(path, parameters);
         check(written.written, (what + ": written; " + written.reason).c_str());
         const gca::read_result<gca::scan_parameters> read = gca::read_parameters(path);
         check(read.value && *read.value == parameters,
               (what + ": read back equal; " + read.reason).c_str());
+        // By value is bit for bit for every number but a zero, whose sign == does not see: no
+        // number of the set can be 0, and the principal point is checked bit for bit here.
+        check(read.value &&
+                  same_bits(read.value->stream.intrinsics.cx, parameters.stream.intrinsics.cx) &&
+                  same_bits(read.value->stream.intrinsics.cy, parameters.stream.intrinsics.cy),
+              (what + ": the principal point read back bit for bit").c_str());
     }
+
+    // OpenCV writes -0.0 as 0.0 [M 2026-11-16: OpenCV 4.8.0], so a principal point of -0 comes
+    // back as +0, equal by value (docs/SCAN_FILES.md, "Parameters").
+    gca::scan_parameters zero = example_parameters();
+    zero.stream.intrinsics.cx = -0.0f;
+    const std::filesystem::path zero_path = directory / "zero.json";
+    check(gca::write_parameters(zero_path, zero).written, "parameters: a cx of -0 written");
+    const gca::read_result<gca::scan_parameters> zero_read = gca::read_parameters(zero_path);
+    check(zero_read.value && *zero_read.value == zero &&
+              same_bits(zero_read.value->stream.intrinsics.cx, 0.0f),
+          "parameters: a cx of -0 read back as +0, equal by value");
 
     const std::filesystem::path hand_path = directory / "by_hand.json";
     write_bytes(hand_path, parameters_by_hand);
     const gca::read_result<gca::scan_parameters> hand = gca::read_parameters(hand_path);
-    const gca::scan_parameters expected = {"db91e0d", gca::object_class::large_object, example_set};
+    const gca::scan_parameters expected = example_parameters();
     check(hand.value && *hand.value == expected,
           ("parameters: the document's example is read as the document says; " + hand.reason)
               .c_str());
@@ -592,49 +808,83 @@ void test_parameters_round_trip(const temporary_directory &directory)
     const gca::read_result<gca::scan_parameters> spaced = gca::read_parameters(hand_path);
     check(spaced.value && *spaced.value == expected,
           ("parameters: white space before the '{' is skipped; " + spaced.reason).c_str());
+
+    const std::vector<std::string> end_keys = {"stopped",    "source_timeout",  "source_failure",
+                                               "source_end", "tracking_failed", "writer_failed",
+                                               "shut_down"};
+    for (std::size_t k = 0; k < end_keys.size(); k++)
+    {
+        const std::optional<gca::scan_end> end = gca::scan_end_named(end_keys[k]);
+        check(end && static_cast<std::size_t>(*end) == k &&
+                  gca::name_of(static_cast<gca::scan_end>(k)) == end_keys[k],
+              ("parameters: why a scan ended, the key " + end_keys[k]).c_str());
+    }
+    check(!gca::scan_end_named("paused") && !gca::scan_end_named(""),
+          "parameters: no key of why a scan ended beyond the seven");
 }
 
-/// The parameters' writer refuses each kind of commit that OpenCV does not write as JSON, and
-/// writes nothing; the reader refuses such a commit in a file written by hand.
+/// The parameters' writer refuses each kind of commit or string of the source that OpenCV does
+/// not write as JSON, and writes nothing; the reader refuses such a string in a file written by
+/// hand.
 /// @param directory [in] the test's directory.
 void test_parameters_strings(const temporary_directory &directory)
 {
     const struct
     {
         const char *what;
-        std::string commit;
+        std::string text;
         const char *reason;
-    } refused_commits[] = {
-        {"an apostrophe", "it's", "\"commit\" holds the byte 0x27 at 2"},
+    } refused_strings[] = {
+        {"an apostrophe", "it's", "holds the byte 0x27 at 2"},
         {"a control byte",
          "a\x01"
          "b",
-         "\"commit\" holds the byte 0x01 at 1"},
-        {"a tab", "a\tb", "\"commit\" holds the byte 0x09 at 1"},
-        {"a byte above ASCII", "caf\xc3\xa9", "\"commit\" holds the byte 0xc3 at 3"},
-        {"bounded by double quotes", "\"db91e0d\"",
-         "\"commit\" starts and ends with a double quote"},
-        {"one double quote", "\"", "\"commit\" starts and ends with a double quote"},
-        {"4096 characters", std::string(4096, 'x'),
-         "\"commit\" holds 4096 characters, more than 4095"},
+         "holds the byte 0x01 at 1"},
+        {"a tab", "a\tb", "holds the byte 0x09 at 1"},
+        {"a byte above ASCII", "caf\xc3\xa9", "holds the byte 0xc3 at 3"},
+        {"bounded by double quotes", "\"db91e0d\"", "starts and ends with a double quote"},
+        {"one double quote", "\"", "starts and ends with a double quote"},
+        {"4096 characters", std::string(4096, 'x'), "holds 4096 characters, more than 4095"},
     };
-    for (const auto &refused : refused_commits)
+    for (const auto &refused : refused_strings)
     {
         const std::filesystem::path path = directory / "refused_write.json";
-        const gca::scan_parameters parameters = {
-            refused.commit, gca::object_class::tabletop_object,
-            gca::parameters_of(gca::object_class::tabletop_object)};
+        gca::scan_parameters parameters = example_parameters();
+        parameters.commit = refused.text;
         check_write_refused(std::string("parameters writer, a commit: ") + refused.what,
-                            gca::write_parameters(path, parameters), path, refused.reason);
+                            gca::write_parameters(path, parameters), path,
+                            std::string("\"commit\" ") + refused.reason);
+        parameters = example_parameters();
+        parameters.source.firmware_version = refused.text;
+        check_write_refused(std::string("parameters writer, a firmware version: ") + refused.what,
+                            gca::write_parameters(path, parameters), path,
+                            std::string("\"firmware_version\" in \"source\" ") + refused.reason);
     }
+    gca::scan_parameters sdk = example_parameters();
+    sdk.source.sdk_version = "2.10'6";
+    check_write_refused("parameters writer, an SDK version with an apostrophe",
+                        gca::write_parameters(directory / "refused_write.json", sdk),
+                        directory / "refused_write.json",
+                        "\"sdk_version\" in \"source\" holds the byte 0x27 at 4");
+    gca::scan_parameters camera = example_parameters();
+    camera.source.camera = "sequence /home/o'neill/scan";
+    check_write_refused("parameters writer, a sequence's path with an apostrophe as the camera",
+                        gca::write_parameters(directory / "refused_write.json", camera),
+                        directory / "refused_write.json",
+                        "\"camera\" in \"source\" holds the byte 0x27 at 16");
 
-    // JSON that OpenCV reads, with commits the writer refuses.
+    // JSON that OpenCV reads, with strings the writer refuses.
     const std::vector<refusal_case> cases = {
         {"a commit with an apostrophe", replaced(parameters_by_hand, "db91e0d", "it's"),
          "\"commit\" holds the byte 0x27 at 2"},
         {"a commit bounded by double quotes",
          replaced(parameters_by_hand, "\"db91e0d\"", "\"\\\"db91e0d\\\"\""),
          "\"commit\" starts and ends with a double quote"},
+        {"an SDK version with an apostrophe", replaced(parameters_by_hand, "2.10.6", "2.10'6"),
+         "\"sdk_version\" in \"source\" holds the byte 0x27 at 4"},
+        {"a camera bounded by double quotes",
+         replaced(parameters_by_hand, "\"Orbbec Gemini 2 L\"", "\"\\\"Orbbec\\\"\""),
+         "\"camera\" in \"source\" starts and ends with a double quote"},
     };
     for (const refusal_case &refusal : cases)
     {
@@ -646,15 +896,17 @@ void test_parameters_strings(const temporary_directory &directory)
 }
 
 /// The parameters' reader refuses each case with the reason that names the key, and a file that
-/// does not exist; the writer refuses a set out of range and writes nothing.
+/// does not exist; the writer refuses a set or a fact out of range and writes nothing.
 /// @param directory [in] the test's directory.
 void test_parameters_refusals(const temporary_directory &directory)
 {
     const std::string &valid = parameters_by_hand;
     const std::string top = "at the top level";
     const std::string nested = "in \"parameters\"";
-    const std::string not_real = "in \"parameters\" is no number with a decimal point or an "
-                                 "exponent";
+    const std::string set = "\" in \"parameters\" is ";
+    const std::string in_stream = "\" in \"stream\" is ";
+    const std::string in_frames = "\" in \"frames\" is ";
+    const std::string not_real = "is no number with a decimal point or an exponent";
     const std::vector<refusal_case> cases = {
         {"an unknown key at the top level",
          replaced(valid, "\"commit\"", "\"colour\": \"red\",\n    \"commit\""),
@@ -688,59 +940,146 @@ void test_parameters_refusals(const temporary_directory &directory)
          "\"object_class\" is no string"},
         {"an unknown object class", replaced(valid, "\"large_object\"", "\"small_object\""),
          "\"object_class\" is \"small_object\", no object class"},
-        {"the set a number", valid.substr(0, valid.find("{\n        ")) + "1.0\n}\n",
+        {"the set a number", map_replaced(valid, "parameters", "1.0"),
          "\"parameters\" is no JSON object"},
-        {"a length written as an integer", replaced(valid, "3.0", "3"),
-         "\"max_depth_m\" " + not_real},
+        {"a length written as an integer",
+         replaced(valid, "\"max_depth_m\": 3.0", "\"max_depth_m\": 3"),
+         "\"max_depth_m\" in \"parameters\" " + not_real},
         {"a length written as a string", replaced(valid, min_text, "\"0.25\""),
-         "\"min_depth_m\" " + not_real},
+         "\"min_depth_m\" in \"parameters\" " + not_real},
         {"a budget written as an integer", replaced(valid, "2000000000.0", "2000000000"),
-         "\"memory_budget_bytes\" " + not_real},
+         "\"memory_budget_bytes\" in \"parameters\" " + not_real},
         {"a voxel size below 0", replaced(valid, full_text, "-4.0e-03"),
-         "\"full_voxel_size_m\" is -0.004, not a finite number > 0"},
+         "\"full_voxel_size_m" + set + "-0.004, not a finite number > 0"},
         {"a voxel size of 0", replaced(valid, live_text, "0.0"),
-         "\"live_voxel_size_m\" is 0, not a finite number > 0"},
-        {"a depth not finite", replaced(valid, min_text, ".Nan"), "\"min_depth_m\" is "},
+         "\"live_voxel_size_m" + set + "0, not a finite number > 0"},
+        {"a depth not finite", replaced(valid, min_text, ".Nan"), "\"min_depth_m" + set},
         {"min_depth_m equal to max_depth_m", replaced(valid, min_text, "3.0"),
          "\"min_depth_m\" 3 is not less than \"max_depth_m\" 3"},
         {"min_depth_m above max_depth_m", replaced(valid, min_text, "3.5"),
          "\"min_depth_m\" 3.5 is not less than \"max_depth_m\" 3"},
         {"a budget with a fraction", replaced(valid, "2000000000.0", "2000000000.5"),
-         "\"memory_budget_bytes\" is 2000000000.5, not a whole number from 1 to 2^53"},
+         "\"memory_budget_bytes" + set + "2000000000.5, not a whole number from 1 to 2^53"},
         {"a budget of 0", replaced(valid, "2000000000.0", "0.0"),
-         "\"memory_budget_bytes\" is 0, not a whole number from 1 to 2^53"},
+         "\"memory_budget_bytes" + set + "0, not a whole number from 1 to 2^53"},
         {"a budget above 2^53", replaced(valid, "2000000000.0", "9007199254740994.0"),
-         "\"memory_budget_bytes\" is 9007199254740994, not a whole number from 1 to 2^53"},
+         "\"memory_budget_bytes" + set + "9007199254740994, not a whole number from 1 to 2^53"},
         {"a file written before the set's keys of 2026-11-15",
-         valid.substr(0, valid.find(",\n        \"too_close_depth_m\"")) + "\n    }\n}\n",
+         valid.substr(0, valid.find(",\n        \"too_close_depth_m\"")) +
+             valid.substr(valid.find("\n    }", valid.find("\"too_close_depth_m\""))),
          "no key \"too_close_depth_m\" " + nested},
+        {"a file written before the set's keys of 2026-11-16",
+         replaced(valid, "        \"depth_noise_per_m\": 4.0000000000000001e-03,\n", ""),
+         "no key \"depth_noise_per_m\" " + nested},
+        {"a file written before the scan's facts of 2026-11-16",
+         valid.substr(0, valid.find(",\n    \"stream\"")) + "\n}\n", "no key \"stream\" " + top},
         {"no min_fitness",
          replaced(valid, "        \"min_fitness\": 5.9999999999999998e-01,\n", ""),
          "no key \"min_fitness\" " + nested},
         {"a count written as an integer",
          replaced(valid, iterations_text, "\"max_iterations_level_0\": 20"),
-         "\"max_iterations_level_0\" " + not_real},
+         "\"max_iterations_level_0\" in \"parameters\" " + not_real},
         {"a count with a fraction",
          replaced(valid, iterations_text, "\"max_iterations_level_0\": 20.5"),
-         "\"max_iterations_level_0\" is 20.5, not a whole number from 0 to 4294967295"},
+         "\"max_iterations_level_0" + set + "20.5, not a whole number from 0 to 4294967295"},
         {"a count below 0", replaced(valid, iterations_text, "\"max_iterations_level_0\": -1.0"),
-         "\"max_iterations_level_0\" is -1, not a whole number from 0 to 4294967295"},
+         "\"max_iterations_level_0" + set + "-1, not a whole number from 0 to 4294967295"},
         {"a count above 2^32 - 1",
          replaced(valid, iterations_text, "\"max_iterations_level_0\": 4294967296.0"),
-         "\"max_iterations_level_0\" is 4294967296, not a whole number from 0 to 4294967295"},
+         "\"max_iterations_level_0" + set + "4294967296, not a whole number from 0 to 4294967295"},
+        {"the normals' least points with a fraction",
+         replaced(valid, "\"normals_min_points\": 16.0", "\"normals_min_points\": 16.5"),
+         "\"normals_min_points" + set + "16.5, not a whole number from 0 to 4294967295"},
+        {"the depth noise of 0",
+         replaced(valid, "4.0000000000000001e-03,\n        \"trunc", "0.0,\n        \"trunc"),
+         "\"depth_noise_per_m" + set + "0, not a finite number > 0"},
         {"a share above 1", replaced(valid, weight_text, "1.5"),
-         "\"point_to_plane_weight\" is 1.5, not a number in (0, 1]"},
+         "\"point_to_plane_weight" + set + "1.5, not a number in (0, 1]"},
         {"a share of 0",
          replaced(valid, "\"min_fitness\": 5.9999999999999998e-01", "\"min_fitness\": 0.0"),
-         "\"min_fitness\" is 0, not a number in (0, 1]"},
+         "\"min_fitness" + set + "0, not a number in (0, 1]"},
         {"a threshold of 0",
          replaced(valid, "\"max_speed_m_s\": 1.5000000000000000e+00", "\"max_speed_m_s\": 0.0"),
-         "\"max_speed_m_s\" is 0, not a finite number > 0"},
+         "\"max_speed_m_s" + set + "0, not a finite number > 0"},
         {"too_close_depth_m equal to min_depth_m", replaced(valid, too_close_text, min_text),
          "\"too_close_depth_m\" 0.25 does not lie between \"min_depth_m\" 0.25 and \"max_depth_m\" "
          "3"},
         {"too_close_depth_m equal to max_depth_m", replaced(valid, too_close_text, "3.0"),
          "\"too_close_depth_m\" 3 does not lie between \"min_depth_m\" 0.25 and \"max_depth_m\" 3"},
+        {"the stream a string", map_replaced(valid, "stream", "\"640x400\""),
+         "\"stream\" is no JSON object"},
+        {"no stream's depth unit", replaced(valid, ",\n        \"depth_unit_m\": " + unit_text, ""),
+         "no key \"depth_unit_m\" in \"stream\""},
+        {"an unknown key in the stream",
+         replaced(valid, "\"width_px\"", "\"k1\": 0.1,\n        \"width_px\""),
+         "unknown key \"k1\" in \"stream\""},
+        {"a width of 0", replaced(valid, "\"width_px\": 640.0", "\"width_px\": 0.0"),
+         "\"width_px" + in_stream + "0, not a whole number from 1 to 4294967295"},
+        {"a width above 2^32 - 1",
+         replaced(valid, "\"width_px\": 640.0", "\"width_px\": 4294967296.0"),
+         "\"width_px" + in_stream + "4294967296, not a whole number from 1 to 4294967295"},
+        {"a height with a fraction",
+         replaced(valid, "\"height_px\": 400.0", "\"height_px\": 400.5"),
+         "\"height_px" + in_stream + "400.5, not a whole number from 1 to 4294967295"},
+        {"a width written as an integer",
+         replaced(valid, "\"width_px\": 640.0", "\"width_px\": 640"),
+         "\"width_px\" in \"stream\" " + not_real},
+        {"a focal length of 0", replaced(valid, fx_text, "0.0"),
+         "\"fx_px" + in_stream + "0, not a finite number > 0"},
+        {"a focal length no float holds", replaced(valid, fx_text, "1.0e+300"),
+         "\"fx_px" + in_stream + "1e+300, not a finite number that a float holds"},
+        {"a principal point not finite", replaced(valid, cx_text, ".Nan"), "\"cx_px" + in_stream},
+        {"a depth unit below 0", replaced(valid, unit_text, "-1.0e-03"),
+         "\"depth_unit_m" + in_stream + "-0.0010000000474974513, not a finite number > 0"},
+        {"a depth unit that rounds to 0 as a float", replaced(valid, unit_text, "1.0e-50"),
+         "\"depth_unit_m" + in_stream + "0, not a finite number > 0"},
+        {"the source a list", map_replaced(valid, "source", "[ 1.0 ]"),
+         "\"source\" is no JSON object"},
+        {"the frames a number", map_replaced(valid, "frames", "8990.0"),
+         "\"frames\" is no JSON object"},
+        {"no SDK version", replaced(valid, ",\n        \"sdk_version\": \"2.10.6\"", ""),
+         "no key \"sdk_version\" in \"source\""},
+        {"the camera a number", replaced(valid, "\"Orbbec Gemini 2 L\"", "2.0"),
+         "\"camera\" in \"source\" is no string"},
+        {"the start a number", replaced(valid, "\"" + start_text + "\"", "1.0"),
+         "\"start_utc\" is no string"},
+        {"the start in ISO 8601's extended format",
+         replaced(valid, start_text, "2026-11-16T09:30:12.250000Z"),
+         "\"start_utc\" is \"2026-11-16T09:30:12.250000Z\", not a time in UTC as "
+         "YYYYMMDDTHHMMSS.ffffffZ from 1970 to 9999"},
+        {"the stop on a day the calendar lacks",
+         replaced(valid, stop_text, "20261131T093512.750000Z"),
+         "\"stop_utc\" is \"20261131T093512.750000Z\", not a time in UTC"},
+        {"no stop", replaced(valid, "    \"stop_utc\": \"" + stop_text + "\",\n", ""),
+         "no key \"stop_utc\" " + top},
+        {"a count of frames written as an integer",
+         replaced(valid, "\"taken\": 8990.0", "\"taken\": 8990"),
+         "\"taken\" in \"frames\" " + not_real},
+        {"a count of frames below 0", replaced(valid, "\"not_taken\": 12.0", "\"not_taken\": -1.0"),
+         "\"not_taken" + in_frames + "-1, not a whole number from 0 to 2^53"},
+        {"a count of frames above 2^53",
+         replaced(valid, "\"not_taken\": 12.0", "\"not_taken\": 9007199254740994.0"),
+         "\"not_taken" + in_frames + "9007199254740994, not a whole number from 0 to 2^53"},
+        {"frames taken that are not those fused and lost",
+         replaced(valid, "\"lost\": 40.0", "\"lost\": 39.0"),
+         "\"taken\" in \"frames\" 8990 is not \"fused\" 8950 and \"lost\" 39 together, for "
+         "\"end\" \"stopped\""},
+        {"tracking failed, and the frames taken those fused and lost alone",
+         replaced(valid, "\"end\": \"stopped\"", "\"end\": \"tracking_failed\""),
+         "\"taken\" in \"frames\" 8990 is not \"fused\" 8950, \"lost\" 40 and the frame tracking "
+         "failed on together, for \"end\" \"tracking_failed\""},
+        {"no frames not taken", replaced(valid, ",\n        \"not_taken\": 12.0", ""),
+         "no key \"not_taken\" in \"frames\""},
+        {"an end not of the closed set",
+         replaced(valid, "\"end\": \"stopped\"", "\"end\": \"paused\""),
+         "\"end\" is \"paused\", no key of why a scan ended (stopped, source_timeout, "
+         "source_failure, source_end, tracking_failed, writer_failed, shut_down)"},
+        {"an end as free text",
+         replaced(valid, "\"end\": \"stopped\"", "\"end\": \"the camera failed: USB\""),
+         "\"end\" is \"the camera failed: USB\", no key of why a scan ended"},
+        {"the end a number", replaced(valid, "\"end\": \"stopped\"", "\"end\": 0"),
+         "\"end\" is no string"},
+        {"no end", replaced(valid, ",\n    \"end\": \"stopped\"", ""), "no key \"end\" " + top},
         {"a file cut short", valid.substr(0, valid.find("\"parameters\"")),
          "no JSON that OpenCV reads"},
         {"an empty file", "", "no JSON object: the first byte after any white space is not '{'"},
@@ -757,63 +1096,103 @@ void test_parameters_refusals(const temporary_directory &directory)
         write_bytes(path, refusal.file);
         const gca::read_result<gca::scan_parameters> read = gca::read_parameters(path);
         check_read_refused("parameters, " + refusal.what, read, refusal.reason);
-        // The not-finite case: the reason names the key and the rule; the NaN's sign is
+        // The not-finite cases: the reason names the key and the rule; the NaN's sign is
         // OpenCV's.
         if (refusal.what == "a depth not finite")
             check(read.reason.find("not a finite number > 0") != std::string::npos,
                   "parameters, a depth not finite: the reason says not finite");
+        if (refusal.what == "a principal point not finite")
+            check(read.reason.find("not a finite number that a float holds") != std::string::npos,
+                  "parameters, a principal point not finite: the reason says not finite");
     }
     check_read_refused("parameters, a missing file",
                        gca::read_parameters(directory / "missing.json"), "cannot open");
 
-    const gca::object_class_parameters good =
-        gca::parameters_of(gca::object_class::tabletop_object);
     const double nan = std::numeric_limits<double>::quiet_NaN();
-    // The tabletop object's set with one value changed.
-    const auto with = [&good](auto change) {
-        gca::object_class_parameters set = good;
-        change(set);
-        return set;
+    const float inf = std::numeric_limits<float>::infinity();
+    // The document's example with one value changed.
+    const auto with = [](auto change) {
+        gca::scan_parameters parameters = example_parameters();
+        change(parameters);
+        return parameters;
     };
     const struct
     {
         const char *what;
-        gca::object_class_parameters set;
-        const char *reason;
-    } refused_sets[] = {
-        {"a voxel size not finite", with([nan](auto &set) { set.live_voxel_size_m = nan; }),
-         "\"live_voxel_size_m\" is "},
-        {"a depth of 0", with([](auto &set) { set.min_depth_m = 0.0; }),
-         "\"min_depth_m\" is 0, not a finite number > 0"},
-        {"min_depth_m above max_depth_m", with([](auto &set) {
-             set.min_depth_m = 2.0;
-             set.max_depth_m = 1.0;
+        gca::scan_parameters parameters;
+        std::string reason;
+    } refused[] = {
+        {"a voxel size not finite", with([nan](auto &p) { p.parameters.live_voxel_size_m = nan; }),
+         "\"live_voxel_size_m" + set},
+        {"a depth of 0", with([](auto &p) { p.parameters.min_depth_m = 0.0; }),
+         "\"min_depth_m" + set + "0, not a finite number > 0"},
+        {"min_depth_m above max_depth_m", with([](auto &p) {
+             p.parameters.min_depth_m = 2.0;
+             p.parameters.max_depth_m = 1.0;
          }),
          "\"min_depth_m\" 2 is not less than \"max_depth_m\" 1"},
-        {"a budget of 0", with([](auto &set) { set.memory_budget_bytes = 0; }),
-         "\"memory_budget_bytes\" is 0, not a whole number from 1 to 2^53"},
+        {"a budget of 0", with([](auto &p) { p.parameters.memory_budget_bytes = 0; }),
+         "\"memory_budget_bytes" + set + "0, not a whole number from 1 to 2^53"},
         {"a budget of 2^53 + 1",
-         with([](auto &set) { set.memory_budget_bytes = 9007199254740993u; }),
-         "\"memory_budget_bytes\" is 9007199254740993, not a whole number from 1 to 2^53"},
+         with([](auto &p) { p.parameters.memory_budget_bytes = 9007199254740993u; }),
+         "\"memory_budget_bytes" + set + "9007199254740993, not a whole number from 1 to 2^53"},
         {"too_close_depth_m beyond max_depth_m",
-         with([](auto &set) { set.too_close_depth_m = 0.7; }),
-         "\"too_close_depth_m\" 0.7 does not lie between \"min_depth_m\" 0.25 and "
-         "\"max_depth_m\" 0.6"},
-        {"a largest distance of 0", with([](auto &set) { set.max_distance_m[2] = 0.0; }),
-         "\"max_distance_level_2_m\" is 0, not a finite number > 0"},
-        {"a least fitness above 1", with([](auto &set) { set.min_fitness = 1.25; }),
-         "\"min_fitness\" is 1.25, not a number in (0, 1]"},
-        {"an RMSE threshold not finite",
-         with([](auto &set) { set.max_inlier_rmse_m = std::numeric_limits<double>::infinity(); }),
-         "\"max_inlier_rmse_m\" is inf, not a finite number > 0"},
+         with([](auto &p) { p.parameters.too_close_depth_m = 3.5; }),
+         "\"too_close_depth_m\" 3.5 does not lie between \"min_depth_m\" 0.25 and "
+         "\"max_depth_m\" 3"},
+        {"a largest distance of 0", with([](auto &p) { p.parameters.max_distance_m[2] = 0.0; }),
+         "\"max_distance_level_2_m" + set + "0, not a finite number > 0"},
+        {"a least fitness above 1", with([](auto &p) { p.parameters.min_fitness = 1.25; }),
+         "\"min_fitness" + set + "1.25, not a number in (0, 1]"},
+        {"an RMSE threshold not finite", with([](auto &p) {
+             p.parameters.max_inlier_rmse_m = std::numeric_limits<double>::infinity();
+         }),
+         "\"max_inlier_rmse_m" + set + "inf, not a finite number > 0"},
+        {"a truncation multiple below 0",
+         with([](auto &p) { p.parameters.truncation_noise_multiple = -3.0; }),
+         "\"truncation_noise_multiple" + set + "-3, not a finite number > 0"},
+        {"a steepest incidence not finite",
+         with([nan](auto &p) { p.parameters.normals_max_incidence_deg = nan; }),
+         "\"normals_max_incidence_deg" + set},
+        {"a height of 0", with([](auto &p) { p.stream.size.height = 0; }),
+         "\"height_px" + in_stream + "0, not a whole number from 1 to 4294967295"},
+        {"a focal length not finite",
+         with([](auto &p) { p.stream.intrinsics.fy = std::numeric_limits<float>::quiet_NaN(); }),
+         "\"fy_px" + in_stream},
+        {"a principal point not finite", with([inf](auto &p) { p.stream.intrinsics.cy = inf; }),
+         "\"cy_px" + in_stream + "inf, not a finite number"},
+        {"a depth unit of 0", with([](auto &p) { p.stream.depth_unit_m = 0.0f; }),
+         "\"depth_unit_m" + in_stream + "0, not a finite number > 0"},
+        {"a start before 1970", with([](auto &p) { p.start = at_us(-1); }),
+         "\"start_utc\" is -1 us after 1970-01-01T00:00:00Z, not a time from 1970 to 9999"},
+        {"a stop after 9999", with([](auto &p) { p.stop = at_us(253402300800LL * 1000000); }),
+         "\"stop_utc\" is 253402300800000000 us after 1970-01-01T00:00:00Z, not a time from 1970 "
+         "to 9999"},
+        {"a count of frames above 2^53",
+         with([](auto &p) { p.frames = {9007199254740993u, 9007199254740993u, 0, 0}; }),
+         "\"taken" + in_frames + "9007199254740993, not a whole number from 0 to 2^53"},
+        {"frames taken that are not those fused and lost",
+         with([](auto &p) { p.frames = {10, 7, 2, 0}; }),
+         "\"taken\" in \"frames\" 10 is not \"fused\" 7 and \"lost\" 2 together"},
+        {"the frame tracking failed on counted, the scan stopped by the operator",
+         with([](auto &p) { p.frames = {120, 100, 19, 3}; }),
+         "\"taken\" in \"frames\" 120 is not \"fused\" 100 and \"lost\" 19 together, for "
+         "\"end\" \"stopped\""},
+        {"tracking failed, and the frame it failed on not counted", with([](auto &p) {
+             p.frames = {119, 100, 19, 3};
+             p.end = gca::scan_end::tracking_failed;
+         }),
+         "\"taken\" in \"frames\" 119 is not \"fused\" 100, \"lost\" 19 and the frame tracking "
+         "failed on together, for \"end\" \"tracking_failed\""},
+        {"an end that is no enumerator",
+         with([](auto &p) { p.end = static_cast<gca::scan_end>(7); }),
+         "\"end\" is 7, no enumerator of why a scan ended"},
     };
-    for (const auto &refused : refused_sets)
+    for (const auto &r : refused)
     {
         const std::filesystem::path path = directory / "refused_write.json";
-        const gca::scan_parameters parameters = {"db91e0d", gca::object_class::tabletop_object,
-                                                 refused.set};
-        check_write_refused(std::string("parameters writer, ") + refused.what,
-                            gca::write_parameters(path, parameters), path, refused.reason);
+        check_write_refused(std::string("parameters writer, ") + r.what,
+                            gca::write_parameters(path, r.parameters), path, r.reason);
     }
 }
 
@@ -827,9 +1206,7 @@ void test_parameters_refusals(const temporary_directory &directory)
 void test_write_failures(const temporary_directory &directory)
 {
     const std::filesystem::path nowhere = directory / "no_such_directory";
-    const gca::scan_parameters parameters = {
-        "db91e0d", gca::object_class::tabletop_object,
-        gca::parameters_of(gca::object_class::tabletop_object)};
+    const gca::scan_parameters parameters = example_parameters();
     check_write_refused("model writer, no directory",
                         gca::write_model(nowhere / "full.ply", test_model()), nowhere / "full.ply",
                         "cannot create");
@@ -903,6 +1280,7 @@ int main()
     test_model_normals(directory);
     test_trajectory_round_trip(directory);
     test_trajectory_refusals(directory);
+    test_utc_time();
     test_parameters_round_trip(directory);
     test_parameters_refusals(directory);
     test_parameters_strings(directory);

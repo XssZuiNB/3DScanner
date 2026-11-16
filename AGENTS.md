@@ -27,13 +27,14 @@ registration until each agreed with it, and is deleted; each method document kee
 as measured (docs/methods/; CODING_STANDARDS.md, "The rewrite's code"), and its code stands in git
 at 74dda68.
 
-The tree today: `src/` holds one library per directory, and `src/camera/` two, so that only the
-Orbbec camera links OrbbecSDK. Each library links only libraries above it in this table
+The tree today: `src/` holds one library per directory, `src/camera/` two, so that only the
+Orbbec camera links OrbbecSDK, and `src/scan/` two, so that the programs that only read and write a
+scan's files link no CUDA. Each library links only libraries above it in this table
 (`src/CMakeLists.txt`; the file of each thing: §7 rule 4):
 
 | library | holds | links, of the tree's |
 |---|---|---|
-| `types` | header only: the plain structs (camera parameters, a frame's description, the camera's pose, an IMU sample, a model's point), console colors | none |
+| `types` | header only: the plain structs (camera parameters, a frame's description, the camera's pose, a trajectory's entry, an IMU sample, a model's point), console colors | none |
 | `camera` | the frame with its IMU samples, the frame source seam, the sequence on disk, the POSIX file calls, the Orbbec camera's rules and its IMU's queue, which need no camera, the seam of the camera's run-time properties and the hold of the color exposure and white balance in front of a camera; the offline tests link it without OrbbecSDK | `types` |
 | `orbbec_camera` | `orbbec_device`, the camera as a frame source, which delivers depth aligned to color, so the GPU code sees one resolution and one set of intrinsics, and with each frame the IMU's samples, and as the camera's run-time properties | `camera` |
 | `gpu` | the GPU array and image, the pool that closes, a frame's upload, a stage kernel's launch | `types`, `camera` for the frame it uploads |
@@ -43,7 +44,8 @@ Orbbec camera links OrbbecSDK. Each library links only libraries above it in thi
 | `tracking` | the per-frame path's steps 1 to 6 for each frame: the upload, the pyramid, the ray cast from the last tracked pose, the registration, the check, and the fusion when it passes; no kernel of its own | `fusion`, `registration` |
 | `refinement` | the pose graph of keyframes and its solve, on the host | `types`, `registration` for the SE(3) exponential |
 | `separation` | the proposal of the support plane and the box from a full model and its trajectory, the least-squares plane, on the host | `types` only, so that the scan can call it |
-| `scan` | the files a scan keeps, the parameters of each object class | `types`, `camera` for the POSIX file calls |
+| `scan` | the files a scan keeps, a scan's time in UTC, the parameters of each object class; host only, so that `box_fit` and the viewer's loop link no CUDA | `types`, `camera` for the POSIX file calls and the source's description |
+| `scan_interface` | the scan interface's library: today the stages' parameters of an object class's set, the one copy of each conversion | `scan`, `tracking` |
 
 The programs in `apps/` keep their command lines and their work (the viewer's loop, the three
 measurements) in libraries of their own, which the offline tests drive. `orbbec_viewer` runs its
@@ -249,7 +251,7 @@ checkers; these are the rules no checker holds.
 
    | concern | home |
    |---|---|
-   | camera parameters, a frame's description, the camera's pose, an IMU sample and a model's point (plain structs), the one check that intrinsics can be used, the one check of a pose, console colors | `src/types/` |
+   | camera parameters, a frame's description, the camera's pose, a trajectory's entry, an IMU sample and a model's point (plain structs), the value comparison of the intrinsics and of a frame's description (`operator==`, which a parameters file's round trip uses; a sequence compares descriptions bit for bit, `src/camera/sequence_format.*`), the one check that intrinsics can be used, the one check of a pose, console colors | `src/types/` |
    | the frame with its lists of IMU samples and their reserve; the frame source seam | `src/camera/frame.*`; `src/camera/frame_source.hpp` |
    | the sequence on disk (docs/SEQUENCE_FILE.md): its layout, writer and reader, the comparison of two frames' descriptions bit for bit, the rule of each sensor's samples' order (`src/camera/sequence_format.*`); the POSIX file calls the writers and readers share | `src/camera/sequence_*`; `src/camera/posix_file.*` |
    | Orbbec: alignment, color decoding, the IMU's sensors and their callbacks, OrbbecSDK's report as plain data, the color properties read and written | `src/camera/orbbec_device.*` |
@@ -268,7 +270,8 @@ checkers; these are the rules no checker holds.
    | the SE(3) exponential, the registration's and the pose graph's pose update; the check that a transform is rigid; the one copy of each | `src/registration/se3.*` |
    | refinement's pose graph (docs/methods/refinement.md): its nodes and edges, the robust weight, the damped Gauss-Newton on SE(3) on the host in double, the result, the constants that end a solve | `src/refinement/pose_graph.*` |
    | separation's proposal (docs/methods/separation.md): the trajectory's up and meeting point, the window, the support plane and its conditions, the footprint's pieces, the box, its parameters, result and constants; the orthogonal least-squares plane, which distortion_check's measurement, the acceptance tool's box fit and depth_noise's measurement call too | `src/separation/proposal.*`; `src/separation/plane_fit.*` |
-   | the files a scan keeps (docs/SCAN_FILES.md); the parameters of each object class | `src/scan/` |
+   | the files a scan keeps (docs/SCAN_FILES.md), with the closed set of why a scan ended; a scan's time in UTC and its one text; the parameters of each object class | `src/scan/file_io.*`, `model_file.*`, `trajectory_file.*`, `parameters_file.*`; `src/scan/utc_time.*`; `src/scan/object_class.*` |
+   | the stages' parameters of an object class's set: tracking's, the registration's and the sparse TSDF's of the live or the full model, the one copy of each conversion | `src/scan/stage_parameters.*` |
    | the acceptance tool's box fit: the box's axes from the normals, its faces, their planes and spreads, its edges, its refusals and the lines the hardware acceptance reads | `apps/box_measure.*` |
    | `depth_noise`'s measurement of c (docs/methods/depth-noise.md): the sequence read twice, each pixel's sums, the pixels kept, the depth bins, the rounding's share, the drift between the halves, the spatial error from the plane, the fit of c, its refusals and the lines the measurement on the camera reads | `apps/depth_noise_measure.*` |
    | `orbbec_viewer`'s loop on a frame source: the first frame, its GPU path (a stream, the organized points, the snapshot's normals), the report line, the window, the snapshots as a model's PLY, the sequence it writes | `apps/viewer_loop.*` |
@@ -277,7 +280,7 @@ checkers; these are the rules no checker holds.
    | the tests' copy of a frame, to check a source left it as it was; the comparison of IMU samples bit for bit | `tests/frame_copy.hpp` |
    | the sparse TSDF tests' lookups of blocks, their readings of the usage, the method's starting truncation, a pose as the sparse TSDF takes it, a frame's buffers on the GPU and the extraction of the model's points with their download | `tests/sparse_tsdf_helpers.hpp` |
    | the sparse TSDF tests that fuse frames: a case's budget, an object class's model, the fusion of a frame, walls facing the camera, the scenes of a sphere on a plane with their walks, a point's nearest known surface | `tests/sparse_tsdf_scenes.hpp` |
-   | the tests that register frames: the normals' parameters, a measured range for the organized points, the registration's parameters of an object class's set and the object classes' starting values, the tabletop object's and the large object's scenes, poses and known motions, a result's printing and its check against the known motion | `tests/registration_cases.hpp` |
+   | the tests that register frames: the normals' parameters, a measured range for the organized points, the object classes' starting values of the registration, the tabletop object's and the large object's scenes, poses and known motions, a result's printing and its check against the known motion | `tests/registration_cases.hpp` |
    | the stages' test frames: the camera's stream sizes and intrinsics, the depth ranges the stages' tests were measured at, the tabletop sphere, a scene's frames rendered, with depth noise or without, frames built from functions of the pixel | `tests/stage_frames.hpp` |
    | the stages' tests' checks of an organized picture: a pixel's index, a float3 in double, the zero mark, angles, medians, the rule of one surface in double with its margin | `tests/stage_checks.hpp` |
    | the tests' rigid transforms in double: one built from an axis, an angle and a shift, how far one lies from a known one, its tolerance and check | `tests/transform_checks.hpp` |

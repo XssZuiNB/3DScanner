@@ -2,11 +2,11 @@
 /// @file registration_cases.hpp
 /// What the tests that register frames against a surface share (registration/registration.hpp,
 /// docs/methods/registration.md): the normals' parameters and the depth ranges their pyramids are
-/// built with, the registration's parameters of an object class's set and the object classes'
-/// starting values, the parameters with the coarser levels skipped, the tabletop object's and the
-/// large object's scenes, the poses they are seen from and their known motions, and the printing
-/// of a result with the check that a converged one carries the known motion. Header only; each
-/// test program is one translation unit.
+/// built with, the object classes' starting values of the registration, converted by the library
+/// (scan/stage_parameters.hpp), the parameters with the coarser levels skipped, the tabletop
+/// object's and the large object's scenes, the poses they are seen from and their known motions,
+/// and the printing of a result with the check that a converged one carries the known motion.
+/// Header only; each test program is one translation unit.
 
 #pragma once
 
@@ -17,11 +17,11 @@
 #include "registration/normal_equations.hpp"
 #include "registration/registration.hpp"
 #include "scan/object_class.hpp"
+#include "scan/stage_parameters.hpp"
 #include "stage_frames.hpp"
 #include "synthetic_source.hpp"
 #include "transform_checks.hpp"
 
-#include <cstddef>
 #include <cstdio>
 #include <optional>
 #include <string>
@@ -62,34 +62,17 @@ inline const gca::organized_points_parameters tabletop_range =
 inline const gca::organized_points_parameters large_range =
     range_of(gca::object_class::large_object);
 
-/// Gives the registration's parameters of a set of an object class's parameters: each level's
-/// d_max and most iterations, δ_G and λ, rounded to float. The one copy of this conversion until
-/// the scan interface takes it over (scan-interface-first-whole-scan).
-/// @param set [in] the set (scan/object_class.hpp).
-/// @return the registration's parameters.
-inline gca::registration_parameters registration_parameters_of(
-    const gca::object_class_parameters &set)
-{
-    gca::registration_parameters p{};
-    for (std::size_t level = 0; level < gca::frame_pyramid::level_count; level++)
-        p.levels[level] = {static_cast<float>(set.max_distance_m[level]),
-                           set.max_iterations[level]};
-    p.huber_threshold_m = static_cast<float>(set.huber_threshold_m);
-    p.point_to_plane_weight = static_cast<float>(set.point_to_plane_weight);
-    return p;
-}
-
 /// The tabletop object class's starting values, the full method: d_max 5, 10 and 20 cm and 20, 10
 /// and 10 iterations at levels 0, 1 and 2, δ_G 5 mm, λ 0.968 [?: initial;
 /// src/scan/object_class.cpp].
 inline const gca::registration_parameters tabletop_parameters =
-    registration_parameters_of(gca::parameters_of(gca::object_class::tabletop_object));
+    gca::registration_parameters_of(gca::parameters_of(gca::object_class::tabletop_object));
 
 /// The large object class's starting values, the full method: d_max 10, 20 and 40 cm and 20, 10
 /// and 10 iterations at levels 0, 1 and 2, δ_G 30 mm, λ 0.968 [?: initial;
 /// src/scan/object_class.cpp].
 inline const gca::registration_parameters large_parameters =
-    registration_parameters_of(gca::parameters_of(gca::object_class::large_object));
+    gca::registration_parameters_of(gca::parameters_of(gca::object_class::large_object));
 
 /// Gives parameters with the coarser levels skipped: level 0 alone.
 /// @param p [in] the parameters.

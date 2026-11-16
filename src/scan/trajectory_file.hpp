@@ -5,30 +5,20 @@
 /// camera's pose in the models' frame or the mark of tracking loss (docs/SCAN_FILES.md,
 /// "Trajectory"). Numbers are written in their shortest form that reads back exactly, whatever
 /// the locale. The writer refuses, and the reader refuses with the line's number, a pose that is
-/// not finite or whose quaternion's norm differs from 1 by more than 1e-9.
+/// not finite or whose quaternion's norm differs from 1 by more than 1e-9. A frame's entry is
+/// types/trajectory_entry.hpp.
 
 #pragma once
 
 #include "scan/file_io.hpp"
-#include "types/camera_pose.hpp"
+#include "types/trajectory_entry.hpp"
 
-#include <cstdint>
 #include <filesystem>
-#include <optional>
 #include <span>
 #include <vector>
 
 namespace gca
 {
-/// One frame the scanner took.
-struct trajectory_entry
-{
-    std::uint64_t index;             ///< the frame's index (camera/frame.hpp, frame::index())
-    std::uint64_t timestamp_us;      ///< the frame's timestamp, in µs on the source's clock
-    std::optional<camera_pose> pose; ///< the camera's pose (types/camera_pose.hpp); nothing
-                                     ///< when the frame is in tracking loss
-};
-
 /// Writes a trajectory (docs/SCAN_FILES.md, "Trajectory").
 /// @param path [in] the file's path; its directory exists. A file there is replaced.
 /// @param trajectory [in] the frames in the order the scanner took them.

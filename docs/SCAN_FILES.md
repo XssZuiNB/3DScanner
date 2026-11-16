@@ -102,8 +102,9 @@ Example, seven distinct values in the tracked line: frame 7 with the camera's ce
 ## Parameters
 
 JSON, written and read with OpenCV's `cv::FileStorage` on memory (ADR 0002: no other JSON
-library). Example, a large object's scan whose set differs from the object class's own in five
-values, so that every value of it is another:
+library). It holds the set of parameters the scan ran with and the scan's facts. Example, a large
+object's scan whose set differs from the object class's own in eight values, so that every value
+of it is another, stopped by the operator after five minutes:
 
     {
         "format_version": 1,
@@ -116,6 +117,12 @@ values, so that every value of it is another:
             "max_depth_m": 3.0,
             "memory_budget_bytes": 2000000000.0,
             "too_close_depth_m": 4.0000000000000002e-01,
+            "depth_noise_per_m": 4.0000000000000001e-03,
+            "truncation_noise_multiple": 2.5000000000000000e+00,
+            "truncation_min_voxels": 3.0,
+            "normals_radius_px": 2.0,
+            "normals_min_points": 16.0,
+            "normals_max_incidence_deg": 70.0,
             "max_distance_level_0_m": 1.0000000000000001e-01,
             "max_distance_level_1_m": 2.0000000000000001e-01,
             "max_distance_level_2_m": 3.4999999999999998e-01,
@@ -128,7 +135,30 @@ values, so that every value of it is another:
             "max_inlier_rmse_m": 2.0000000000000000e-02,
             "max_turn_rate_deg_s": 90.0,
             "max_speed_m_s": 1.5000000000000000e+00
-        }
+        },
+        "stream": {
+            "width_px": 640.0,
+            "height_px": 400.0,
+            "fx_px": 5.1725000000000000e+02,
+            "fy_px": 5.1750000000000000e+02,
+            "cx_px": 3.1975000000000000e+02,
+            "cy_px": 2.0125000000000000e+02,
+            "depth_unit_m": 1.0000000474974513e-03
+        },
+        "source": {
+            "camera": "Orbbec Gemini 2 L",
+            "firmware_version": "1.5.02",
+            "sdk_version": "2.10.6"
+        },
+        "start_utc": "20261116T093012.250000Z",
+        "stop_utc": "20261116T093512.750000Z",
+        "frames": {
+            "taken": 8990.0,
+            "fused": 8950.0,
+            "lost": 40.0,
+            "not_taken": 12.0
+        },
+        "end": "stopped"
     }
 
 | key | what |
@@ -136,13 +166,19 @@ values, so that every value of it is another:
 | `format_version` | the integer 1 |
 | `commit` | a string, the tree's commit the scanner was built from |
 | `object_class` | the object class the operator chose: `tabletop_object` or `large_object` |
-| `parameters` | the set of parameters in force, an object of the eighteen keys below |
+| `parameters` | the set of parameters in force, an object of the twenty-four keys below |
 | `live_voxel_size_m` | the voxel edge of the live model, in m, finite and > 0 |
 | `full_voxel_size_m` | the voxel edge of the full models, in m, finite and > 0 |
 | `min_depth_m` | the nearest depth a frame contributes, along the camera's z, in m, finite and > 0 |
 | `max_depth_m` | the farthest depth, in m, finite and greater than `min_depth_m` |
 | `memory_budget_bytes` | all of the device memory of the scan's sparse TSDF, its pool of blocks, its hash and their lists and counts (docs/methods/sparse-tsdf.md, "The pool and the memory budget"), in bytes, a whole number from 1 to 2^53 |
 | `too_close_depth_m` | the "too close" notice's threshold, along the camera's z, in m: a frame is too close when at least a quarter of its pixels with depth lie nearer (R36); greater than `min_depth_m` and less than `max_depth_m` |
+| `depth_noise_per_m` | the sparse TSDF's c, the depth noise's coefficient, σ(z) = c z², in 1/m (docs/methods/sparse-tsdf.md, "The truncation distance"), finite and > 0 |
+| `truncation_noise_multiple` | the sparse TSDF's k, the depth noise's standard deviations within the truncation distance, finite and > 0 |
+| `truncation_min_voxels` | the sparse TSDF's μ_min, the least truncation distance, in voxels, finite and > 0 |
+| `normals_radius_px` | the normals' window's half size R, in px (docs/methods/normals.md, "Input"), a whole number from 0 to 2^32 - 1 |
+| `normals_min_points` | the normals' fewest points of a neighbourhood that give a normal, a whole number from 0 to 2^32 - 1 |
+| `normals_max_incidence_deg` | the normals' steepest incidence at which two neighbouring points still count as one surface, in degrees, finite and > 0 |
 | `max_distance_level_0_m`, `max_distance_level_1_m`, `max_distance_level_2_m` | the registration's d_max at levels 0, 1 and 2 (docs/methods/registration.md, "Parameters"), in m, finite and > 0 |
 | `max_iterations_level_0`, `max_iterations_level_1`, `max_iterations_level_2` | the registration's most iterations n_l at levels 0, 1 and 2, a whole number from 0 to 2^32 - 1 |
 | `huber_threshold_m` | the registration's δ_G, in m, finite and > 0 |
@@ -151,24 +187,66 @@ values, so that every value of it is another:
 | `max_inlier_rmse_m` | tracking's e_track, the largest inlier RMSE, in m, finite and > 0 |
 | `max_turn_rate_deg_s` | tracking's ω_max, the hand's largest turn rate, in degrees a second, finite and > 0 |
 | `max_speed_m_s` | tracking's v_max, the hand's largest speed, in m/s, finite and > 0 |
+| `stream` | the frames' size, intrinsics and depth unit, the stream size the frame source was opened for (`src/types/frame_description.hpp`), an object of the seven keys below, each a float of the frame's description written as a double |
+| `width_px`, `height_px` | the frames' size, in px, a whole number from 1 to 2^32 - 1 |
+| `fx_px`, `fy_px` | the focal lengths, in px, finite and > 0 as floats |
+| `cx_px`, `cy_px` | the principal point, in px, pixel centres at whole numbers (`src/types/camera_param.hpp`), finite as floats |
+| `depth_unit_m` | meters per depth value, finite and > 0 as a float |
+| `source` | what delivered the frames (`src/camera/frame_source.hpp`, `describe()`), an object of the three strings below; a source without a version gives the empty string |
+| `camera` | the camera's name, or the kind of source: a sequence's says `sequence` and its path |
+| `firmware_version` | the camera's firmware's version |
+| `sdk_version` | OrbbecSDK's version |
+| `start_utc`, `stop_utc` | the times the scan started and stopped, in UTC to the microsecond as ISO 8601's basic format, `YYYYMMDDTHHMMSS.ffffffZ`, from `19700101T000000.000000Z` to `99991231T235959.999999Z` (`src/scan/utc_time.hpp`); the system's clock, which counts no leap second and may be set back, so the stop is not checked against the start |
+| `frames` | the frames of the scan, an object of the four counts below, each a whole number from 0 to 2^53 |
+| `taken` | the frames the scanner took, each of which entered the per-frame path: those fused, those lost, and, when the scan ended because tracking failed (`end` is `tracking_failed`), the frame it failed on, which tracking gave neither a pose nor tracking loss; so `taken` is `fused` and `lost` together, and 1 more then |
+| `fused` | the frames tracking passed and fused into the live model |
+| `lost` | the frames in tracking loss, of which nothing was fused |
+| `not_taken` | the frames the scanner did not take: those the frame source delivered while the sequence's writer had no room, and the gaps in the frames' indices, frames the source did not deliver |
+| `end` | why the scan ended, one key of the closed set below |
+
+Why a scan ended is one of seven keys, never free text: OpenCV writes only some strings as JSON
+("Strings" below), and a reason in the operator's words belongs to the scan's state, not to its
+file (`src/scan/parameters_file.hpp`, `scan_end`).
+
+| `end` | the scan ended because |
+|---|---|
+| `stopped` | the operator stopped it |
+| `source_timeout` | the frame source gave no frame within its time limit |
+| `source_failure` | the frame source failed |
+| `source_end` | the frame source had no frame left, as a sequence at its end |
+| `tracking_failed` | tracking failed on a frame (`src/tracking/tracker.hpp`, `tracking_state::failed`) |
+| `writer_failed` | the sequence's writer failed |
+| `shut_down` | the service was asked to stop during the scan |
 
 The ranges each stage takes these values in are the stage's own, narrower than the file's: the
 scan's request of its buffers refuses a value outside them, naming it (`src/tracking/tracker.hpp`,
-`src/fusion/sparse_tsdf.hpp`), so a file can hold a set the scanner does not run with.
+`src/fusion/sparse_tsdf.hpp`, `src/geometry/organized_normals.hpp`), so a file can hold a set the
+scanner does not run with. The stages take the set's values through one conversion each
+(`src/scan/stage_parameters.hpp`), a double that the stage holds as a float rounded to the
+nearest float.
 
 Every key stands in every file; there is no optional key. A field added later that can lack a
 value states its empty form here when it is added, so the file keeps one version. A file written
 before the thirteen keys from `too_close_depth_m` on joined the set (2026-11-15, evening) lacks
-them, and the reader refuses it: `no key "too_close_depth_m" in "parameters"`.
+them, and the reader refuses it: `no key "too_close_depth_m" in "parameters"`. A file written
+before the set's six keys of the sparse TSDF's truncation and the normals and the scan's facts
+joined (2026-11-16) lacks them too: `no key "stream" at the top level`.
 
 Each object class's own set stands in `src/scan/object_class.cpp`, each value with its
 evidence. A scan stores the set it was made with, and a stored set is read back as it stands,
 so the set in a file need not be its class's own.
 
-The writer writes each parameter as a double with 17 significant digits, or as a whole number
+The writer writes each number as a double with 17 significant digits, or as a whole number
 with `.0`, and the reader gets every bit back [M 2026-11-14: OpenCV 4.8.0, 200 000 random
-doubles]. A budget up to 2^53 and a count up to 2^32 - 1 are doubles exactly [S: IEEE 754
-binary64, a 53-bit significand].
+doubles]. A budget and a count of frames up to 2^53, and a count of iterations or points and a
+width or height up to 2^32 - 1, are doubles exactly [S: IEEE 754 binary64, a 53-bit
+significand]; so is every float of the stream, which the reader rounds back to the same float. A
+number of the stream that is not finite or lies beyond the largest float is refused before it is
+rounded; one that rounds to 0 as a float, such as a depth unit of 1e-50, is refused as not > 0.
+One bit does not come back: OpenCV writes -0.0 as `0.0` [M 2026-11-16: OpenCV 4.8.0], so a
+principal point of -0 reads back as +0, equal by value; no other number of the file can be 0.
+ctest `scan_files` compares each round trip by value, which for numbers other than 0 is bit for
+bit, and the principal point bit for bit.
 
 **Strings.** OpenCV's JSON writer gives text that both its own reader and Python's `json.loads`
 take back unchanged only for some strings [M 2026-11-14: OpenCV 4.8.0, Python 3.10]: it writes
@@ -178,8 +256,11 @@ byte other than `\b \f \n \r \t` raw, which is no JSON; and a string of more tha
 does not read back (4097 make the writer throw). So a string in the file is at most 4095
 characters of printable ASCII (0x20 to 0x7e) without the apostrophe, and does not both start and
 end with a double quote. A byte above 0x7e is refused too, as the reader checks no UTF-8. A
-commit hash and the object classes' names lie in this set. The writer refuses another string
-and the reader refuses one, naming the key.
+commit hash, the object classes' names, a time's text and the keys of why a scan ended lie in
+this set. The source's strings are the source's own: a camera's name and versions as OrbbecSDK
+reports them, and a sequence's path, which can hold an apostrophe. The writer refuses another
+string and the reader refuses one, naming the key, so a scan whose source describes itself with
+such a string has to refuse it before it writes anything.
 
 The reader refuses, naming the key:
 
@@ -188,12 +269,15 @@ The reader refuses, naming the key:
 - a `format_version` other than the integer 1; it checks this first, so a file of another
   version is refused as such;
 - a key it does not know, a key that stands twice, and a missing key, at the top level and in
-  `parameters`;
-- a value of another type, an unknown object class, a string outside the set above, a
-  parameter out of the range above, and a count of iterations that is no whole number from 0 to
-  2^32 - 1;
-- a parameter written as an integer: OpenCV reads an integer beyond 2147483647 wrapped to 32
-  bits without a word, so every parameter is a number with a decimal point or an exponent;
+  `parameters`, `stream`, `source` and `frames`;
+- a value of another type, an unknown object class, a string outside the set above, a value
+  out of the range above, a count of iterations or points that is no whole number from 0 to
+  2^32 - 1, a width or height that is no whole number from 1 to 2^32 - 1, a count of frames that
+  is no whole number from 0 to 2^53, frames taken that are not those fused and lost together and
+  the frame tracking failed on when `end` is `tracking_failed`, a
+  time of another form or a day the calendar lacks, and an `end` outside the seven keys;
+- a number written as an integer: OpenCV reads an integer beyond 2147483647 wrapped to 32
+  bits without a word, so every number is written with a decimal point or an exponent;
 - a text that OpenCV's parser does not read.
 
 What OpenCV's parser still does that strict JSON does not [M 2026-11-14: OpenCV 4.8.0]:

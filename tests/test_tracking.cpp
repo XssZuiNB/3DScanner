@@ -31,6 +31,7 @@
 #include "registration/registration.hpp"
 #include "registration_cases.hpp"
 #include "scan/object_class.hpp"
+#include "scan/stage_parameters.hpp"
 #include "sparse_tsdf_helpers.hpp"
 #include "sparse_tsdf_scenes.hpp"
 #include "stage_frames.hpp"
@@ -83,38 +84,36 @@ constexpr gca_test::synthetic_depth_gap depth_gap = {6, 3};
 /// [?: a choice].
 constexpr std::uint32_t point_room = 1'000'000;
 
-/// Gives tracking's parameters of a set of an object class's parameters: the pyramid's depth
-/// range, each limit half a depth unit inside, with the normals' starting values; the
-/// registration's values; the check's thresholds. The one copy of this conversion until the scan
-/// interface takes it over (scan-interface-first-whole-scan).
-/// @param set [in] the set (scan/object_class.hpp).
-/// @return tracking's parameters.
-gca::tracking_parameters tracking_parameters_of(const gca::object_class_parameters &set)
-{
-    return {{gca_test::inside({set.min_depth_m, set.max_depth_m}), gca_test::normals_parameters},
-            gca_test::registration_parameters_of(set),
-            {set.min_fitness, set.max_inlier_rmse_m, set.max_turn_rate_deg_s, set.max_speed_m_s}};
-}
-
 /// The tabletop object class's set (src/scan/object_class.cpp).
 const gca::object_class_parameters tabletop_set =
     gca::parameters_of(gca::object_class::tabletop_object);
 
-/// Gives the test's tracking parameters: the tabletop object class's, e_track the test's value.
+/// Gives the test's tracking parameters: the tabletop object class's (scan/stage_parameters.hpp),
+/// the pyramid's depth range each limit half a depth unit inside, so that no depth value lies on a
+/// limit, and e_track the test's value.
 /// @param max_inlier_rmse_m [in] e_track, in m.
 /// @return the parameters.
 gca::tracking_parameters test_parameters(double max_inlier_rmse_m = noise_free_rmse_m)
 {
-    gca::tracking_parameters p = tracking_parameters_of(tabletop_set);
+    gca::tracking_parameters p = gca::tracking_parameters_of(tabletop_set);
+    p.pyramid.range = gca_test::inside({tabletop_set.min_depth_m, tabletop_set.max_depth_m});
     p.thresholds.max_inlier_rmse_m = max_inlier_rmse_m;
     return p;
 }
 
-/// The live model's parameters: a sparse TSDF of 273 MB (gca_test::case_budget), the tabletop
-/// object's live voxel size and far depth, the truncation's starting values.
-const gca::sparse_tsdf_parameters live_model = {
-    gca_test::case_budget, static_cast<float>(tabletop_set.live_voxel_size_m),
-    gca_test::method_truncation, static_cast<float>(tabletop_set.max_depth_m)};
+/// Gives the live model's parameters: the tabletop object class's (scan/stage_parameters.hpp), its
+/// live voxel size, truncation and far depth, in a sparse TSDF of 273 MB (gca_test::case_budget).
+/// @return the parameters.
+gca::sparse_tsdf_parameters live_model_parameters()
+{
+    gca::sparse_tsdf_parameters p =
+        gca::sparse_tsdf_parameters_of(tabletop_set, gca::fused_model::live);
+    p.memory_budget_bytes = gca_test::case_budget;
+    return p;
+}
+
+/// The live model's parameters (live_model_parameters()).
+const gca::sparse_tsdf_parameters live_model = live_model_parameters();
 
 /// Returns the name of a check's outcome, for the printed lines.
 /// @param outcome [in] the outcome.

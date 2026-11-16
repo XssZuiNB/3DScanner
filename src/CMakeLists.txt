@@ -11,11 +11,12 @@
 #   registration <- refinement (the pose graph, on the host; registration's SE(3) exponential)
 #   types <- separation (the proposal of the support plane and the box, on the host; Eigen)
 #   types <- camera <- scan (Eigen, OpenCV's core)
+#   scan, tracking <- scan_interface (the stages' parameters of an object class's set)
 # Every library includes from src/ ("gpu/gpu_pool.hpp"); types carries that directory.
 
 # ---------------------------------------------------------------- types (header only)
-# The plain structs, the camera parameters, a frame's description, the camera's pose and a model's
-# point, and the console colors, which camera, orbbec_camera and gpu use. types carries Eigen
+# The plain structs, the camera parameters, a frame's description, the camera's pose, a trajectory's
+# entry and a model's point, and the console colors, which camera, orbbec_camera and gpu use. types carries Eigen
 # because the camera's pose (types/camera_pose.hpp) holds Eigen's vector and quaternion, plain value
 # types that the sequence (camera) and the trajectory (scan) share, and a model's point
 # (types/model_point.hpp) Eigen's vectors, which the model's file (scan) and separation share.
@@ -166,8 +167,9 @@ add_library(
 target_link_libraries(separation PUBLIC types Eigen3::Eigen)
 
 # ---------------------------------------------------------------- scan
-# The files a scan keeps and the parameters of each object class (docs/SCAN_FILES.md); host only.
-# OpenCV's core reads and writes the parameters' JSON.
+# The files a scan keeps, a scan's time in UTC and the parameters of each object class
+# (docs/SCAN_FILES.md); host only, so that box_fit and the viewer's loop, which write and read
+# models, link no CUDA. OpenCV's core reads and writes the parameters' JSON.
 add_library(
     scan
     STATIC
@@ -181,9 +183,19 @@ add_library(
     scan/parameters_file.hpp
     scan/trajectory_file.cpp
     scan/trajectory_file.hpp
+    scan/utc_time.cpp
+    scan/utc_time.hpp
 )
-# PUBLIC: the headers hold Eigen types and camera's write_result (camera/posix_file.hpp).
+# PUBLIC: the headers hold Eigen types, camera's write_result (camera/posix_file.hpp) and the source's
+# description (camera/frame_source.hpp).
 target_link_libraries(scan PUBLIC types camera Eigen3::Eigen PRIVATE opencv_core)
+
+# ---------------------------------------------------------------- scan_interface
+# The scan interface's library, beside the host-only scan: today the stages' parameters of an object
+# class's set (scan/stage_parameters.hpp), the one copy of each conversion.
+add_library(scan_interface STATIC scan/stage_parameters.cpp scan/stage_parameters.hpp)
+# PUBLIC: the header holds scan's object class, tracking's, registration's and fusion's parameters.
+target_link_libraries(scan_interface PUBLIC scan tracking)
 
 # Separable compilation stays off: no device function or variable is used outside the
 # translation unit that defines it, so nothing needs a device link [M 2026-11-13: every test

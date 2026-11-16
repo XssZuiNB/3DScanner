@@ -49,6 +49,11 @@ struct source_description
                                   ///< of source
     std::string firmware_version; ///< the camera's firmware; empty for a source without one
     std::string sdk_version;      ///< OrbbecSDK's version; empty for a source without it
+
+    /// Compares two descriptions string by string.
+    /// @param other [in] the other description.
+    /// @return whether the three strings are equal.
+    bool operator==(const source_description &other) const = default;
 };
 
 /// The seam every source of frames stands behind. One thread at a time may use a source.

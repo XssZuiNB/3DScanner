@@ -24,7 +24,9 @@ too few neighbours on its surface gets no normal and is marked so. The code is
   | `max_incidence_deg`, θ | the steepest incidence, the angle between a surface's normal and the line of sight, at which two neighbouring points still count as one surface | above 0, at most 89 | 75 |
 
   Why these values, and what each range rules out, stands below with the rule it belongs to.
-  The stage's caller passes them; they are no object class's yet.
+  Each object class's set holds them, the same in both (`src/scan/object_class.cpp`), and a scan
+  passes them to the pyramid through tracking (`src/scan/stage_parameters.hpp`); the stage's
+  tests name their own.
 
 ## Output
 

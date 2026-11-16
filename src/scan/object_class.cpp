@@ -52,6 +52,26 @@ constexpr std::optional<class_row> row_of(object_class kind) noexcept
                 // docs/HARDWARE.md], the near depth of 2026-11-14, now the notice's threshold
                 // [?: initial, the user's choice, 2026-11-15, evening].
                 .too_close_depth_m = 0.30,
+                // The datasheet's bound, 2 % at 2 m [?: the datasheet's bound, until the camera's
+                // depth noise is measured: docs/methods/sparse-tsdf.md, "The truncation distance"];
+                // measure-depth-noise-on-the-camera measures it.
+                .depth_noise_per_m = 0.01,
+                // Three standard deviations [?: initial, docs/methods/sparse-tsdf.md, "The
+                // truncation distance"].
+                .truncation_noise_multiple = 3.0,
+                // A voxel below the truncation on each side of a zero crossing with room to spare,
+                // its half the ray cast's step [?: initial, docs/methods/sparse-tsdf.md, "The
+                // truncation distance"].
+                .truncation_min_voxels = 4.0,
+                // A 7 x 7 window, the largest the stage takes [?: initial, docs/methods/normals.md,
+                // "Input"].
+                .normals_radius_px = 3,
+                // Half the 7 x 7 window rounded up [?: initial, docs/methods/normals.md, "When a
+                // pixel gets no normal"].
+                .normals_min_points = 25,
+                // A surface seen at more than 75 degrees gives few pixels and poor depth
+                // [?: initial, docs/methods/normals.md, "One surface, or a depth edge"].
+                .normals_max_incidence_deg = 75.0,
                 // 5 cm at level 0, the prototype's correspondence distance [S: CUDA_3D's
                 // apps/app.cpp], doubled at each coarser level, whose benefit is measured
                 // (docs/methods/registration.md, "Coarse to fine") [?: initial].
@@ -102,6 +122,24 @@ constexpr std::optional<class_row> row_of(object_class kind) noexcept
                 // The near depth of 2026-11-14, now the notice's threshold [?: initial, the user's
                 // choice, 2026-11-15, evening].
                 .too_close_depth_m = 0.40,
+                // The same camera as the tabletop object's, so its depth noise [?: the datasheet's
+                // bound, docs/methods/sparse-tsdf.md, "The truncation distance"].
+                .depth_noise_per_m = 0.01,
+                // As the tabletop object's [?: initial, docs/methods/sparse-tsdf.md, "The
+                // truncation distance"].
+                .truncation_noise_multiple = 3.0,
+                // As the tabletop object's [?: initial, docs/methods/sparse-tsdf.md, "The
+                // truncation distance"].
+                .truncation_min_voxels = 4.0,
+                // As the tabletop object's, a 7 x 7 window [?: initial, docs/methods/normals.md,
+                // "Input"].
+                .normals_radius_px = 3,
+                // As the tabletop object's, half the 7 x 7 window rounded up [?: initial,
+                // docs/methods/normals.md, "When a pixel gets no normal"].
+                .normals_min_points = 25,
+                // As the tabletop object's [?: initial, docs/methods/normals.md, "One surface, or a
+                // depth edge"].
+                .normals_max_incidence_deg = 75.0,
                 // Twice the tabletop object's: the depth noise by the datasheet's bound is 6.8
                 // times as large at the middle of the range [S: computed,
                 // docs/methods/registration.md, "Parameters"] [?: initial].

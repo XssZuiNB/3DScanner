@@ -109,8 +109,10 @@ section 5]. Here it follows the camera's depth noise at the measured depth z_m:
 The sparse TSDF takes the voxel size v, the rule's c, k and μ_min, and the far depth z_max, the
 farthest depth a frame contributes, as its parameters when it is requested
 (`gca::sparse_tsdf_parameters`) and keeps them for every operation, so that the allocation, the
-integration and the ray cast use the same μ. The scan fills them, v and z_max from the object
-class; the tests name the values above. The request refuses a value outside its range, so that a
+integration and the ray cast use the same μ. Each object class's set holds c, k and μ_min, the
+values above in both (`src/scan/object_class.cpp`), with its voxel sizes and its far depth, and
+a scan fills them from the set, v the live model's or the full model's
+(`src/scan/stage_parameters.hpp`); the stage's tests name the values above. The request refuses a value outside its range, so that a
 mistaken value, a unit's factor of 1000 among them, is a refusal by name [?: a choice, the
 user's, 2026-11-14, each for the reason given]:
 

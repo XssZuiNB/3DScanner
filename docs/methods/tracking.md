@@ -33,11 +33,12 @@ threshold the object class holds ("Parameters").
   error, which no state of the scan explains; and Δt, which the step's limit grows with ("The step
   a hand can make"), would be 0 or less.
 * **The parameters** (`gca::tracking_parameters`), each the object class's
-  (`src/scan/object_class.cpp`): the pyramid's depth range and normals'
+  (`src/scan/object_class.cpp`), converted once (`gca::tracking_parameters_of()`,
+  `src/scan/stage_parameters.hpp`): the pyramid's depth range and normals'
   (docs/methods/frame-pyramid.md); the registration's (docs/methods/registration.md,
   "Parameters"); the check's thresholds ("Parameters" below). The live model's sparse TSDF takes
-  its own (docs/methods/sparse-tsdf.md): the object class's live voxel size, memory budget and far
-  depth. The depth range is 0.25 m to 0.6 m for the tabletop object and 0.25 m to 3.0 m for the
+  its own (docs/methods/sparse-tsdf.md, `gca::sparse_tsdf_parameters_of()`): the object class's
+  live voxel size, memory budget, truncation and far depth. The depth range is 0.25 m to 0.6 m for the tabletop object and 0.25 m to 3.0 m for the
   large object [?: initial, the user's choices of 2026-11-15, evening]: 0.25 m is the datasheet's
   least depth [S: datasheet, docs/HARDWARE.md], so what the camera sees nearer than the object
   class's near depth is tracked and fused like the rest (R36); the far depth of the tabletop
