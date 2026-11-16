@@ -332,6 +332,63 @@ table's order of size and voxel: 1.037, 1.392, 2.416 and 3.048 ms at 24; 1.115, 
 3.037 ms at 96; 1.151, 1.612, 2.614 and 3.384 ms at 384 [M 2026-11-15, 01:47 to 01:51, as the
 table]. So 24 is kept: 0.4 % longer to 8.2 % shorter than 96, 7.6 % to 13.7 % shorter than 384.
 
+**The extraction** (docs/methods/sparse-tsdf.md, "The extraction"): `sparse_tsdf::extract()`, the
+call with its one wait, by `std::chrono::steady_clock`, on the walk of
+`tests/test_scan_interface.cpp`, 240 poses 1.5° apart at 640x400, every frame tracked, fused by
+the tracker into the tabletop object's live model (2 mm) or into a sparse TSDF of its full voxel
+size (1 mm), at budgets of 272891920 bytes (S = 2^18), 1.0 GB (2^20) and 2.0 GB (2^21), after 1,
+30, 120 and 240 frames. The method: a scratch program with the committed kernel, which took one
+slot a thread block per step, and the candidates beside it in one copy of `sparse_tsdf.cu`; at
+each count each candidate's points compared with the committed kernel's as sets, bit for bit, then
+each called 9 rounds back to back in an order that turns each round, into a buffer of 2^21 points;
+under the build lock, MAXN_SUPER by `nvpmodel -q`, the GPU at 1020 MHz at every round's start but
+each count's first (306 to 816 MHz) [M 2026-11-16, 21:45:39 to 21:49:35; MemAvailable 4.01 GB
+before each 2.0 GB run, the monitor's least 1754 MB; the kernel log empty after it]. Every
+candidate gave the committed kernel's points and count in all 96 comparisons. Medians in ms at the four counts: the live model
+2682, 4472, 7640 and 7932 blocks (96396, 160244, 280422 and 283737 points), the full model 12599,
+21078, 37239 and 39253 blocks (426447, 696239, 1172426 and 1162601 points):
+
+| model | S | one slot a step (before) | chunks, 3 blocks | chunks, no bound | list pass | blocks in use |
+|---|---|---|---|---|---|---|
+| live | 2^18 | 19.0 / 21.5 / 27.7 / 29.9 | 1.9 / 3.3 / 5.6 / 5.6 | 2.8 / 4.9 / 7.7 / 7.7 | 2.6 / 5.0 / 9.6 / 9.9 | 2.4 / 4.7 / 9.5 / 9.4 |
+| live | 2^20 | 113 / 140 / 136 / 138 | 2.5 / 3.9 / 5.9 / 6.0 | 4.0 / 6.1 / 8.9 / 9.2 | 2.7 / 5.0 / 9.8 / 10.0 | 2.5 / 4.5 / 9.2 / 9.7 |
+| live | 2^21 | 282 / 372 / 374 / 359 | 2.9 / 4.4 / 7.2 / 6.8 | 4.4 / 6.6 / 10.6 / 10.6 | 2.8 / 4.9 / 10.0 / 9.8 | 2.4 / 4.5 / 9.4 / 9.3 |
+| full | 2^18 | 36.5 / 59.7 / 104 / 109 | 9.2 / 18.0 / 33.9 / 34.9 | 11.9 / 23.9 / 43.9 / 45.2 | 16.6 / 38.2 / 94.3 / 101 | 16.4 / 35.3 / 75.2 / 79.5 |
+| full | 2^20 | 136 / 166 / 212 / 219 | 8.7 / 15.5 / 26.5 / 26.5 | 12.9 / 22.4 / 34.2 / 34.1 | 17.1 / 41.9 / 108 / 115 | 16.8 / 37.0 / 79.2 / 81.2 |
+| full | 2^21 | 331 / 385 / 440 / 437 | 8.5 / 14.5 / 24.1 / 24.4 | 13.2 / 21.0 / 33.3 / 33.6 | 17.0 / 45.5 / 121 / 129 | 15.6 / 34.8 / 77.0 / 81.2 |
+
+"Chunks, 3 blocks" had three barriers a chunk, the third after the list's blocks; "chunks, no
+bound" is the same without its launch bounds' 3 blocks: 57 registers, 2 thread blocks a
+multiprocessor. "List pass": a kernel of one thread per slot lists the held slots, then one thread
+block for each entry. "Blocks in use": one thread block for each block number below the claims,
+its slot from an array of 4 bytes a block, filled for the measurement by a pass over the slots of
+0.14 to 1.0 ms, not counted. Both took their buffers outside the pool.
+
+The landed kernel is "chunks, 3 blocks" with two barriers a chunk, the third not needed
+(docs/methods/sparse-tsdf.md, "The sweep over the slots"); its machine code is the scratch
+program's "two barriers" byte for byte (`cuobjdump -sass`, the encodings compared, its name aside)
+[B 2026-11-16]. Timed as above back to back against the three barriers and the committed kernel
+[M 2026-11-16, 23:14:25 to 23:16:39, under the build lock and the memory guard, MemAvailable 3676
+to 3704 MB before each run and never below 2000 MB during them by the guard's log, the GPU at 1020
+MHz at every round's start but each count's first two (306 to 816 MHz); the kernel log empty after
+it], the same points and count in all 32 comparisons; medians in ms at the counts above:
+
+| model | S | one slot a step (before) | three barriers | two barriers (landed) |
+|---|---|---|---|---|
+| live | 2^18 | 19.0 / 21.8 / 27.6 / 29.9 | 1.93 / 3.29 / 5.57 / 5.56 | 1.97 / 3.36 / 5.67 / 5.64 |
+| live | 2^21 | 284 / 374 / 378 / 360 | 3.15 / 4.44 / 6.94 / 6.85 | 3.15 / 4.48 / 7.21 / 6.85 |
+| full | 2^18 | 36.4 / 59.8 / 103 / 108 | 9.21 / 18.1 / 33.7 / 34.9 | 9.32 / 18.2 / 34.0 / 35.1 |
+| full | 2^21 | 332 / 384 / 438 / 435 | 8.46 / 14.5 / 24.1 / 24.4 | 8.54 / 14.8 / 24.6 / 24.9 |
+
+The landed kernel took 0 % to 3.9 % longer than with the third barrier (its least times 0 % to
+1.4 %) [S: computed]: too little to keep a barrier the code does not need. The committed kernel's
+time followed S; the landed one's follows the blocks held, 0.6 to 1.2 µs a block [S: computed,
+the medians over the blocks], and S adds about 1 ms at 2^21: 1.97 ms at S = 2^18 and 3.15 ms at
+2^21 for 2682 blocks. It is 3.1 to 9.6 times shorter than before at S = 2^18 and 17 to 90 times
+at 2^21 [S: computed]. Larger models are unmeasured: at the 0.64 to 0.94 µs a block of the
+counts from 7640 blocks up, the 46668 blocks the demo window's live model held [M 2026-11-15]
+would take about 30 to 44 ms [S: computed].
+
 **The ray cast** (docs/methods/sparse-tsdf.md, "The ray cast"): `sparse_tsdf::ray_cast()`, the
 clearing of its tiles and its two kernels timed together by CUDA events, and the host's call, over
 20 s per case after 5 s, the same cast again and again from the first pose of the walk, into a
@@ -582,7 +639,9 @@ The first call took 0.349 s; the next 68 recorded calls a median of 0.362 s, p95
 clock 306 to 1020 MHz at a call's start (`/sys/class/devfreq/17000000.gpu/cur_freq`); no kernel
 log line of usb, uvc, nvgpu or Xid], 15.1 ms a fused frame with everything else [S: computed,
 0.362 s / 24]. Its steps are not timed apart, and a scan's longest sequence, its reading from the
-drive past the page cache and the large object's full model are unmeasured.
+drive past the page cache and the large object's full model are unmeasured. These times predate
+the extraction's chunks ("The extraction" above), whose two extractions per call now take less;
+the call is not timed again [?].
 
 ## Separation
 

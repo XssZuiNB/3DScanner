@@ -757,8 +757,45 @@ out, as either sign given to 0 has such a case, and the two points are one. The 
 buffer of a stated size from the pool
 (`gca::surface_points`) in no stated order, and their count is read back with the extraction's
 one wait; a buffer too small is reported as a value, with the count found and the buffer's first
-points written. The kernel goes through every slot of the hash, one thread block for each block
-it holds, on the integration's fixed grid. Not for the per-frame path.
+points written. Not for the per-frame path.
+
+**The sweep over the slots** [M 2026-11-16]. The kernel goes through the hash's slots in chunks of
+512 consecutive slots on the integration's fixed grid, one chunk to a thread block at a time. Each
+of the thread block's 512 threads reads one slot of its chunk (`block_in_slot()`), so a chunk's keys
+come in coalesced loads. The slots that hold a block with a number go into a list in shared memory,
+in slot order: a warp's ballot gives each of its lanes the count of the earlier lanes that hold one,
+and the warps' counts, in shared memory, give each warp the count before it. Then the thread block
+extracts the listed blocks one after another, one thread for each voxel, as above. Two barriers a
+chunk: one between the warps' counts and their reading, one between the list and its reading. The
+next chunk needs none more: it writes the counts only after the second barrier, which every thread
+passes once it has read them, and the list only after its own first barrier, which every thread
+reaches once it has read this chunk's list. The kernel's launch bounds ask for 3 thread blocks a
+multiprocessor, so that all 24 of the grid run at once: 40 registers a thread and 56 bytes spilled
+to the stack [B 2026-11-16: `cuobjdump -res-usage build/src/libfusion.a`, read again whenever the
+kernel or its bound changes]. The points are the same set, bit for bit, as when the kernel took one
+slot a thread block per step, on the walk's live and full models at S = 2^18 and 2^21, and at 2^20
+with a third barrier. Their order is still not stated, and nothing relies on it: it varied between
+runs before too, by the order the threads' atomic additions took, the tests and the replay compare
+points as sets, and a buffer too small keeps its first points, whichever they are. The time now
+follows the blocks held, 0.6 to 1.2 µs a block [S: computed, the times over the blocks], and S adds
+about 1 ms at 2^21: 1.97 ms at S = 2^18 and 3.15 ms at 2^21 for the 2682 blocks of the walk's first
+frame. The walk's live model of 7932 blocks takes 6.85 ms at S = 2^21 against 360 ms before
+(docs/HARDWARE.md, "The extraction").
+
+**Measured and not built** [M 2026-11-16: scratch prototypes beside the committed kernel, the same
+point sets bit for bit; docs/HARDWARE.md, "The extraction"]. A third barrier a chunk, after the
+list's blocks, made the kernel 0 % to 3.9 % shorter, too little to keep a barrier the code does not
+need. The same chunks with three barriers but without the bound, 57 registers and 2 thread blocks a
+multiprocessor, 16 of the grid at once, took 1.3 to 1.6 times as long. A pass of one thread per slot
+that lists the held slots, then one thread block for each entry of the list, as the integration goes
+through the frame's list, and a pass over the blocks in use, each block's slot kept in an array of 4
+bytes a block (which takes B at 2.0 GB from 479620 to 479153), took 0.8 to 1.8 times the chunks'
+time on the live model, less only at its 2682 blocks, and 1.8 to 5.3 times on the full model's 12599
+to 39253 blocks; each step of their thread blocks fetches its block through dependent loads from
+global memory, where the chunks read it from shared memory [?: the likely cause, not measured
+apart]. An estimate made from the committed kernel's times, 4.6 to 5.0 µs a block in use [S:
+`.scratch/rewrite/live-model-extraction-research.md`, not in the tree], was 4 to 8 times what the
+chunks take. What a block's time is made of is not measured apart.
 
 **No filter of crossings** [M 2026-11-15]. A crossing between the bands of two different
 surfaces, a voxel truncated in front of one beside a negative one of the other, is no surface;

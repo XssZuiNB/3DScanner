@@ -473,12 +473,13 @@ __global__ void __launch_bounds__(picture_block_width *picture_block_height)
 }
 
 /// The thread blocks of the two kernels that go through blocks of voxels, the integration's over
-/// the frame's list and the extraction's over the hash's slots: a fixed grid, each thread block
-/// taking every grid's-th entry, so that the integration reads the list's count on the GPU and the
-/// per-frame path reads nothing back. 24, as many thread blocks of 512 threads as the GPU holds at
-/// once: 8 multiprocessors of 1536 threads each [M 2026-11-15: cudaGetDeviceProperties], the
-/// kernels at 34 and 37 registers a thread [B 2026-11-15: cuobjdump -res-usage], 3 x 512 x 37
-/// below the 65536 registers of a multiprocessor. Back to back, integrate() took 0.4 % longer to
+/// the frame's list and the extraction's over the hash's slots in chunks of 512: a fixed grid, each
+/// thread block taking every grid's-th entry or chunk, so that the integration reads the list's
+/// count on the GPU and the per-frame path reads nothing back. 24, as many thread blocks of 512
+/// threads as the GPU holds at once: 8 multiprocessors of 1536 threads each [M 2026-11-15:
+/// cudaGetDeviceProperties], the kernels at 34 and 40 registers a thread, the extraction's held
+/// to 40 by its launch bounds [B 2026-11-16: cuobjdump -res-usage], 3 x 512 x 40 below the 65536
+/// registers of a multiprocessor. Back to back, integrate() took 0.4 % longer to
 /// 8.2 % shorter than with 96 and 7.6 % to 13.7 % shorter than with 384 (docs/HARDWARE.md, "The
 /// integration of a frame").
 constexpr unsigned int voxel_kernel_grid = 24;
@@ -782,14 +783,77 @@ __device__ inline unsigned char between_channels(std::uint8_t a, std::uint8_t b,
         __float2uint_rn((1.0f - s) * static_cast<float>(a) + s * static_cast<float>(b)));
 }
 
-/// Extracts the surface's points (docs/methods/sparse-tsdf.md, "The extraction"): one thread for
-/// each voxel, one thread block for each slot, the fixed grid going through every slot of the
-/// hash. An observed voxel g and each observed neighbour g + e, e along x, y and z, whose
-/// distances differ in sign give a point at s = D_a / (D_a - D_b) of the way from g's centre to
-/// the neighbour's, with the gradients by central differences at both interpolated at s and
-/// normalized as its normal and the colors interpolated at s as its color; a crossing whose
-/// central differences need a voxel that is missing or unobserved, or whose interpolated gradient
-/// is zero, gives no point. Every point is counted; the first capacity are written.
+/// The threads of a warp [S: CUDA's warp size, 32 on every GPU so far].
+constexpr unsigned int warp_threads = 32;
+
+/// The warps of a thread block of the extraction.
+constexpr unsigned int extraction_warps = voxels_per_block / warp_threads;
+
+/// Extracts one held block's points (docs/methods/sparse-tsdf.md, "The extraction"), one thread
+/// for each of its voxels, the thread's voxel being voxel_in_block(threadIdx.x): an observed voxel
+/// g and each observed neighbour g + e, e along x, y and z, whose distances differ in sign give a
+/// point at s = D_a / (D_a - D_b) of the way from g's centre to the neighbour's, with the
+/// gradients by central differences at both interpolated at s and normalized as its normal and
+/// the colors interpolated at s as its color; a crossing whose central differences need a voxel
+/// that is missing or unobserved, or whose interpolated gradient is zero, gives no point. Every
+/// point is counted; the first capacity are written.
+/// @param tsdf [in] the hash and the voxels, as extract_kernel() takes them.
+/// @param held [in] the block, with a number.
+/// @param voxel_size_m [in] v, in m, > 0.
+/// @param out [out] device memory of capacity points, as extract_kernel() takes it.
+/// @param capacity [in] the points out holds.
+/// @param found [in,out] the count of the points found, as extract_kernel() takes it.
+/// @note Device code; allocates nothing and waits for no other thread.
+__device__ inline void extract_block(const voxel_lookup &tsdf, const held_block &held,
+                                     float voxel_size_m, surface_point *__restrict__ out,
+                                     std::uint32_t capacity, std::uint32_t *__restrict__ found)
+{
+    const int3 local = voxel_in_block(threadIdx.x);
+    const voxel a = tsdf.voxels[pool_index(held.number, local)];
+    if (a.weight == 0)
+        return;
+    const int3 g = voxel_of(held.coordinate, local);
+    const float distance_a = __half2float(a.distance);
+    for (int axis = 0; axis < 3; axis++)
+    {
+        const int3 e = make_int3(axis == 0, axis == 1, axis == 2);
+        const int3 h = make_int3(g.x + e.x, g.y + e.y, g.z + e.z);
+        const voxel *b = voxel_at(tsdf, h, held);
+        if (b == nullptr || b->weight == 0)
+            continue;
+        const float distance_b = __half2float(b->distance);
+        // D_a >= 0 > D_b, or D_a < 0 <= D_b.
+        if ((distance_a >= 0.0f) == (distance_b >= 0.0f))
+            continue;
+        float3 gradient_a;
+        float3 gradient_b;
+        if (!gradient_at(tsdf, g, held, gradient_a) || !gradient_at(tsdf, h, held, gradient_b))
+            continue;
+        const float s = distance_a / (distance_a - distance_b);
+        const float3 gradient = (1.0f - s) * gradient_a + s * gradient_b;
+        const float length = norm(gradient);
+        if (!(length > 0.0f))
+            continue;
+        const surface_point point{
+            on_grid(g,
+                    make_float3(s * static_cast<float>(e.x), s * static_cast<float>(e.y),
+                                s * static_cast<float>(e.z)),
+                    voxel_size_m),
+            gradient / length,
+            make_uchar3(between_channels(a.red, b->red, s), between_channels(a.green, b->green, s),
+                        between_channels(a.blue, b->blue, s))};
+        const std::uint32_t index = atomicAdd(found, 1u);
+        if (index < capacity)
+            out[index] = point;
+    }
+}
+
+/// Extracts the surface's points (docs/methods/sparse-tsdf.md, "The extraction"): the fixed grid
+/// goes through the hash's slots in chunks of 512 consecutive slots, one chunk to a thread block at
+/// a time. Each thread reads one slot of the chunk, so that the chunk's keys come in coalesced
+/// loads; the slots that hold a block with a number are listed in shared memory in slot order, each
+/// at the place its warp's ballot and the earlier warps' counts give it; then the thread block
+/// extracts the listed blocks one after another, one thread for each voxel (extract_block()).
 /// @param tsdf [in] the hash and the voxels; device memory owned by the sparse TSDF, which holds it
 ///        until the kernel has run.
 /// @param voxel_size_m [in] v, in m, > 0.
@@ -799,56 +863,60 @@ __device__ inline unsigned char between_channels(std::uint8_t a, std::uint8_t b,
 /// @param found [in,out] device memory of one count, 0 before the launch, which ends as the points
 ///        found: at most 3 * 512 * capacity_blocks, below 2^32 for every pool of fewer than
 ///        2796203 blocks, 11.4 GB, more than the board's memory [S: computed].
-/// @note Runs on the stream of its launch, sparse_tsdf::extract()'s, after the integrations.
-///       Reads the voxels and writes only out and found. Allocates nothing.
-__global__ void __launch_bounds__(voxels_per_block)
+/// @note Runs on the stream of its launch, sparse_tsdf::extract()'s, after the integrations, with
+///       voxels_per_block threads a block: every warp is whole and takes part in its ballot. A
+///       chunk's first slot stays below slot_count, at most 2^31, and grows by gridDim.x * 512 =
+///       12288 on the fixed grid, so it never wraps [S: computed]. Two barriers a chunk, each
+///       reached by every thread, as the chunk's loop runs alike for the whole thread block: the
+///       first between the warps' counts and their reading, the second between the list and its
+///       reading. The next chunk needs none more: it writes the counts after the second barrier,
+///       which every thread passes only once it has read them, and the list after its own first
+///       barrier, which every thread reaches only once it has read this chunk's list; the count
+///       of the list is each thread's own. The launch bounds ask for 3 thread blocks a
+///       multiprocessor, so that the fixed grid's 24 run at once (voxel_kernel_grid): 40 registers
+///       a thread and 56 bytes spilled to the stack, against 57 registers and 2 blocks without the
+///       bound, which took 1.3 to 1.6 times as long [B 2026-11-16: `cuobjdump -res-usage
+///       build/src/libfusion.a`, the line under extract_kernel; M 2026-11-16: docs/HARDWARE.md,
+///       "The extraction"]; that line is read again whenever extract_block() or the bound changes.
+///       Reads the voxels and writes only out and found. Allocates nothing; 8256 bytes of shared
+///       memory [S: computed, 512 blocks of 16 bytes and 16 counts of 4].
+__global__ void __launch_bounds__(voxels_per_block, 3)
     extract_kernel(voxel_lookup tsdf, float voxel_size_m, surface_point *__restrict__ out,
                    std::uint32_t capacity, std::uint32_t *__restrict__ found)
 {
-    const int3 local = voxel_in_block(threadIdx.x);
-    for (std::uint32_t slot = blockIdx.x; slot < tsdf.hash.slot_count; slot += gridDim.x)
+    __shared__ held_block chunk_blocks[voxels_per_block];
+    __shared__ std::uint32_t warp_held[extraction_warps];
+    const unsigned int warp = threadIdx.x / warp_threads;
+    const unsigned int lane = threadIdx.x % warp_threads;
+    const std::uint32_t slot_count = tsdf.hash.slot_count;
+    for (std::uint32_t first = blockIdx.x * voxels_per_block; first < slot_count;
+         first += gridDim.x * voxels_per_block)
     {
-        const held_block held = block_in_slot(tsdf.hash, slot);
-        if (held.number == no_block)
-            continue;
-        const voxel a = tsdf.voxels[pool_index(held.number, local)];
-        if (a.weight == 0)
-            continue;
-        const int3 g = voxel_of(held.coordinate, local);
-        const float distance_a = __half2float(a.distance);
-        for (int axis = 0; axis < 3; axis++)
+        // The chunk's slots, one a thread; past the last slot, in a hash of fewer than 512 slots,
+        // a thread holds no block. The request grants such a hash only for a tiny pool: 256 slots
+        // for 64 blocks at 16 mm voxels and a far depth of 0.25 m, where one frame's bound is
+        // about 180 blocks [S: computed, frame_bound_blocks()].
+        const std::uint32_t slot = first + threadIdx.x;
+        const held_block held =
+            slot < slot_count ? block_in_slot(tsdf.hash, slot) : no_held_block();
+        const bool holds = held.number != no_block;
+        const unsigned int ballot = __ballot_sync(0xffffffffu, holds);
+        if (lane == 0)
+            warp_held[warp] = __popc(ballot);
+        __syncthreads();
+        // The list's places in slot order: after the earlier warps' blocks, the earlier lanes'.
+        std::uint32_t place = __popc(ballot & ((1u << lane) - 1u));
+        std::uint32_t listed = 0;
+        for (unsigned int w = 0; w < extraction_warps; w++)
         {
-            const int3 e = make_int3(axis == 0, axis == 1, axis == 2);
-            const int3 h = make_int3(g.x + e.x, g.y + e.y, g.z + e.z);
-            const voxel *b = voxel_at(tsdf, h, held);
-            if (b == nullptr || b->weight == 0)
-                continue;
-            const float distance_b = __half2float(b->distance);
-            // D_a >= 0 > D_b, or D_a < 0 <= D_b.
-            if ((distance_a >= 0.0f) == (distance_b >= 0.0f))
-                continue;
-            float3 gradient_a;
-            float3 gradient_b;
-            if (!gradient_at(tsdf, g, held, gradient_a) || !gradient_at(tsdf, h, held, gradient_b))
-                continue;
-            const float s = distance_a / (distance_a - distance_b);
-            const float3 gradient = (1.0f - s) * gradient_a + s * gradient_b;
-            const float length = norm(gradient);
-            if (!(length > 0.0f))
-                continue;
-            const surface_point point{
-                on_grid(g,
-                        make_float3(s * static_cast<float>(e.x), s * static_cast<float>(e.y),
-                                    s * static_cast<float>(e.z)),
-                        voxel_size_m),
-                gradient / length,
-                make_uchar3(between_channels(a.red, b->red, s),
-                            between_channels(a.green, b->green, s),
-                            between_channels(a.blue, b->blue, s))};
-            const std::uint32_t index = atomicAdd(found, 1u);
-            if (index < capacity)
-                out[index] = point;
+            place += w < warp ? warp_held[w] : 0u;
+            listed += warp_held[w];
         }
+        if (holds)
+            chunk_blocks[place] = held;
+        __syncthreads();
+        for (std::uint32_t k = 0; k < listed; k++)
+            extract_block(tsdf, chunk_blocks[k], voxel_size_m, out, capacity, found);
     }
 }
 

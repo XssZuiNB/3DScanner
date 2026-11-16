@@ -141,18 +141,27 @@ struct held_block
     std::uint32_t number;        ///< its number in the pool, or no_block
 };
 
+/// Gives the block an empty slot holds: none, its coordinates 0 and its number no_block. A
+/// function, as device code cannot read a constexpr variable of a class type.
+/// @return the block of no slot.
+/// @note Device code; allocates nothing.
+__device__ inline held_block no_held_block()
+{
+    return {{0, 0, 0}, no_block};
+}
+
 /// Reads the block a slot holds, its coordinates from the slot's key (coordinate_of_key()).
 /// @param hash [in] the hash; read only.
 /// @param slot [in] the slot, below the hash's slot_count.
-/// @return the block; its number no_block when the slot is empty or its key has no block (refused
-///         for a used-up pool).
+/// @return the block; no_held_block() when the slot is empty, its number no_block too when its key
+///         has no block (refused for a used-up pool).
 /// @note Plain loads: the insertions it is to see ran in an earlier kernel on the same stream
 ///       (insert_block()'s note). Device code; allocates nothing.
 __device__ inline held_block block_in_slot(const block_hash_view &hash, std::uint32_t slot)
 {
     const unsigned long long key = hash.keys[slot];
     if (key == empty_key)
-        return {{0, 0, 0}, no_block};
+        return no_held_block();
     return {coordinate_of_key(key), hash.blocks[slot]};
 }
 } // namespace gca

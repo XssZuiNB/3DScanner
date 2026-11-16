@@ -799,12 +799,14 @@ public:
     ///         cleared, when CUDA's last error was set before the call (nothing queued), refused
     ///         the reset of the count, the launch or the copy, or failed while the work ran, with
     ///         both counts 0 and the buffer's points unspecified.
-    /// @note A cudaMemsetAsync of the count, one kernel over every slot of the hash, of a fixed
-    ///       grid of thread blocks of 512 threads, a copy of 4 bytes into the pinned buffer, then
-    ///       the one written wait, cudaStreamSynchronize(stream), which waits for all the stream's
-    ///       earlier work. Not for the per-frame path. Allocates nothing when done; allocates for
-    ///       the message when not, and a failed allocation ends the program (std::terminate): the
-    ///       function is noexcept. Not while another thread uses this sparse TSDF or the buffer.
+    /// @note A cudaMemsetAsync of the count, one kernel over every slot of the hash in chunks of
+    ///       512 slots, of a fixed grid of thread blocks of 512 threads, whose time follows the
+    ///       blocks the hash holds, the slots adding about 1 ms at S = 2^21 (docs/HARDWARE.md, "The
+    ///       extraction"), a copy of 4 bytes into the pinned buffer, then the one written wait,
+    ///       cudaStreamSynchronize(stream), which waits for all the stream's earlier work. Not for
+    ///       the per-frame path. Allocates nothing when done; allocates for the message when not,
+    ///       and a failed allocation ends the program (std::terminate): the function is noexcept.
+    ///       Not while another thread uses this sparse TSDF or the buffer.
     extraction_result extract(surface_points &out, cudaStream_t stream) const noexcept;
 
     /// Reads the use of the pool and the hash back from the GPU, after the work queued on a
