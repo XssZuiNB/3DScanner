@@ -211,11 +211,14 @@ target_link_libraries(scan PUBLIC types camera Eigen3::Eigen PRIVATE opencv_core
 
 # ---------------------------------------------------------------- scan_interface
 # The scan interface's library, beside the host-only scan: the scan interface with its scan thread
-# (scan/scan_interface.hpp), which runs tracking and refinement, and the stages' parameters of an
-# object class's set (scan/stage_parameters.hpp), the one copy of each conversion.
+# (scan/scan_interface.hpp), which runs tracking and refinement, the taking of its live models
+# (scan/live_model.hpp), and the stages' parameters of an object class's set
+# (scan/stage_parameters.hpp), the one copy of each conversion.
 add_library(
     scan_interface
     STATIC
+    scan/live_model.cpp
+    scan/live_model.hpp
     scan/scan_interface.cpp
     scan/scan_interface.hpp
     scan/stage_parameters.cpp

@@ -757,7 +757,27 @@ out, as either sign given to 0 has such a case, and the two points are one. The 
 buffer of a stated size from the pool
 (`gca::surface_points`) in no stated order, and their count is read back with the extraction's
 one wait; a buffer too small is reported as a value, with the count found and the buffer's first
-points written. Not for the per-frame path.
+points written. Each point carries its block's slot in the hash, which no other block takes.
+
+**What an extraction takes** (`gca::extraction_choice`). Its defaults take every block and every
+crossing, as refinement's full model does. Two choices narrow it, for the live model
+(docs/methods/tracking.md, "The live model"), the per-frame path's one use of the extraction, at
+most twice a second:
+
+* **The grid's thinning**, a spacing m, a power of two: a crossing gives a point only when both
+  coordinates of its voxel g across its edge's axis are multiples of m. So the points of 2m are a
+  subset of those of m, a surface keeps the same points from one extraction to the next, and a
+  doubling keeps about a quarter of a surface's points: 0.250 at 2 and 0.249 at 4 on the tabletop
+  sphere's live model [M 2026-11-16: `tests/test_sparse_tsdf_fusion.cpp`]. A spacing that is no
+  power of two is refused. It saves little time past 2: 23.2, 22.8 and 23.9 ms at 2, 4 and 8
+  against 30.2 ms at 1 on a scene of 46849 blocks [M 2026-11-16: docs/HARDWARE.md, "The live
+  model"], as a held block's time is the latency of its own work, not its edges' count
+  [?: inferred, not measured apart].
+* **The blocks touched since a stamp**: only the blocks whose slot an allocation near a frame's
+  surface of that stamp or a later one touched (each slot's stamp, "The allocation near a frame's
+  surface"; `sparse_tsdf::frames_allocated()` gives the next), which the sweep reads with the
+  slot. When the buffer has a list, each block the extraction goes through is listed once, whether
+  it gives points or not, so that a reader knows whose points the extraction replaces.
 
 **The sweep over the slots** [M 2026-11-16]. The kernel goes through the hash's slots in chunks of
 512 consecutive slots on the integration's fixed grid, one chunk to a thread block at a time. Each
@@ -770,9 +790,10 @@ chunk: one between the warps' counts and their reading, one between the list and
 next chunk needs none more: it writes the counts only after the second barrier, which every thread
 passes once it has read them, and the list only after its own first barrier, which every thread
 reaches once it has read this chunk's list. The kernel's launch bounds ask for 3 thread blocks a
-multiprocessor, so that all 24 of the grid run at once: 40 registers a thread and 56 bytes spilled
-to the stack [B 2026-11-16: `cuobjdump -res-usage build/src/libfusion.a`, read again whenever the
-kernel or its bound changes]. The points are the same set, bit for bit, as when the kernel took one
+multiprocessor, so that all 24 of the grid run at once: 40 registers a thread, 40 bytes spilled to
+the stack and 10304 bytes of shared memory, the chunk's 512 blocks of 16 bytes, their 512 slots and
+16 counts of 4 bytes [B 2026-11-17: `cuobjdump -res-usage build/src/libfusion.a`, read again
+whenever the kernel or its bound changes]. The points are the same set, bit for bit, as when the kernel took one
 slot a thread block per step, on the walk's live and full models at S = 2^18 and 2^21, and at 2^20
 with a third barrier. Their order is still not stated, and nothing relies on it: it varied between
 runs before too, by the order the threads' atomic additions took, the tests and the replay compare

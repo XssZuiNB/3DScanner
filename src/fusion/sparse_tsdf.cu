@@ -783,6 +783,18 @@ __device__ inline unsigned char between_channels(std::uint8_t a, std::uint8_t b,
         __float2uint_rn((1.0f - s) * static_cast<float>(a) + s * static_cast<float>(b)));
 }
 
+/// Where an extraction writes, on the GPU: its points with their blocks' slots, and its list of
+/// the blocks it goes through; device memory of the caller's buffer (surface_points), which holds
+/// it until the kernel has run.
+struct extraction_out
+{
+    surface_point *points;        ///< capacity points
+    std::uint32_t *slots;         ///< capacity slots, the k-th the k-th point's block's
+    std::uint32_t capacity;       ///< the points and slots it holds
+    std::uint32_t *blocks;        ///< block_capacity slots of blocks gone through; null for none
+    std::uint32_t block_capacity; ///< the blocks the list holds; 0 for none
+};
+
 /// The threads of a warp [S: CUDA's warp size, 32 on every GPU so far].
 constexpr unsigned int warp_threads = 32;
 
@@ -795,27 +807,45 @@ constexpr unsigned int extraction_warps = voxels_per_block / warp_threads;
 /// point at s = D_a / (D_a - D_b) of the way from g's centre to the neighbour's, with the
 /// gradients by central differences at both interpolated at s and normalized as its normal and
 /// the colors interpolated at s as its color; a crossing whose central differences need a voxel
-/// that is missing or unobserved, or whose interpolated gradient is zero, gives no point. Every
-/// point is counted; the first capacity are written.
+/// that is missing or unobserved, or whose interpolated gradient is zero, gives no point. The
+/// grid's thinning keeps only the edges whose voxel g has both coordinates across the edge's axis
+/// multiples of the spacing (sparse_tsdf::extract()). Every point is counted; the first capacity
+/// are written.
 /// @param tsdf [in] the hash and the voxels, as extract_kernel() takes them.
 /// @param held [in] the block, with a number.
+/// @param spacing_mask [in] the spacing less 1, the spacing a power of two: a coordinate is a
+///        multiple of the spacing when its bits under the mask are 0, a negative one too [S: C++20,
+///        two's complement]; 0 keeps every edge.
 /// @param voxel_size_m [in] v, in m, > 0.
-/// @param out [out] device memory of capacity points, as extract_kernel() takes it.
-/// @param capacity [in] the points out holds.
+/// @param slot [in] the block's slot, which each of its points carries.
+/// @param out [out] the points and their slots, as extract_kernel() takes them.
 /// @param found [in,out] the count of the points found, as extract_kernel() takes it.
 /// @note Device code; allocates nothing and waits for no other thread.
 __device__ inline void extract_block(const voxel_lookup &tsdf, const held_block &held,
-                                     float voxel_size_m, surface_point *__restrict__ out,
-                                     std::uint32_t capacity, std::uint32_t *__restrict__ found)
+                                     std::uint32_t slot, std::uint32_t spacing_mask,
+                                     float voxel_size_m, const extraction_out &out,
+                                     std::uint32_t *__restrict__ found)
 {
     const int3 local = voxel_in_block(threadIdx.x);
+    const int3 g = voxel_of(held.coordinate, local);
+    const std::uint32_t x = static_cast<std::uint32_t>(g.x) & spacing_mask;
+    const std::uint32_t y = static_cast<std::uint32_t>(g.y) & spacing_mask;
+    const std::uint32_t z = static_cast<std::uint32_t>(g.z) & spacing_mask;
+    // The edges the thinning keeps, bit k for the edge along axis k: those whose other two
+    // coordinates are multiples of the spacing.
+    const unsigned int kept = static_cast<unsigned int>((y | z) == 0) |
+                              static_cast<unsigned int>((x | z) == 0) << 1 |
+                              static_cast<unsigned int>((x | y) == 0) << 2;
+    if (kept == 0)
+        return;
     const voxel a = tsdf.voxels[pool_index(held.number, local)];
     if (a.weight == 0)
         return;
-    const int3 g = voxel_of(held.coordinate, local);
     const float distance_a = __half2float(a.distance);
     for (int axis = 0; axis < 3; axis++)
     {
+        if ((kept >> axis & 1u) == 0)
+            continue;
         const int3 e = make_int3(axis == 0, axis == 1, axis == 2);
         const int3 h = make_int3(g.x + e.x, g.y + e.y, g.z + e.z);
         const voxel *b = voxel_at(tsdf, h, held);
@@ -843,26 +873,33 @@ __device__ inline void extract_block(const voxel_lookup &tsdf, const held_block 
             make_uchar3(between_channels(a.red, b->red, s), between_channels(a.green, b->green, s),
                         between_channels(a.blue, b->blue, s))};
         const std::uint32_t index = atomicAdd(found, 1u);
-        if (index < capacity)
-            out[index] = point;
+        if (index < out.capacity)
+        {
+            out.points[index] = point;
+            out.slots[index] = slot;
+        }
     }
 }
 
 /// Extracts the surface's points (docs/methods/sparse-tsdf.md, "The extraction"): the fixed grid
 /// goes through the hash's slots in chunks of 512 consecutive slots, one chunk to a thread block at
 /// a time. Each thread reads one slot of the chunk, so that the chunk's keys come in coalesced
-/// loads; the slots that hold a block with a number are listed in shared memory in slot order, each
-/// at the place its warp's ballot and the earlier warps' counts give it; then the thread block
-/// extracts the listed blocks one after another, one thread for each voxel (extract_block()).
+/// loads; the slots that hold a block with a number, whose stamp is since or later, are listed in
+/// shared memory in slot order, each at the place its warp's ballot and the earlier warps' counts
+/// give it; then the thread block extracts the listed blocks one after another, one thread for each
+/// voxel (extract_block()), its first thread appending each block's slot to out's list of blocks.
 /// @param tsdf [in] the hash and the voxels; device memory owned by the sparse TSDF, which holds it
 ///        until the kernel has run.
+/// @param stamps [in] each slot's stamp, the last allocation near a frame's surface that touched
+///        it; device memory owned by the sparse TSDF.
+/// @param since [in] the least stamp of a block taken; 0 takes every block.
+/// @param spacing_mask [in] the grid's thinning: the spacing less 1 (extract_block()).
 /// @param voxel_size_m [in] v, in m, > 0.
-/// @param out [out] device memory of capacity points; owned by the caller's buffer, which holds it
-///        until the kernel has run.
-/// @param capacity [in] the points out holds.
-/// @param found [in,out] device memory of one count, 0 before the launch, which ends as the points
-///        found: at most 3 * 512 * capacity_blocks, below 2^32 for every pool of fewer than
-///        2796203 blocks, 11.4 GB, more than the board's memory [S: computed].
+/// @param out [out] the points with their slots and the list of blocks (extraction_out).
+/// @param counts [in,out] device memory of two counts, 0 before the launch, which end as the
+///        points found, at most 3 * 512 * capacity_blocks, below 2^32 for every pool of fewer than
+///        2796203 blocks, 11.4 GB, more than the board's memory [S: computed], and the blocks
+///        listed, at most capacity_blocks.
 /// @note Runs on the stream of its launch, sparse_tsdf::extract()'s, after the integrations, with
 ///       voxels_per_block threads a block: every warp is whole and takes part in its ballot. A
 ///       chunk's first slot stays below slot_count, at most 2^31, and grows by gridDim.x * 512 =
@@ -874,17 +911,21 @@ __device__ inline void extract_block(const voxel_lookup &tsdf, const held_block 
 ///       barrier, which every thread reaches only once it has read this chunk's list; the count
 ///       of the list is each thread's own. The launch bounds ask for 3 thread blocks a
 ///       multiprocessor, so that the fixed grid's 24 run at once (voxel_kernel_grid): 40 registers
-///       a thread and 56 bytes spilled to the stack, against 57 registers and 2 blocks without the
-///       bound, which took 1.3 to 1.6 times as long [B 2026-11-16: `cuobjdump -res-usage
-///       build/src/libfusion.a`, the line under extract_kernel; M 2026-11-16: docs/HARDWARE.md,
-///       "The extraction"]; that line is read again whenever extract_block() or the bound changes.
-///       Reads the voxels and writes only out and found. Allocates nothing; 8256 bytes of shared
-///       memory [S: computed, 512 blocks of 16 bytes and 16 counts of 4].
+///       a thread, 40 bytes spilled to the stack and 10304 bytes of shared memory [B 2026-11-17:
+///       `cuobjdump -res-usage build/src/libfusion.a`, the line under extract_kernel], against 57
+///       registers and 2 blocks without the bound, which took 1.3 to 1.6 times as long [M
+///       2026-11-16: docs/HARDWARE.md, "The extraction"]; that line is read again whenever
+///       extract_block() or the bound changes.
+///       Reads the voxels and the stamps and writes only out and counts. Allocates nothing; 10304
+///       bytes of shared memory [S: computed, 512 blocks of 16 bytes, 512 slots and 16 counts of
+///       4].
 __global__ void __launch_bounds__(voxels_per_block, 3)
-    extract_kernel(voxel_lookup tsdf, float voxel_size_m, surface_point *__restrict__ out,
-                   std::uint32_t capacity, std::uint32_t *__restrict__ found)
+    extract_kernel(voxel_lookup tsdf, const std::uint32_t *__restrict__ stamps, std::uint32_t since,
+                   std::uint32_t spacing_mask, float voxel_size_m, extraction_out out,
+                   std::uint32_t *__restrict__ counts)
 {
     __shared__ held_block chunk_blocks[voxels_per_block];
+    __shared__ std::uint32_t chunk_slots[voxels_per_block];
     __shared__ std::uint32_t warp_held[extraction_warps];
     const unsigned int warp = threadIdx.x / warp_threads;
     const unsigned int lane = threadIdx.x % warp_threads;
@@ -899,7 +940,8 @@ __global__ void __launch_bounds__(voxels_per_block, 3)
         const std::uint32_t slot = first + threadIdx.x;
         const held_block held =
             slot < slot_count ? block_in_slot(tsdf.hash, slot) : no_held_block();
-        const bool holds = held.number != no_block;
+        // A block with a number, which an allocation of the stamp since or later touched.
+        const bool holds = held.number != no_block && stamps[slot] >= since;
         const unsigned int ballot = __ballot_sync(0xffffffffu, holds);
         if (lane == 0)
             warp_held[warp] = __popc(ballot);
@@ -913,10 +955,22 @@ __global__ void __launch_bounds__(voxels_per_block, 3)
             listed += warp_held[w];
         }
         if (holds)
+        {
             chunk_blocks[place] = held;
+            chunk_slots[place] = slot;
+        }
         __syncthreads();
         for (std::uint32_t k = 0; k < listed; k++)
-            extract_block(tsdf, chunk_blocks[k], voxel_size_m, out, capacity, found);
+        {
+            if (threadIdx.x == 0 && out.block_capacity > 0)
+            {
+                const std::uint32_t entry = atomicAdd(&counts[1], 1u);
+                if (entry < out.block_capacity)
+                    out.blocks[entry] = chunk_slots[k];
+            }
+            extract_block(tsdf, chunk_blocks[k], chunk_slots[k], spacing_mask, voxel_size_m, out,
+                          &counts[0]);
+        }
     }
 }
 
@@ -1828,23 +1882,35 @@ sparse_tsdf_layout layout_for_budget(std::uint64_t memory_budget_bytes) noexcept
             bytes_for(fits)};
 }
 
-request_result<surface_points> surface_points::request(gpu_pool &pool,
-                                                       std::uint32_t capacity) noexcept
+request_result<surface_points> surface_points::request(gpu_pool &pool, std::uint32_t capacity,
+                                                       std::uint32_t block_capacity) noexcept
 {
     request_result<gpu_array<surface_point>> points = pool.request_array<surface_point>(capacity);
     if (points.status != request_status::granted)
         return refused_as<surface_points>(points);
-    request_result<gpu_array<std::uint32_t>> count = pool.request_array<std::uint32_t>(1);
-    if (count.status != request_status::granted)
-        return refused_as<surface_points>(count);
-    request_result<pinned_buffer> count_on_host = pool.request_pinned(sizeof(std::uint32_t));
-    if (count_on_host.status != request_status::granted)
-        return refused_as<surface_points>(count_on_host);
+    request_result<gpu_array<std::uint32_t>> slots = pool.request_array<std::uint32_t>(capacity);
+    if (slots.status != request_status::granted)
+        return refused_as<surface_points>(slots);
+    request_result<gpu_array<std::uint32_t>> blocks;
+    if (block_capacity > 0)
+    {
+        blocks = pool.request_array<std::uint32_t>(block_capacity);
+        if (blocks.status != request_status::granted)
+            return refused_as<surface_points>(blocks);
+    }
+    request_result<gpu_array<std::uint32_t>> counts = pool.request_array<std::uint32_t>(2);
+    if (counts.status != request_status::granted)
+        return refused_as<surface_points>(counts);
+    request_result<pinned_buffer> counts_on_host = pool.request_pinned(2 * sizeof(std::uint32_t));
+    if (counts_on_host.status != request_status::granted)
+        return refused_as<surface_points>(counts_on_host);
     request_result<surface_points> result;
     result.status = request_status::granted;
     result.granted.m_points = std::move(points.granted);
-    result.granted.m_count = std::move(count.granted);
-    result.granted.m_count_on_host = std::move(count_on_host.granted);
+    result.granted.m_slots = std::move(slots.granted);
+    result.granted.m_blocks = std::move(blocks.granted);
+    result.granted.m_counts = std::move(counts.granted);
+    result.granted.m_counts_on_host = std::move(counts_on_host.granted);
     return result;
 }
 
@@ -1856,6 +1922,16 @@ std::uint32_t surface_points::capacity() const noexcept
 const gpu_array<surface_point> &surface_points::points() const noexcept
 {
     return m_points;
+}
+
+const gpu_array<std::uint32_t> &surface_points::slots() const noexcept
+{
+    return m_slots;
+}
+
+const gpu_array<std::uint32_t> &surface_points::blocks() const noexcept
+{
+    return m_blocks;
 }
 
 request_result<model_surface> model_surface::request(gpu_pool &pool,
@@ -2222,9 +2298,16 @@ step_result sparse_tsdf::ray_cast(const camera_pose &pose, const gca::intrinsics
     return launched;
 }
 
-extraction_result sparse_tsdf::extract(surface_points &out, cudaStream_t stream) const noexcept
+extraction_result sparse_tsdf::extract(surface_points &out, const extraction_choice &choice,
+                                       cudaStream_t stream) const noexcept
 {
     extraction_result result;
+    if (!std::has_single_bit(choice.spacing))
+    {
+        result.message = "the extraction's spacing of " + std::to_string(choice.spacing) +
+                         " voxels is no power of two";
+        return result;
+    }
     if (m_keys.empty())
     {
         result.message = holds_no_memory;
@@ -2245,29 +2328,32 @@ extraction_result sparse_tsdf::extract(surface_points &out, cudaStream_t stream)
         return result;
     }
     const cudaError_t reset =
-        cudaMemsetAsync(out.m_count.data(), 0, out.m_count.size_bytes(), stream);
+        cudaMemsetAsync(out.m_counts.data(), 0, out.m_counts.size_bytes(), stream);
     if (reset != cudaSuccess)
     {
-        result.message = cuda_failure("CUDA refused to reset the count of the points", reset);
+        result.message = cuda_failure("CUDA refused to reset the counts of the extraction", reset);
         return result;
     }
     const voxel_lookup tsdf{hash_view(), m_voxels.data()};
-    const step_result launched =
-        launch_kernel("the extraction's kernel", &extract_kernel, dim3(voxel_kernel_grid),
-                      dim3(voxels_per_block), stream, tsdf, m_parameters.voxel_size_m,
-                      out.m_points.data(), out.capacity(), out.m_count.data());
+    const extraction_out written_to{out.m_points.data(), out.m_slots.data(), out.capacity(),
+                                    out.m_blocks.data(),
+                                    static_cast<std::uint32_t>(out.m_blocks.size())};
+    const step_result launched = launch_kernel(
+        "the extraction's kernel", &extract_kernel, dim3(voxel_kernel_grid), dim3(voxels_per_block),
+        stream, tsdf, static_cast<const std::uint32_t *>(m_stamps.data()), choice.since,
+        choice.spacing - 1, m_parameters.voxel_size_m, written_to, out.m_counts.data());
     if (!launched.done)
     {
         result.message = launched.message;
         return result;
     }
     const cudaError_t copy_error =
-        cudaMemcpyAsync(out.m_count_on_host.bytes().data(), out.m_count.data(),
-                        out.m_count.size_bytes(), cudaMemcpyDeviceToHost, stream);
+        cudaMemcpyAsync(out.m_counts_on_host.bytes().data(), out.m_counts.data(),
+                        out.m_counts.size_bytes(), cudaMemcpyDeviceToHost, stream);
     if (copy_error != cudaSuccess)
     {
         result.message =
-            cuda_failure("CUDA refused the copy of the count of the points", copy_error);
+            cuda_failure("CUDA refused the copy of the counts of the extraction", copy_error);
         return result;
     }
     // The one wait: the copy, and the stream's work before it, have run.
@@ -2277,16 +2363,27 @@ extraction_result sparse_tsdf::extract(surface_points &out, cudaStream_t stream)
         result.message = cuda_failure("CUDA failed while the points were extracted", wait_error);
         return result;
     }
-    std::uint32_t found = 0;
-    std::memcpy(&found, out.m_count_on_host.bytes().data(), sizeof(found));
-    result.found = found;
-    result.written = std::min(found, out.capacity());
-    result.done = found <= out.capacity();
-    if (!result.done)
-        result.message = "the extraction found " + std::to_string(found) +
+    std::uint32_t counts[2] = {0, 0};
+    std::memcpy(counts, out.m_counts_on_host.bytes().data(), sizeof(counts));
+    const std::uint32_t block_capacity = static_cast<std::uint32_t>(out.m_blocks.size());
+    result.found = counts[0];
+    result.written = std::min(counts[0], out.capacity());
+    result.blocks = block_capacity > 0 ? counts[1] : 0;
+    result.done = counts[0] <= out.capacity() && result.blocks <= block_capacity;
+    if (counts[0] > out.capacity())
+        result.message = "the extraction found " + std::to_string(counts[0]) +
                          " points, the buffer holds " + std::to_string(out.capacity()) +
                          ": its first " + std::to_string(out.capacity()) + " are written";
+    else if (result.blocks > block_capacity)
+        result.message = "the extraction went through " + std::to_string(result.blocks) +
+                         " blocks, the list holds " + std::to_string(block_capacity) +
+                         ": its first " + std::to_string(block_capacity) + " are listed";
     return result;
+}
+
+std::uint32_t sparse_tsdf::frames_allocated() const noexcept
+{
+    return m_frames_allocated;
 }
 
 usage_result sparse_tsdf::read_usage(cudaStream_t stream) noexcept

@@ -119,6 +119,11 @@ scan_interface::scan_interface(const scan_options &options, frame_source &source
     , m_source(source)
     , m_writer(writer)
 {
+    for (held_live_model *held : {&m_live, &m_live_working})
+    {
+        held->value.points.reserve(m_options.live_model_points);
+        held->slots.reserve(m_options.live_model_points);
+    }
     m_thread = std::thread(&scan_interface::run, this);
 }
 
@@ -152,6 +157,12 @@ scan_state scan_interface::state() const
 {
     const std::lock_guard<std::mutex> lock(m_state_mutex);
     return m_state;
+}
+
+live_model scan_interface::latest_live_model() const
+{
+    const std::lock_guard<std::mutex> lock(m_live_mutex);
+    return m_live.value;
 }
 
 std::future<command_reply> scan_interface::post(command c)
@@ -265,6 +276,58 @@ void scan_interface::publish_frame() noexcept
         m_options.on_state(m_working);
 }
 
+void scan_interface::clear_live_model() noexcept
+{
+    {
+        const std::lock_guard<std::mutex> lock(m_live_mutex);
+        live_model &value = m_live.value;
+        value.version++;
+        value.frame.reset();
+        value.pose = {Eigen::Vector3d::Zero(), Eigen::Quaterniond::Identity()};
+        value.taken = {};
+        value.spacing = every_crossing;
+        value.points.clear();
+        m_live.slots.clear();
+    }
+    m_live_last.reset();
+    if (m_options.on_live_model)
+        m_options.on_live_model(m_live.value);
+}
+
+void scan_interface::take_live_model(live_model_taker &taker, const sparse_tsdf &model,
+                                     std::uint64_t frame, const camera_pose &pose,
+                                     cudaStream_t stream) noexcept
+{
+    // The pacing runs on the times of the decisions, so that two live models published lie at
+    // least the interval apart by the times they carry.
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    if (m_live_last && now - *m_live_last < m_options.live_model_interval)
+        return;
+    const live_take took = taker.take(model, m_live, m_live_working, stream);
+    if (took.status == live_take_status::too_many)
+        return;
+    m_live_last = now;
+    if (took.status == live_take_status::failed)
+    {
+        m_working.live_model_failure = took.message;
+        publish();
+        return;
+    }
+    live_model &next = m_live_working.value;
+    next.version = m_live.value.version + 1;
+    next.frame = frame;
+    next.pose = pose;
+    next.taken = now;
+    next.spacing = took.spacing;
+    {
+        // The points and their slots move together.
+        const std::lock_guard<std::mutex> lock(m_live_mutex);
+        std::swap(m_live, m_live_working);
+    }
+    if (m_options.on_live_model)
+        m_options.on_live_model(m_live.value);
+}
+
 void scan_interface::finish(const std::filesystem::path &directory, scan_requests &requests,
                             scan_outcome outcome, std::string message) noexcept
 {
@@ -319,8 +382,13 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
                          sparse_tsdf_parameters_of(set, fused_model::live), stream);
     if (requested.status != request_status::granted)
         return start_failed("the GPU's buffers: " + requested.message);
+    request_result<live_model_taker> requested_taker = live_model_taker::request(
+        pool, m_options.live_model_points, requested.granted.live_model().layout());
+    if (requested_taker.status != request_status::granted)
+        return start_failed("the GPU's buffers: the live model's: " + requested_taker.message);
     pool.close();
     tracker live = std::move(requested.granted);
+    live_model_taker taker = std::move(requested_taker.granted);
 
     const open_result opened = m_source.open(m_options.stream_size);
     if (!opened.opened)
@@ -422,6 +490,9 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
             m_working.frames.lost += !fused;
             m_working.tracking = tracked.state;
             m_working.lost_cause = tracked.outcome;
+            // The push swaps the frame's buffers for a free slot's (camera/sequence_writer.hpp), so
+            // the frame's index is kept before it.
+            const std::uint64_t index = current.index();
             const push_result pushed = m_writer.push(
                 current, fused ? frame_tracking{*tracked.pose} : frame_tracking{tracking_loss{}});
             if (clock != nullptr)
@@ -435,6 +506,11 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
                     clock->end(fate);
                 break;
             }
+            // The live model, after the frame's fusion and its push, never on a lost frame.
+            if (fused)
+                take_live_model(taker, live.live_model(), index, *tracked.pose, stream);
+            if (clock != nullptr)
+                clock->mark(path_stage::live_model);
         }
         publish_frame();
         // The commands between two frames: a stop or a discard ends the scan before the next.
@@ -483,6 +559,8 @@ void scan_interface::run_scan(command &c, cudaStream_t stream) noexcept
     m_working.end_message.clear();
     m_working.outcome = scan_outcome::none;
     m_working.outcome_message.clear();
+    m_working.live_model_failure.clear();
+    clear_live_model();
     publish();
 
     scan_requests requests;

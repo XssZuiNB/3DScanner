@@ -197,6 +197,12 @@ add_executable(test_stage_parameters test_stage_parameters.cpp)
 target_link_libraries(test_stage_parameters PRIVATE scan_interface synthetic_source)
 add_test(NAME stage_parameters COMMAND test_stage_parameters)
 
+# The taking of a scan's live models: the spacing's rule, and the takes on frames of the synthetic
+# source fused at their known poses, against an extraction of every block.
+add_executable(test_live_model test_live_model.cpp)
+target_link_libraries(test_live_model PRIVATE scan_interface synthetic_source)
+add_test(NAME live_model COMMAND test_live_model)
+
 # The scan interface in process, the spec's main seam: whole scans on the synthetic source into a
 # temporary scans directory, with a source and a writer in front of the real ones that the test
 # controls.

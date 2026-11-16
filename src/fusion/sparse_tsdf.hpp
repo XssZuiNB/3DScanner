@@ -31,6 +31,7 @@
 #include "types/camera_param.hpp"
 #include "types/camera_pose.hpp"
 #include "types/frame_description.hpp"
+#include "types/model_point.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime_api.h>
@@ -185,6 +186,22 @@ struct surface_point
 };
 static_assert(sizeof(surface_point) == 28, "a point is 28 bytes, the buffer's request says");
 
+/// Gives a model's point of a point of the surface as the extraction gives it: the one conversion
+/// from the GPU's type to the host's (types/model_point.hpp), so that the types module needs no
+/// CUDA. Every component is copied as it is.
+/// @param point [in] the point, in the models' frame.
+/// @return the same position, normal and color.
+/// @note Host code, inline for the copy of a whole extraction; allocates nothing.
+inline model_point model_point_of(const surface_point &point) noexcept
+{
+    return {Eigen::Vector3f(point.position_m.x, point.position_m.y, point.position_m.z),
+            Eigen::Vector3f(point.normal.x, point.normal.y, point.normal.z),
+            {point.color.x, point.color.y, point.color.z}};
+}
+
+/// The extraction's spacing that keeps every crossing (sparse_tsdf::extract()), the full model's.
+inline constexpr std::uint32_t every_crossing = 1;
+
 /// The truncation distance's rule (docs/methods/sparse-tsdf.md, "The truncation distance"): at the
 /// measured depth z, mu(z) = max(mu_min v, k sigma(z)) with the depth noise sigma(z) = c z^2, v the
 /// voxel size.
@@ -292,29 +309,35 @@ struct block_hash_view;
 /// defined in sparse_tsdf.cu.
 struct float_pose;
 
-/// The buffer an extraction writes its points into, on the GPU, of a stated size, with the count
-/// of the points found and the pinned buffer that count is read back through. Its memory comes
-/// from the pool that closes. Move-only. Not synchronized: one thread at a time uses one.
+/// The buffer an extraction writes its points into, on the GPU, of a stated size, with each point's
+/// block's slot in the hash, the counts of the points found and of the blocks listed, the pinned
+/// buffer those counts are read back through and, when requested, a list of the slots of the blocks
+/// the extraction goes through. Its memory comes from the pool that closes. Move-only. Not
+/// synchronized: one thread at a time uses one.
 class surface_points
 {
 public:
     /// An empty buffer: no memory; an extraction into it is refused.
     surface_points() noexcept = default;
 
-    /// Requests the buffer's memory from the pool: room for a number of points, the count on the
-    /// GPU and the pinned buffer it is read back through.
+    /// Requests the buffer's memory from the pool: room for a number of points and their blocks'
+    /// slots, the two counts on the GPU and the pinned buffer they are read back through, and room
+    /// for a list of blocks when asked.
     /// @param pool [in,out] the pool; open, else the request is refused as closed.
     /// @param capacity [in] the points the buffer holds, > 0.
+    /// @param block_capacity [in] the blocks its list holds; 0, the default, for no list, so that
+    ///        an extraction lists no block (sparse_tsdf::extract()).
     /// @return granted, with a buffer whose points are not set until an extraction; or the first
     ///         of its requests that was refused, with its status and message
     ///         (gpu_pool::request_array()), a capacity of 0 among them.
-    /// @note Allocates device memory (cudaMalloc, twice: 28 bytes a point, and 4 bytes) and
-    ///       page-locked host memory (cudaMallocHost, 4 bytes), so it is called before the pool is
-    ///       closed; whether CUDA's allocators wait for the GPU is not stated by CUDA [?].
-    ///       Allocates for the message when refused; a failed allocation ends the program
-    ///       (std::terminate): the function is noexcept. Two threads may not request from one
-    ///       pool at once.
-    static request_result<surface_points> request(gpu_pool &pool, std::uint32_t capacity) noexcept;
+    /// @note Allocates device memory (cudaMalloc, three or four times: 28 bytes and 4 bytes a
+    ///       point, 8 bytes, and 4 bytes a block of the list) and page-locked host memory
+    ///       (cudaMallocHost, 8 bytes), so it is called before the pool is closed; whether CUDA's
+    ///       allocators wait for the GPU is not stated by CUDA [?]. Allocates for the message when
+    ///       refused; a failed allocation ends the program (std::terminate): the function is
+    ///       noexcept. Two threads may not request from one pool at once.
+    static request_result<surface_points> request(gpu_pool &pool, std::uint32_t capacity,
+                                                  std::uint32_t block_capacity = 0) noexcept;
 
     /// A buffer is not copied: a copy allocates.
     surface_points(const surface_points &) = delete;
@@ -350,12 +373,41 @@ public:
     ///         buffer holds it.
     const gpu_array<surface_point> &points() const noexcept;
 
+    /// Gives each point's block, as the slot of the hash that holds it, which no other block
+    /// takes while the sparse TSDF lives.
+    /// @return the array of capacity() slots, the k-th that of points()'s k-th point, as points()
+    ///         says.
+    const gpu_array<std::uint32_t> &slots() const noexcept;
+
+    /// Gives the blocks the last extraction went through.
+    /// @return the array of the list's slots, its first ones those the last extraction listed, as
+    ///         its result's blocks says, each block once; empty without a list.
+    const gpu_array<std::uint32_t> &blocks() const noexcept;
+
 private:
-    friend class sparse_tsdf; ///< the extraction writes the points and the count
+    friend class sparse_tsdf; ///< the extraction writes the points, the slots, the list and the
+                              ///< counts
 
     gpu_array<surface_point> m_points; ///< the points
-    gpu_array<std::uint32_t> m_count;  ///< one element: the points the extraction found
-    pinned_buffer m_count_on_host;     ///< the count as the last extraction read it back
+    gpu_array<std::uint32_t> m_slots;  ///< each point's block's slot
+    gpu_array<std::uint32_t> m_blocks; ///< the list of blocks gone through; empty for none
+    gpu_array<std::uint32_t> m_counts; ///< two elements: the points found, the blocks listed
+    pinned_buffer m_counts_on_host;    ///< the counts as the last extraction read them back
+};
+
+/// What an extraction takes (sparse_tsdf::extract()): which edges, by the grid's thinning, and
+/// which blocks, by the allocation that last touched them (docs/methods/sparse-tsdf.md, "The
+/// extraction").
+struct extraction_choice
+{
+    /// The grid's thinning, in voxels, a power of two: a crossing gives a point only when both
+    /// coordinates of its voxel g across its edge's axis are multiples of it; every_crossing keeps
+    /// every crossing.
+    std::uint32_t spacing = every_crossing;
+    /// The first stamp of the allocations near a frame's surface the blocks are taken for: only a
+    /// block whose slot an allocation of this stamp or a later one touched
+    /// (sparse_tsdf::frames_allocated()); 0, the default, takes every block.
+    std::uint32_t since = 0;
 };
 
 /// The model's surface as a pose sees it, the ray cast's images on the GPU
@@ -484,10 +536,13 @@ private:
 /// What an extraction gave: the points it found and wrote, or why not.
 struct extraction_result
 {
-    bool done = false;         ///< whether every point found was written into the buffer
+    bool done = false;         ///< whether every point found was written into the buffer, and
+                               ///< every block gone through into its list when it has one
     std::uint32_t found = 0;   ///< the points found; 0 when the extraction did not run
     std::uint32_t written = 0; ///< the points written, the buffer's first: found, or the
                                ///< buffer's capacity when that is smaller
+    std::uint32_t blocks = 0;  ///< the blocks gone through, each once, when the buffer has a list;
+                               ///< 0 without one or when the extraction did not run
     std::string message;       ///< why not done, in plain English; empty when done
 };
 
@@ -787,27 +842,45 @@ public:
     /// normalized, so that it points from negative to positive; its color the two colors
     /// interpolated at s and rounded. A crossing whose central differences need an unobserved or
     /// missing voxel gives no point. The points come in no stated order: two runs give the same
-    /// set in another order.
+    /// set in another order. The grid's thinning keeps a crossing only when both coordinates of
+    /// its voxel g across its edge's axis are multiples of the spacing
+    /// (docs/methods/sparse-tsdf.md, "The extraction"), so that a surface keeps the same points
+    /// from one extraction to the next and those of a spacing are a subset of those of half of it.
     /// @param out [in,out] the buffer the points are written into, the first written of them, and
     ///        its count; owned by the caller.
+    /// @param choice [in] the grid's thinning, its spacing a power of two, and the blocks taken:
+    ///        every one, or those an allocation of a stamp since or later touched. Each block the
+    ///        extraction goes through, whether it gives points or not, is listed when the buffer
+    ///        has a list, and each point carries its block's slot.
     /// @param stream [in] the CUDA stream of the current device the work is queued on and waited
     ///        for, ordered after the integrations it is to see; owned by the caller.
     /// @return done with the points found and written, all of them; not done, with the reason:
     ///         when the buffer holds fewer than were found, with both counts, the buffer's first
-    ///         capacity points written; when refused before any work, this sparse TSDF or the
-    ///         buffer is empty, with nothing queued and both counts 0; with CUDA's error, then
-    ///         cleared, when CUDA's last error was set before the call (nothing queued), refused
-    ///         the reset of the count, the launch or the copy, or failed while the work ran, with
-    ///         both counts 0 and the buffer's points unspecified.
-    /// @note A cudaMemsetAsync of the count, one kernel over every slot of the hash in chunks of
-    ///       512 slots, of a fixed grid of thread blocks of 512 threads, whose time follows the
-    ///       blocks the hash holds, the slots adding about 1 ms at S = 2^21 (docs/HARDWARE.md, "The
-    ///       extraction"), a copy of 4 bytes into the pinned buffer, then the one written wait,
-    ///       cudaStreamSynchronize(stream), which waits for all the stream's earlier work. Not for
-    ///       the per-frame path. Allocates nothing when done; allocates for the message when not,
-    ///       and a failed allocation ends the program (std::terminate): the function is noexcept.
-    ///       Not while another thread uses this sparse TSDF or the buffer.
-    extraction_result extract(surface_points &out, cudaStream_t stream) const noexcept;
+    ///         capacity points written; when the list holds fewer blocks than were gone through,
+    ///         with the count, its first ones listed; when refused before any work, the spacing is
+    ///         no power of two or this sparse TSDF or the buffer is empty, with nothing queued and
+    ///         both counts 0; with CUDA's error, then cleared, when CUDA's last error was set
+    ///         before the call (nothing queued), refused the reset of the counts, the launch or the
+    ///         copy, or failed while the work ran, with both counts 0 and the buffer's points,
+    ///         slots and list unspecified.
+    /// @note A cudaMemsetAsync of the two counts, one kernel over every slot of the hash in chunks
+    ///       of 512 slots, of a fixed grid of thread blocks of 512 threads, whose time follows the
+    ///       blocks it takes, the slots adding about 1 ms at S = 2^21 (docs/HARDWARE.md, "The
+    ///       extraction"), a copy of 8 bytes into the pinned buffer, then the one written wait,
+    ///       cudaStreamSynchronize(stream), which waits for all the stream's earlier work. In the
+    ///       per-frame path only for the live model (scan/live_model.hpp), at most twice a second,
+    ///       mostly for the blocks touched since the last. Allocates nothing when done; allocates
+    ///       for the message when not, and a failed allocation ends the program (std::terminate):
+    ///       the function is noexcept. Not while another thread uses this sparse TSDF or the
+    ///       buffer.
+    extraction_result extract(surface_points &out, const extraction_choice &choice,
+                              cudaStream_t stream) const noexcept;
+
+    /// Gives the stamp the next allocation near a frame's surface takes, so that an extraction
+    /// whose choice's since is this value takes only the blocks touched after now.
+    /// @return the allocations near a frame's surface so far; 0 when empty.
+    /// @note Allocates nothing and waits for nothing.
+    std::uint32_t frames_allocated() const noexcept;
 
     /// Reads the use of the pool and the hash back from the GPU, after the work queued on a
     /// stream. In the per-frame path it is called after the registration's own readback, so that

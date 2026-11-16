@@ -46,6 +46,8 @@ std::string_view name_of(path_stage stage) noexcept
         return "fusion";
     case path_stage::writer:
         return "writer";
+    case path_stage::live_model:
+        return "live_model";
     }
     return {};
 }

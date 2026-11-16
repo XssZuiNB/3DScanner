@@ -25,8 +25,8 @@
 namespace gca
 {
 /// The stages of the per-frame path, in their order (docs/methods/tracking.md, "The path of a
-/// frame" and "The scan's loop"). The enumerators run from 0 without a gap, writer the last, and
-/// each has its row in stage_clock.cpp's table, a switch that -Wswitch checks.
+/// frame" and "The scan's loop"). The enumerators run from 0 without a gap, live_model the last,
+/// and each has its row in stage_clock.cpp's table, a switch that -Wswitch checks.
 enum class path_stage
 {
     room,         ///< the writer's room (the scan's loop, step 2)
@@ -38,15 +38,18 @@ enum class path_stage
     check,        ///< the check and the frame's pose (the path, step 5)
     fusion,       ///< the fusion (the path, step 6)
     writer,       ///< the writer taking the frame (the scan's loop, step 5)
+    live_model,   ///< the live model, when the frame takes one (the scan's loop, step 6)
 };
 
 /// The number of the path's stages.
-inline constexpr std::size_t path_stage_count = static_cast<std::size_t>(path_stage::writer) + 1;
+inline constexpr std::size_t path_stage_count =
+    static_cast<std::size_t>(path_stage::live_model) + 1;
 
 /// Gives a stage's name, as the replay's time lines print it.
 /// @param stage [in] the stage, one of the enumerators.
 /// @return "room", "too_close", "upload", "pyramid", "ray_cast", "registration", "check",
-///         "fusion" or "writer"; a static string; empty for a value that is no enumerator.
+///         "fusion", "writer" or "live_model"; a static string; empty for a value that is no
+///         enumerator.
 std::string_view name_of(path_stage stage) noexcept;
 
 /// One frame's times.
@@ -57,7 +60,8 @@ struct frame_times
     std::optional<tracking_state> state;
     /// Each stage's time, in ms, in the order of path_stage; 0 for a stage the frame did not run:
     /// the ray cast before the first fused frame, the fusion of a frame in tracking loss, the
-    /// stages after the one that failed.
+    /// stages after the one that failed; the live model's on a frame that takes none is the
+    /// decision's alone, near 0.
     std::array<double, path_stage_count> stage_ms{};
     double total_ms = 0.0; ///< the frame's time from begin() to end(), in ms
 };

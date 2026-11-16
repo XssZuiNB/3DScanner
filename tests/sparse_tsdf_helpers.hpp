@@ -136,7 +136,7 @@ inline std::vector<gca::surface_point> extract_points(const gca::sparse_tsdf &ts
                                                       gca::surface_points &buffer,
                                                       cudaStream_t stream, const std::string &what)
 {
-    const gca::extraction_result extracted = tsdf.extract(buffer, stream);
+    const gca::extraction_result extracted = tsdf.extract(buffer, gca::extraction_choice{}, stream);
     check(extracted.done && extracted.message.empty() && extracted.written == extracted.found,
           (what + ": extraction done, " + extracted.message).c_str());
     std::vector<gca::surface_point> points(extracted.written);

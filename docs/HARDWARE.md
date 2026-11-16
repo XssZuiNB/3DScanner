@@ -389,6 +389,43 @@ at 2^21 [S: computed]. Larger models are unmeasured: at the 0.64 to 0.94 µs a b
 counts from 7640 blocks up, the 46668 blocks the demo window's live model held [M 2026-11-15]
 would take about 30 to 44 ms [S: computed].
 
+**The live model** (docs/methods/tracking.md, "The live model"): `live_model_taker::take()`, the
+extraction at the live model's spacing into a buffer of 200000 points, the copies and the
+conversion to model points or the merge with the last live model on the host, by
+`std::chrono::steady_clock`; MAXN_SUPER by `nvpmodel -q`, under the build lock and the memory
+guard, the kernel log empty after each run.
+
+* **A scene of the demo window's size** [M 2026-11-16, 23:30 and 23:43, scratch programs]: the
+  tabletop object's live model (2 mm, 0.25 to 0.6 m) at its own 2.0 GB, fused at known poses from 21
+  frames of 640x400 over a 3 m x 3 m textured plane with the tabletop box, the camera 0.5 m above
+  it on a grid 0.5 m apart: 46849 blocks, against the 46668 of the demo window's tabletop live model
+  [M 2026-11-15]. A live model of every block, the extraction, the copy and the conversion, the
+  medians of 15 back to back with the GPU at 1020 MHz but the first rounds:
+
+  | spacing | points found | extraction | copy | conversion | whole |
+  |---|---|---|---|---|---|
+  | 1 | 1479534, 200000 written | 30.181 ms | 0.273 ms | 1.633 ms | 32.168 ms |
+  | 2 | 369600, 200000 written | 23.190 ms | 0.286 ms | 1.686 ms | 25.231 ms |
+  | 4 | 92703 | 22.809 ms | 0.146 ms | 0.584 ms | 23.536 ms |
+  | 8 | 23044 | 23.945 ms | 0.064 ms | 0.145 ms | 24.156 ms |
+
+  The spacing's rule takes 4 there; with the path's 11.2 ms at 640x400 ("The replay's frame time") a
+  frame that took one would last 34.7 ms, over the frame's 33.3 ms, so the live model extracts only
+  the blocks touched since the last [S: computed]. With that, the GPU brought to 1020 MHz before
+  each take: the first take, every block at spacing 1, found too many in 31.370 ms; the second,
+  every block at 4, 27.780 ms; then, after each 15 frames along a line 1 cm a frame over the scanned
+  plane, 5.511 to 6.971 ms for 4734 to 6879 blocks touched and 9340 to 13852 new points, 92703
+  published, which an extraction of every block at 4 matched bit for bit as sets.
+* **The replay's `live_model` column** [M 2026-11-17, 00:00:19 to 00:00:28]: `build/apps/replay
+  --times` on the walk of `tests/test_scan_interface.cpp` forth and back, 479 frames of 640x400
+  written as a sequence by a scratch program, the tabletop object class's own set (2.0 GB), every
+  frame tracked and fused. 11 frames took a live model: the first, every block at spacing 1,
+  8.261 ms; the one after the spacing rose to 2, every block, 14.492 ms; the 9 others, the blocks
+  touched since, 5.792 to 6.712 ms. Those frames lasted 15.260 to 26.445 ms against a median
+  10.497 ms of the others, and the frame after each a median 11.133 ms; the other frames' column
+  printed 0.002 ms at most; a frame's stages added up to its total within 0.032 ms. The replay
+  without `--times` took 12.283 ms a frame [M 2026-11-17, 00:00:28 to 00:00:37].
+
 **The ray cast** (docs/methods/sparse-tsdf.md, "The ray cast"): `sparse_tsdf::ray_cast()`, the
 clearing of its tiles and its two kernels timed together by CUDA events, and the host's call, over
 20 s per case after 5 s, the same cast again and again from the first pose of the walk, into a

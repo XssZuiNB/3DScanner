@@ -26,6 +26,9 @@
 ///   voxels of the blocks with a number are fused, and only those give points.
 /// - Refusals as values, each leaving the counts and the points as they were; a buffer of points
 ///   too small, reported with both counts and its first points written.
+/// - The grid's thinning and the blocks touched since a stamp: nested subsets of about a quarter
+///   at each doubling, a spacing of 3 refused; the blocks the last frames touched, each listed once
+///   and with the points the extraction of every block gives them.
 /// - Every buffer is requested before the pool closes, and the integrations and extractions ask
 ///   the closed pool for nothing.
 
@@ -93,6 +96,11 @@ using gca_test::wall_frame;
 
 /// The points the cases' buffer holds: 2 million, 56 MB [?: a choice, above every case's count].
 constexpr std::uint32_t point_capacity = 2'000'000;
+
+/// How far a spacing's share of the points of half of it may lie from a quarter: 0.01, about 8
+/// times the larger this test measured, 6.4e-5 and 0.00118 for spacings 2 and 4 on the tabletop
+/// sphere's live model [M 2026-11-16: this test].
+constexpr double thinning_share_tolerance = 0.01;
 
 /// The walls' depths, in mm, and their colors: the second wall 4 mm, 2 voxels of 2 mm, behind the
 /// first, inside the truncation of both, 8 mm; the colors differ in every channel, and the green
@@ -819,17 +827,20 @@ void check_refusals(cudaStream_t stream)
                   "left by an earlier call");
     check_no_cuda_error("refusals, an integration after an earlier error");
 
-    const gca::extraction_result from_empty = empty.extract(buffer, stream);
+    const gca::extraction_result from_empty =
+        empty.extract(buffer, gca::extraction_choice{}, stream);
     check(from_empty.found == 0 && from_empty.written == 0,
           "refusals: an empty sparse TSDF finds no point");
     check_refusal_of("refusals, an extraction from an empty sparse TSDF", from_empty,
                      "holds no memory");
     gca::surface_points no_buffer;
     check_refusal_of("refusals, an extraction into an empty buffer",
-                     tsdf.extract(no_buffer, stream), "the buffer of points holds no memory");
+                     tsdf.extract(no_buffer, gca::extraction_choice{}, stream),
+                     "the buffer of points holds no memory");
     check(cudaMalloc(&impossible, std::size_t{1} << 52) != cudaSuccess,
           "refusals: cudaMalloc refuses 2^52 bytes");
-    check_refusal_of("refusals, an extraction after an earlier error", tsdf.extract(buffer, stream),
+    check_refusal_of("refusals, an extraction after an earlier error",
+                     tsdf.extract(buffer, gca::extraction_choice{}, stream),
                      "left by an earlier call");
     check_no_cuda_error("refusals, an extraction after an earlier error");
 
@@ -842,7 +853,8 @@ void check_refusals(cudaStream_t stream)
           "refusals: the points as they were");
 
     // A buffer of ten points: not done, every point found counted, ten written.
-    const gca::extraction_result small = tsdf.extract(small_buffer, stream);
+    const gca::extraction_result small =
+        tsdf.extract(small_buffer, gca::extraction_choice{}, stream);
     check_refusal_of("refusals, a buffer of ten points", small, "the buffer holds 10");
     check(small.found == points_before.size() && small.written == 10,
           "refusals, a buffer of ten points: every point counted, ten written");
@@ -859,6 +871,132 @@ void check_refusals(cudaStream_t stream)
     check(pool.refused_while_closed() == 0, "refusals: the closed pool asked for nothing");
 }
 } // namespace
+
+/// The points of an extraction and their blocks' slots, downloaded.
+struct extracted_with_slots
+{
+    std::vector<gca::surface_point> points; ///< the points written
+    std::vector<std::uint32_t> slots;       ///< the k-th point's block's slot
+};
+
+/// Extracts with a choice and downloads the points and their slots.
+/// @param tsdf [in] the sparse TSDF.
+/// @param buffer [in,out] the buffer, with or without a list of blocks.
+/// @param choice [in] the spacing and the blocks.
+/// @param stream [in] the stream.
+/// @param what [in] the case, named in the check line.
+/// @return the points and slots; none with a failed check when not done.
+extracted_with_slots extract_with_slots(const gca::sparse_tsdf &tsdf, gca::surface_points &buffer,
+                                        const gca::extraction_choice &choice, cudaStream_t stream,
+                                        const std::string &what)
+{
+    const gca::extraction_result made = tsdf.extract(buffer, choice, stream);
+    check(made.done, (what + ": extraction done, " + made.message).c_str());
+    extracted_with_slots out{std::vector<gca::surface_point>(made.written),
+                             std::vector<std::uint32_t>(made.written)};
+    check(cudaMemcpy(out.points.data(), buffer.points().data(),
+                     sizeof(gca::surface_point) * out.points.size(),
+                     cudaMemcpyDeviceToHost) == cudaSuccess &&
+              cudaMemcpy(out.slots.data(), buffer.slots().data(),
+                         sizeof(std::uint32_t) * out.slots.size(),
+                         cudaMemcpyDeviceToHost) == cudaSuccess,
+          (what + ": the points and slots downloaded").c_str());
+    return out;
+}
+
+/// The grid's thinning and the blocks touched since a stamp (sparse_tsdf::extract()'s choice;
+/// docs/methods/sparse-tsdf.md, "The extraction"), on the tabletop sphere's live model: the points
+/// of spacing 2 are a subset of those of spacing 1 and those of 4 of those of 2, each about a
+/// quarter of the finer [M 2026-11-16: this test]; a spacing of 3 is refused; after the walk's
+/// first 10 frames, an extraction since the stamp then takes the blocks the last 2 frames touched,
+/// lists each once, and gives each of them the points the extraction of every block gives it,
+/// bit for bit; since the stamp after the last frame it takes nothing.
+/// @param stream [in] the stream.
+void check_thinning_and_since(cudaStream_t stream)
+{
+    const scene_case c = tabletop_scene(
+        model_of("thinning", gca::object_class::tabletop_object, false), tabletop_live_tolerances);
+    const std::string &name = c.model.name;
+    const gca_test::rendered frames = gca_test::render(c.scene, small_description);
+    if (frames.frames.size() != c.scene.trajectory.size() || frames.frames.size() < 3)
+        return;
+    gca::gpu_pool pool;
+    frame_buffers buffers = request_buffers(pool, small_description.size, name);
+    gca::sparse_tsdf tsdf =
+        granted(name + ": the sparse TSDF", gca::sparse_tsdf::request(pool, c.model.tsdf, stream));
+    gca::surface_points every =
+        granted(name + ": the points", gca::surface_points::request(pool, point_capacity));
+    gca::surface_points listed =
+        granted(name + ": the points with a list",
+                gca::surface_points::request(pool, point_capacity, tsdf.layout().capacity_blocks));
+    pool.close();
+    const std::size_t first = frames.frames.size() - 2;
+    for (std::size_t i = 0; i < first; i++)
+        fuse(tsdf, buffers, frames.frames[i], c.model.range, c.scene.trajectory[i], stream,
+             name + ", frame " + std::to_string(i));
+    const std::uint32_t since = tsdf.frames_allocated();
+    for (std::size_t i = first; i < frames.frames.size(); i++)
+        fuse(tsdf, buffers, frames.frames[i], c.model.range, c.scene.trajectory[i], stream,
+             name + ", frame " + std::to_string(i));
+    const gca::sparse_tsdf_usage usage = read_usage(tsdf, stream, name);
+
+    // The thinning's nested subsets.
+    const extracted_with_slots all = extract_with_slots(tsdf, every, {1, 0}, stream, name + ", 1");
+    const extracted_with_slots by_2 = extract_with_slots(tsdf, every, {2, 0}, stream, name + ", 2");
+    const extracted_with_slots by_4 = extract_with_slots(tsdf, every, {4, 0}, stream, name + ", 4");
+    const std::vector<gca_test::point_key> keys_1 = gca_test::sorted_keys(all.points);
+    const std::vector<gca_test::point_key> keys_2 = gca_test::sorted_keys(by_2.points);
+    const std::vector<gca_test::point_key> keys_4 = gca_test::sorted_keys(by_4.points);
+    std::printf("%s: %zu, %zu and %zu points at spacings 1, 2 and 4, %u blocks\n", name.c_str(),
+                keys_1.size(), keys_2.size(), keys_4.size(), usage.blocks_in_use);
+    check(!keys_4.empty() &&
+              std::includes(keys_1.begin(), keys_1.end(), keys_2.begin(), keys_2.end()) &&
+              std::includes(keys_2.begin(), keys_2.end(), keys_4.begin(), keys_4.end()),
+          (name + ": spacing 4's points among spacing 2's, and those among spacing 1's").c_str());
+    const double ratio_2 = static_cast<double>(keys_2.size()) / static_cast<double>(keys_1.size());
+    const double ratio_4 = static_cast<double>(keys_4.size()) / static_cast<double>(keys_2.size());
+    check_within((name + ": spacing 2's share of spacing 1's points, less a quarter").c_str(),
+                 std::abs(ratio_2 - 0.25), thinning_share_tolerance);
+    check_within((name + ": spacing 4's share of spacing 2's points, less a quarter").c_str(),
+                 std::abs(ratio_4 - 0.25), thinning_share_tolerance);
+    check_refusal_of(name + ", a spacing of 3", tsdf.extract(every, {3, 0}, stream),
+                     "no power of two");
+
+    // The blocks touched since the stamp: listed once each, with every block's points of them.
+    const gca::extraction_result counted = tsdf.extract(listed, {1, since}, stream);
+    std::vector<std::uint32_t> blocks(counted.blocks);
+    check(
+        counted.done &&
+            cudaMemcpy(blocks.data(), listed.blocks().data(), sizeof(std::uint32_t) * blocks.size(),
+                       cudaMemcpyDeviceToHost) == cudaSuccess,
+        (name + ": the blocks since the stamp listed and downloaded, " + counted.message).c_str());
+    const extracted_with_slots touched =
+        extract_with_slots(tsdf, listed, {1, since}, stream, name + ", since the stamp");
+    std::vector<std::uint32_t> unique_blocks = blocks;
+    std::sort(unique_blocks.begin(), unique_blocks.end());
+    unique_blocks.erase(std::unique(unique_blocks.begin(), unique_blocks.end()),
+                        unique_blocks.end());
+    std::printf("%s: %zu blocks touched by the last %zu frames, %zu points\n", name.c_str(),
+                blocks.size(), frames.frames.size() - first, touched.points.size());
+    check(!blocks.empty() && blocks.size() < usage.blocks_in_use &&
+              unique_blocks.size() == blocks.size(),
+          (name + ": some blocks, not all, listed since the stamp, each once").c_str());
+    std::vector<gca::surface_point> expected;
+    for (std::size_t k = 0; k < all.points.size(); k++)
+        if (std::binary_search(unique_blocks.begin(), unique_blocks.end(), all.slots[k]))
+            expected.push_back(all.points[k]);
+    bool slots_listed = true;
+    for (const std::uint32_t slot : touched.slots)
+        slots_listed =
+            slots_listed && std::binary_search(unique_blocks.begin(), unique_blocks.end(), slot);
+    check(slots_listed && gca_test::sorted_keys(touched.points) == gca_test::sorted_keys(expected),
+          (name + ": the listed blocks' points those of every block's extraction, bit for bit")
+              .c_str());
+    const gca::extraction_result none = tsdf.extract(listed, {1, tsdf.frames_allocated()}, stream);
+    check(none.done && none.found == 0 && none.blocks == 0,
+          (name + ": since the stamp after the last frame, nothing").c_str());
+    check(pool.refused_while_closed() == 0, (name + ": the closed pool asked for nothing").c_str());
+}
 
 /// Runs the checks of the integration and the extraction and prints the summary line.
 /// @return 0 when every check passed, 1 otherwise.
@@ -887,6 +1025,7 @@ int main()
     check_noise(stream);
     check_used_up(stream);
     check_refusals(stream);
+    check_thinning_and_since(stream);
     check_no_cuda_error("the end");
     check(cudaStreamDestroy(stream) == cudaSuccess, "the CUDA stream destroyed");
     return gca_test::check_summary("test_sparse_tsdf_fusion");

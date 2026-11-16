@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: 0BSD
 /// @file model_point.hpp
-/// One point of a model, the full model or the object model (GLOSSARY.md): its position, its unit
-/// normal and its color in the models' frame. Refinement's fusion of a sequence gives the full
-/// model as them (refinement/sequence_fusion.hpp, which holds the one conversion from the GPU's
-/// point), the model's file (scan/model_file.hpp, docs/SCAN_FILES.md) writes and reads it, and
-/// separation (separation/proposal.hpp) proposes the support plane and the box from it. A plain
-/// struct of Eigen's value types, header only.
+/// One point of a model, the live model, the full model or the object model (GLOSSARY.md): its
+/// position, its unit normal and its color in the models' frame. Refinement's fusion of a sequence
+/// gives the full model as them and the scan interface the live model (fusion/sparse_tsdf.hpp,
+/// model_point_of(), holds the one conversion from the GPU's point), the model's file
+/// (scan/model_file.hpp, docs/SCAN_FILES.md) writes and reads it, and separation
+/// (separation/proposal.hpp) proposes the support plane and the box from it. A plain struct of
+/// Eigen's value types, header only.
 
 #pragma once
 

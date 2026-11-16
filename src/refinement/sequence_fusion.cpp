@@ -74,18 +74,6 @@ std::string used_up_refusal(sparse_tsdf &tsdf, std::uint64_t budget_bytes, cudaS
            " insertions were refused, so the full model would lack surface";
 }
 
-/// Gives a model's point of a point of the surface as the extraction gives it: the one conversion
-/// from the GPU's type (fusion/sparse_tsdf.hpp) to the host's (types/model_point.hpp), so that the
-/// types module needs no CUDA. Every component is copied as it is.
-/// @param point [in] the point, in the models' frame.
-/// @return the same position, normal and color.
-model_point model_point_of(const surface_point &point)
-{
-    return {Eigen::Vector3f(point.position_m.x, point.position_m.y, point.position_m.z),
-            Eigen::Vector3f(point.normal.x, point.normal.y, point.normal.z),
-            {point.color.x, point.color.y, point.color.z}};
-}
-
 /// Extracts the full model and copies it to the host: the extraction into a buffer of one point
 /// counts the surface's points, and the extraction into a buffer of that count writes them all.
 /// @param tsdf [in] the full model's sparse TSDF.
@@ -98,7 +86,7 @@ std::optional<std::vector<model_point>> extracted(const sparse_tsdf &tsdf, gpu_p
                                                   surface_points &counter, cudaStream_t stream,
                                                   std::string &reason)
 {
-    const extraction_result counted = tsdf.extract(counter, stream);
+    const extraction_result counted = tsdf.extract(counter, extraction_choice{}, stream);
     // Not done with points found is a buffer too small; not done without any is a failure.
     if (!counted.done && counted.found == 0)
     {
@@ -120,7 +108,7 @@ std::optional<std::vector<model_point>> extracted(const sparse_tsdf &tsdf, gpu_p
         }
         sized = std::move(granted.granted);
         buffer = &sized;
-        const extraction_result written = tsdf.extract(sized, stream);
+        const extraction_result written = tsdf.extract(sized, extraction_choice{}, stream);
         if (!written.done)
         {
             reason = "the extraction: " + written.message;

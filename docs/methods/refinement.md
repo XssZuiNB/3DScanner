@@ -261,11 +261,12 @@ fused at the full voxel size into a new sparse TSDF, and the full model is extra
 * **Failed or cancelled** gives neither a model nor a trajectory, so that no caller keeps a part of
   either; the counts of the frames fused and skipped up to the end stay.
 * **The extraction** (docs/methods/sparse-tsdf.md, "The extraction") runs twice: into a buffer of
-  one point, which counts the surface's points, then into a buffer of exactly that count, so that
-  no capacity is guessed. The points are copied to the host and converted to model points
-  (`src/types/model_point.hpp`): the one conversion from the GPU's `surface_point` to the host's
-  type, so that the types module needs no CUDA. They come in no stated order. A sequence of which
-  no frame was fused gives no point, and the fusion is still done.
+  one point, which counts the surface's points, then into a buffer of exactly that count, so that no
+  capacity is guessed, with every block and every crossing (`gca::extraction_choice`'s defaults).
+  The points are copied to the host and converted to model points (`src/types/model_point.hpp`) by
+  `gca::model_point_of()` (`src/fusion/sparse_tsdf.hpp`): the one conversion from the GPU's
+  `surface_point` to the host's type, so that the types module needs no CUDA. They come in no stated
+  order. A sequence of which no frame was fused gives no point, and the fusion is still done.
 * **The trajectory as read**: each frame's index, timestamp and pose, or none for tracking loss,
   bit for bit as the sequence holds them, in its order (`src/types/trajectory_entry.hpp`).
 * **Memory**: one sparse TSDF exists at a time (docs/methods/sparse-tsdf.md, "The pool and the

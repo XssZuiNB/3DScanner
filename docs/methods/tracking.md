@@ -16,11 +16,12 @@ copied for it (docs/adr/0002-own-reconstruction-code.md).
 
 Built: the tracker and the check (`src/tracking/tracker.*`; the test `tests/test_tracking.cpp`),
 and the scan's loop around them, with the path's steps 7 and 8, the sequence's writer, the
-published state and the "too close" notice (R36) ("The scan's loop"; `src/scan/scan_interface.*`;
-the test `tests/test_scan_interface.cpp`). Left to `relocalize-from-keyframes`: keyframes and the
-candidates they add for a lost frame. Left to `tracking-thresholds-from-real-sequences`: the
-thresholds' values and ε, measured on real sequences. Left to `live-model-snapshots`: the live
-model published twice a second.
+published state, the "too close" notice (R36) and the live model ("The scan's loop", "The live
+model"; `src/scan/scan_interface.*`, `src/scan/live_model.*`; the tests
+`tests/test_scan_interface.cpp`, `tests/test_live_model.cpp`). Left to
+`relocalize-from-keyframes`: keyframes and the candidates they add for a lost frame. Left to
+`tracking-thresholds-from-real-sequences`: the thresholds' values and ε, measured on real
+sequences.
 
 ## Input
 
@@ -308,9 +309,11 @@ this order:
    neither fused nor lost, and goes neither into the sequence nor into the trajectory.
 5. **The writer** takes the frame with its pose or the mark of tracking loss (step 7); a failure
    ends the scan (`writer_failed`).
-6. **The state** is published for the frame (step 8): the counts, the tracking state with the
+6. **The live model**, after a fused frame, when its interval has passed ("The live model"); never
+   after a lost frame.
+7. **The state** is published for the frame (step 8): the counts, the tracking state with the
    condition that failed when lost, and the notice; no lock is held while the listener runs.
-7. **The commands** queued meanwhile are answered: a second start is refused, a stop or a discard
+8. **The commands** queued meanwhile are answered: a second start is refused, a stop or a discard
    ends the scan before the next frame; a stop or a discard given while the scan was starting is
    answered here, after the first frame. Then the next frame is asked for; a timeout, a failure or
    the end of the source ends the scan with its reason.
@@ -326,6 +329,71 @@ the extraction or the writes still discards it. A discard removes the
 scan's directory; the end of the scan interface during a scan or a refinement leaves the scan
 unfinished, without a trajectory or a full model.
 
+## The live model
+
+The scan interface publishes the live model beside the state (`src/scan/live_model.hpp`; R10; the
+spec, "The scan interface"): the colored points of the live model's sparse TSDF with the pose
+tracking gave the frame they were taken at, at most `live_model_points` of them, 200 000
+[?: initial], at most once a `live_model_interval`, 500 ms [?: initial], 2 a second.
+
+* **When.** After a fused frame, once the writer has taken it and before its state is published:
+  when no live model was published in the scan yet, or the interval has passed since the scan
+  thread decided to take the last one. The pacing runs on the times of the decisions, which each
+  live model carries, so two live models lie at least the interval apart by them. Never after a
+  lost frame: during tracking loss nothing is fused, and the last live model stays as it is,
+  its points and its pose. A scan's start publishes an empty live model, without a frame.
+* **Which points.** `sparse_tsdf::extract()` with a spacing m, a power of two
+  (docs/methods/sparse-tsdf.md, "The extraction"): a crossing gives a point only when both
+  coordinates of its voxel across its edge are multiples of m. So the points of 2m are a subset of
+  those of m, a surface keeps the same points from one live model to the next, and a doubling keeps
+  about a quarter of them (0.250 and 0.249 [M 2026-11-16: `tests/test_sparse_tsdf_fusion.cpp`]).
+  The extraction writes into a buffer of the limit; a live model never holds more.
+* **The spacing.** It starts at 1 for each scan and only rises, so the points do not flicker:
+  after a live model of more than three quarters of the limit [?: a choice, room to grow by a
+  third until the next], the next one is taken at the least power-of-two multiple of the spacing
+  at which, a doubling keeping a quarter, it would hold three quarters or less
+  (`gca::spacing_after()`). A take that finds more points than the limit publishes nothing; the
+  spacing rises, and the next fused frame tries again.
+* **Which blocks.** The first live model of a scan, and the first after the spacing rose, extract
+  every block. The others extract only the blocks an allocation near a frame's surface touched
+  since the last live model (the slots' stamps, `extraction_choice::since`), and replace those
+  blocks' points in the last live model on the host; the blocks not touched keep theirs. The
+  extraction lists the blocks it went through and gives each point its block's slot; the scan
+  thread marks the listed slots, one bit a slot, keeps the last live model's points of the slots
+  not marked, adds the new ones, and takes the marks back. A block not touched keeps even those
+  points whose crossing or gradient reads a touched neighbour's voxels, so they lag behind it: on
+  the tabletop sphere's walk 41 of 12599 points, 0.33 %, differed from an extraction of every
+  block at the same spacing, the older ones within 0.49 mm of the newer [M 2026-11-16:
+  `tests/test_live_model.cpp`]; on the synthetic scene below, a line of 150 frames over surfaces
+  already seen left none [M 2026-11-16]. A take whose points kept and new together exceed the limit
+  publishes nothing, as above.
+* **Its memory.** The taker's, requested with the tracker's buffers before the pool closes,
+  outside the sparse TSDF's budget: on the GPU the limit's points with their slots and a list of
+  every block, 8.3 MB, as much pinned, and on the host a bit a slot, 256 KB, for the 2.0 GB TSDF's
+  479620 blocks and 2^21 slots; the scan interface's two live models with their slots, 12.8 MB on
+  the host, reserved when it is built [S: computed, 28 bytes a point and 4 a slot]. The take
+  allocates nothing.
+* **Its publication.** Under a lock of its own, not the state's, so that a reader's copy of up to
+  5.6 MB never holds up the state of each frame: the scan thread fills the working live model and
+  swaps it in under the lock, then calls the live model's listener outside it; a reader copies the
+  published one under the lock (`scan_interface::latest_live_model()`).
+* **A failure.** CUDA refusing or failing in the extraction, the copies or the wait: nothing is
+  published, the reason goes into the state's `live_model_failure`, the scan goes on, and the
+  interval passes before the next try. No test reaches it: it takes a CUDA failure in the live
+  model's work alone, and a sticky one fails the next frame's tracking anyway.
+* **Its cost** [M 2026-11-16: scratch programs under the build lock, MAXN_SUPER, the GPU at 1020
+  MHz; docs/HARDWARE.md, "The live model"]. On a synthetic scene of 46849 blocks, the demo
+  window's 46668 of a tabletop scan [M 2026-11-15], at 640x400 and the tabletop object's 2.0 GB:
+  one live model of every block, extraction, copy and conversion, took 23.5 ms at the spacing the
+  rule chose, 4 (92703 points); the path's 11.2 ms at 640x400 (docs/HARDWARE.md, "The replay's frame
+  time") with it is 34.7 ms, over the frame's 33.3 ms, which is why only the touched blocks are
+  extracted (the user's decision, `live-model-snapshots`' Comments). With them, a live model after
+  15 frames moving 1 cm each took 5.5 to 7.0 ms, 4734 to 6879 blocks touched; a live model of every
+  block, at a scan's start and after each rise of the spacing, takes 27.8 ms there and goes over
+  the frame time once. The spacing barely shortens the extraction past 2 (23.2 to 24.0 ms at 2, 4
+  and 8): a block's time is its own work's latency, not its edges' [?: inferred, not measured
+  apart].
+
 ## The stages' times
 
 For a measurement, the replay tool hands the scan interface a stage clock
@@ -333,7 +401,7 @@ For a measurement, the replay tool hands the scan interface a stage clock
 The scan's loop begins a frame's clock once its gap is counted, before the writer's room, and
 marks the end of each stage; after a stage that queues work on the GPU the clock waits for the
 stream (`cudaStreamSynchronize`), so that the stage's time holds that work, and each stage's time
-is the time since the mark before. A frame's time runs from its beginning to the end of step 7
+is the time since the mark before. A frame's time runs from its beginning to the end of step 8
 above, the commands answered; the stages leave out only the state's publication and the commands.
 The stages, each by the name the time lines print:
 
@@ -348,11 +416,14 @@ The stages, each by the name the time lines print:
 | `check` | the path, step 5: the check | no |
 | `fusion` | the path, step 6: the fusion | yes |
 | `writer` | the scan's loop, step 5: the writer takes the frame | no |
+| `live_model` | the scan's loop, step 6: the live model, when the frame takes one | its own waits |
 
 A stage a frame does not run takes 0: the ray cast before the first fused frame, the fusion of a
 frame in tracking loss, the stages after the one that failed. Every other stage takes more than 0
 but `room` and `check`, host steps that can take less than the lines' 0.0005 ms and print 0.000
-(`room` did in 2 of 1440 frames [M 2026-11-16: docs/HARDWARE.md, "The replay's frame time"]).
+(`room` did in 2 of 1440 frames [M 2026-11-16: docs/HARDWARE.md, "The replay's frame time"]), and
+`live_model`, which on a frame that takes none is the pacing's decision alone and prints 0.000 or
+nearly; the scan's first frame takes one, and its `live_model` holds the extraction's time.
 The waits serialize the host and the GPU, which overlap without them (the fusion runs while the
 next frame's "too close" pass and upload run on the host), so a frame takes longer with the clock
 than without it (docs/HARDWARE.md, "The replay's frame time"). A live scan has no clock: each use
@@ -365,7 +436,7 @@ measurement tickets read them, and ctest `replay` parses them as written here.
 
 - With `--times`, one time line on stdout for each frame the loop handles, as the frame ends:
 
-      frame <index> <state> room <t> too_close <t> upload <t> pyramid <t> ray_cast <t> registration <t> check <t> fusion <t> writer <t> total <t>
+      frame <index> <state> room <t> too_close <t> upload <t> pyramid <t> ray_cast <t> registration <t> check <t> fusion <t> writer <t> live_model <t> total <t>
 
   `<index>` is the frame's index, `<state>` `tracking`, `lost`, `failed` or `not_taken` (a frame
   the writer had no room for, which a replay does not have), each `<t>` a time in ms with three

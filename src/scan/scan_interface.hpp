@@ -9,14 +9,17 @@
 /// buffers, the source opened, its first frame), scanning (the per-frame path for each frame the
 /// sequence's writer has room for), refining (the source closed, the live model freed, the
 /// sequence fused at the full voxel size) and idle again. The scan's files go into a directory of
-/// the scans directory named by its start time (docs/SCAN_FILES.md, "A scan's directory").
-/// Also the rule of the "too close" notice (R36).
+/// the scans directory named by its start time (docs/SCAN_FILES.md, "A scan's directory"). The
+/// live model is a second value beside the state, published under a lock of its own at most once
+/// a live_model_interval while the scan tracks (scan/live_model.hpp). Also the rule of the "too
+/// close" notice (R36).
 
 #pragma once
 
 #include "camera/frame.hpp"
 #include "camera/frame_source.hpp"
 #include "camera/sequence_writer.hpp"
+#include "scan/live_model.hpp"
 #include "scan/object_class.hpp"
 #include "scan/parameters_file.hpp"
 #include "tracking/stage_clock.hpp"
@@ -25,6 +28,7 @@
 
 #include <cuda_runtime_api.h>
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -95,6 +99,9 @@ struct scan_state
     /// The last refusal: a command refused or a start that failed, with the reason; empty before
     /// the first.
     std::string refusal;
+    /// Why a live model of the scan in progress or the last one could not be taken, the last
+    /// time one could not, in plain English; empty while each was taken. The scan goes on.
+    std::string live_model_failure;
 };
 
 /// The answer to a command.
@@ -123,6 +130,17 @@ struct scan_options
     /// nothing more is waited for. Owned by the caller, which keeps it alive as long as the scan
     /// interface; the scan thread alone uses it, and calls its listener for each frame.
     stage_clock *stage_times = nullptr;
+    /// The most points a live model holds: 200000 [?: initial] (the spec, "The web layer and the
+    /// page"), > 0.
+    std::uint32_t live_model_points = 200000;
+    /// The least time from one live model to the next, by the times the scan thread decides to
+    /// take them: 500 ms, 2 a second [?: initial] (the spec, "The per-frame path", step 8).
+    std::chrono::milliseconds live_model_interval{500};
+    /// Called on the scan thread after each live model is published, with it, outside every lock,
+    /// as on_state is and under its rules: it must return soon, as the scan waits for it, must not
+    /// throw, must not wait for a command's answer and must not destroy the scan interface. The
+    /// value it is given stays as it is until the call returns. Empty: no call.
+    std::function<void(const live_model &)> on_live_model = {};
 };
 
 /// The scan interface. One scan at a time; its thread lives as long as it does.
@@ -137,8 +155,9 @@ public:
     ///        and leaves it to the scan thread until the scan interface's end.
     /// @param writer [in,out] the sequence's writer, not open; owned and left to the scan thread
     ///        as the source.
-    /// @note Allocates and starts a thread; a failure of either ends the program
-    ///       (std::terminate).
+    /// @note Allocates, the room of two live models for live_model_points points with their
+    ///       slots, 32 bytes a point [S: computed], and starts a thread; a failure of either ends
+    ///       the program (std::terminate).
     scan_interface(const scan_options &options, frame_source &source, sequence_sink &writer);
 
     /// The scan interface stands for one scan thread and its devices.
@@ -190,6 +209,15 @@ public:
     /// @note Takes the state's lock for the copy, which allocates for its strings; any thread may
     ///       call it, the listener too.
     scan_state state() const;
+
+    /// Gives the live model.
+    /// @return a copy of the live model last published, a snapshot: empty, without a frame,
+    ///         before the first live model of the scan in progress, or before the first scan.
+    /// @note Takes the live model's lock for the copy, which allocates for its points, up to
+    ///       live_model_points of 28 bytes [S: sizeof(model_point)], while the scan thread waits
+    ///       for the lock when it publishes the next live model; any thread may call it, the
+    ///       listeners too.
+    live_model latest_live_model() const;
 
 private:
     /// What a command asks.
@@ -290,6 +318,24 @@ private:
     /// frame changes, without allocating, and calls the listener.
     void publish_frame() noexcept;
 
+    /// Publishes an empty live model, without a frame, and calls its listener: a scan's start.
+    void clear_live_model() noexcept;
+
+    /// Takes and publishes a live model after a fused frame, when the interval has passed since
+    /// the last one published or none was (docs/methods/tracking.md, "The live model"): a live
+    /// model taken is swapped in under the live model's lock, then its listener is called; one of
+    /// too many points is not published, and the next fused frame tries again; a failure goes into
+    /// the state's live_model_failure, published, and the interval passes before the next try.
+    /// @param taker [in,out] the scan's taker.
+    /// @param model [in] the live model's sparse TSDF.
+    /// @param frame [in] the frame's index.
+    /// @param pose [in] the pose tracking gave the frame.
+    /// @param stream [in] the scan thread's CUDA stream.
+    /// @note Allocates nothing but a failure's message; waits for the GPU as
+    ///       live_model_taker::take() says.
+    void take_live_model(live_model_taker &taker, const sparse_tsdf &model, std::uint64_t frame,
+                         const camera_pose &pose, cudaStream_t stream) noexcept;
+
     /// Refuses a command: the reason recorded and published as the last refusal, then the
     /// answer, so that a caller with the answer reads the state that goes with it.
     /// @param c [in,out] the command, answered here.
@@ -316,6 +362,17 @@ private:
     // copies it. Neither holds it across a GPU call, a write to disk or the listener.
     mutable std::mutex m_state_mutex;
     scan_state m_state;
+
+    // The live model's lock guards the published live model alone: the scan thread swaps the
+    // working one in and clears it under it, a reader copies its value. The scan thread reads it
+    // without the lock, as its one writer. Its points and slots and the working one's are reserved
+    // for the limit at the construction, so neither the swap nor a take allocates.
+    mutable std::mutex m_live_mutex;
+    held_live_model m_live;
+    held_live_model m_live_working; ///< the next live model as the scan thread fills it; its alone
+    /// When the scan thread decided to take the last live model published or to try one that
+    /// failed; none at a scan's start. The scan thread's alone.
+    std::optional<std::chrono::steady_clock::time_point> m_live_last;
 
     std::thread m_thread; ///< the scan thread, started last
 };

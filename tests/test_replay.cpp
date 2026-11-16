@@ -14,7 +14,8 @@
 ///   taken, in order, naming each stage of the per-frame path in its order, with what tracking
 ///   made of the frame; the stages add up to the frame's time within a measured margin; each
 ///   stage the frame ran holds more than 0 (but room and check, which can print 0.000), the ray
-///   cast 0 for the first frame, before the model holds one. The rule that the fusion is 0 for a
+///   cast 0 for the first frame, before the model holds one, and the live model more than 0 for
+///   it, which takes the scan's first. The rule that the fusion is 0 for a
 ///   frame in tracking loss is written but not exercised: no frame of the walk is lost. The last
 ///   line names the scan's directory, its end and its counts.
 /// - A kept scan's parameters with the full voxel size changed from 1 mm to 2 mm: the program's
@@ -216,8 +217,12 @@ struct time_line
     double total_ms = 0.0;                  ///< the frame's time, in ms
 };
 
-/// Reads a time line: "frame <index> <state>", nine pairs of a stage's name and its time, "total"
-/// and the frame's time.
+/// The stages a time line holds: 10, as docs/methods/tracking.md, "The replay tool's lines",
+/// writes it, so that a stage added or left out shows here.
+constexpr std::size_t line_stages = 10;
+
+/// Reads a time line: "frame <index> <state>", line_stages pairs of a stage's name and its time,
+/// "total" and the frame's time.
 /// @param line [in] the line.
 /// @return the line read; nothing when it is no time line of that form.
 std::optional<time_line> read_time_line(const std::string &line)
@@ -227,7 +232,7 @@ std::optional<time_line> read_time_line(const std::string &line)
     time_line read;
     if (!(in >> word) || word != "frame" || !(in >> read.index >> read.state))
         return std::nullopt;
-    for (std::size_t k = 0; k < 9; k++)
+    for (std::size_t k = 0; k < line_stages; k++)
     {
         double ms = 0.0;
         if (!(in >> word >> ms))
@@ -334,9 +339,9 @@ std::filesystem::path test_same_scan(const std::string &program,
     }
     std::printf("time lines: %zu\n", times.size());
     check(times.size() == sequence_frames, "time lines: one for each frame taken");
-    const std::vector<std::string> stages = {"room",    "too_close", "upload",
-                                             "pyramid", "ray_cast",  "registration",
-                                             "check",   "fusion",    "writer"};
+    const std::vector<std::string> stages = {"room",     "too_close",    "upload", "pyramid",
+                                             "ray_cast", "registration", "check",  "fusion",
+                                             "writer",   "live_model"};
     double largest_gap_ms = 0.0;
     std::size_t fused = 0;
     std::size_t lost = 0;
@@ -366,6 +371,9 @@ std::filesystem::path test_same_scan(const std::string &program,
         if (t.state == "tracking")
             stage_rules = stage_rules && t.stage_ms.at("fusion") > 0.0 &&
                           (k == 0) == (t.stage_ms.at("ray_cast") == 0.0);
+        // The first frame takes the scan's first live model, which extracts.
+        if (k == 0)
+            stage_rules = stage_rules && t.stage_ms.at("live_model") > 0.0;
     }
     check(in_order, "time lines: the frames in order");
     check(names, "time lines: each stage named, in the path's order");

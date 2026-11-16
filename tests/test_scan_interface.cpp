@@ -30,6 +30,11 @@
 /// - A refinement that fails, and the scan interface's end during a scan: the scan unfinished,
 ///   its sequence and parameters kept, no trajectory and no full model.
 /// - The "too close" rule on built frames, and its notice in the state.
+/// - The live model: in the walk, the empty one at the start, then live models taken repeatedly,
+///   each within the limit, with its frame's pose bit for bit, at least the interval apart by the
+///   times the scan interface took them, the spacing raised; the last one's points coarsely near
+///   the known surfaces; a reader copying it during the scan. During tracking loss, with a live
+///   model after every fused frame, none taken at a lost frame and the last one unchanged.
 /// The test prints its time; each scan-level test ends within 60 s on the board (the stage brief).
 
 #include "camera/frame.hpp"
@@ -93,6 +98,11 @@ constexpr std::size_t walk_poses = 240;
 /// The frames of a short scan: 20 of the walk's first [?: a choice].
 constexpr std::size_t short_poses = 20;
 
+/// The frames of the live model's loss case: the walk's first 30 [?: a choice], and the frames
+/// without depth among them, 10 to 14, longer than test_tracking.cpp's gap of 3 [?: a choice].
+constexpr std::size_t loss_poses = 30;
+constexpr gca_test::synthetic_depth_gap loss_gap = {10, 5};
+
 /// The commit the scans' parameters hold [?: a choice, a commit's form].
 const std::string test_commit = "e290a50";
 
@@ -113,6 +123,12 @@ constexpr gca_test::transform_tolerance trajectory_tolerance = {0.1, 0.001};
 constexpr double distance_median_mm = 0.15;
 constexpr double distance_p99_mm = 1.0;
 constexpr double distance_max_mm = 12.0;
+
+/// The coarse tolerances of the walk's last live model, in mm: the median and the 99th percentile
+/// distance of a point from the nearest known surface, about 3 times what this test measured,
+/// 0.0726 and 0.425 mm of 70523 points at spacing 2 [M 2026-11-16: this test].
+constexpr double live_distance_median_mm = 0.2;
+constexpr double live_distance_p99_mm = 1.5;
 
 /// The set the scans run with: the tabletop object class's, in a sparse TSDF of 273 MB
 /// (gca_test::case_budget), so that a case takes 273 MB of the board's memory, not 2 GB.
@@ -438,8 +454,101 @@ void print_end(const std::string &what, const gca::scan_state &s)
 
 // ------------------------------------------------------------------------------------ the walk
 
+/// The live models a case's listener got, in order, and what a reader thread saw of them while the
+/// scan ran.
+struct live_log
+{
+    std::mutex mutex;                    ///< guards models: the listener appends on the scan thread
+    std::vector<gca::live_model> models; ///< each live model published, as the listener got it
+    std::atomic<bool> reading{true};     ///< whether the reader goes on
+    std::size_t reads = 0;               ///< the reader's copies; the main thread reads it after
+                                         ///< the reader's end
+    bool consistent = true; ///< whether each copy's version was not below the one before and its
+                            ///< points within the limit, none without a frame
+};
+
+/// The walk's live models (docs/methods/tracking.md, "The live model"): the empty one at the start,
+/// then live models taken repeatedly, their versions rising by one, each of at most the limit's
+/// points, with the pose tracking gave its frame bit for bit as the trajectory holds it, at least
+/// the interval apart by the times they carry, the spacing raised on the way; the last one's
+/// points near the known surfaces, coarsely; no failure; a reader's copies during the scan
+/// consistent.
+/// @param live [in] what the listener and the reader saw.
+/// @param trajectory [in] the scan's trajectory as its file holds it.
+/// @param known [in] the walk's poses, camera frame to world frame.
+/// @param surfaces [in] the known surfaces.
+/// @param end [in] the state at the scan's end.
+void check_live_models(live_log &live, const std::vector<gca::trajectory_entry> &trajectory,
+                       const std::vector<Eigen::Isometry3d> &known,
+                       const std::vector<gca_test::synthetic_surface> &surfaces,
+                       const gca::scan_state &end)
+{
+    const gca::scan_options defaults{};
+    const std::lock_guard<std::mutex> lock(live.mutex);
+    const std::vector<gca::live_model> &models = live.models;
+    check(!models.empty() && !models.front().frame && models.front().points.empty(),
+          "walk: the empty live model first, at the scan's start");
+    std::vector<const gca::live_model *> taken;
+    bool versions = true;
+    for (std::size_t k = 0; k < models.size(); k++)
+    {
+        versions = versions && (k == 0 || models[k].version == models[k - 1].version + 1);
+        if (models[k].frame)
+            taken.push_back(&models[k]);
+    }
+    bool within_limit = true;
+    bool poses = true;
+    bool paced = true;
+    bool raised = false;
+    for (std::size_t i = 0; i < taken.size(); i++)
+    {
+        const gca::live_model &m = *taken[i];
+        const std::uint64_t frame = *m.frame;
+        std::printf("walk: live model at frame %llu, spacing %u, %zu points\n",
+                    static_cast<unsigned long long>(frame), m.spacing, m.points.size());
+        within_limit =
+            within_limit && !m.points.empty() && m.points.size() <= defaults.live_model_points;
+        poses = poses && frame < trajectory.size() && trajectory[frame].pose.has_value() &&
+                trajectory[frame].pose->position_m == m.pose.position_m &&
+                trajectory[frame].pose->orientation.coeffs() == m.pose.orientation.coeffs();
+        paced = paced && (i == 0 || m.taken - taken[i - 1]->taken >= defaults.live_model_interval);
+        raised = raised || m.spacing >= 2;
+    }
+    check(taken.size() >= 2 && versions,
+          "walk: live models taken repeatedly, their versions rising by one");
+    check(within_limit, "walk: each live model's points within the limit");
+    check(poses, "walk: each live model's pose the one tracking gave its frame, bit for bit");
+    check(paced, "walk: the live models at least the interval apart by their times");
+    check(raised, "walk: the spacing raised as the live model grew");
+    if (!taken.empty())
+    {
+        std::vector<double> distances_mm;
+        for (const gca::model_point &p : taken.back()->points)
+        {
+            const Eigen::Vector3d world = known[0] * p.position_m.cast<double>();
+            double nearest = std::numeric_limits<double>::infinity();
+            for (const gca_test::synthetic_surface &surface : surfaces)
+                nearest = std::min(nearest, gca_test::distance_from(surface, world));
+            distances_mm.push_back(1e3 * nearest);
+        }
+        std::printf("walk: the last live model's %zu points from the nearest known surface: median "
+                    "%.4g mm, 99th percentile %.4g mm\n",
+                    distances_mm.size(), gca_test::quantile(distances_mm, 0.5),
+                    gca_test::quantile(distances_mm, 0.99));
+        check_within("walk: the last live model's median distance from the known surfaces, mm",
+                     gca_test::quantile(distances_mm, 0.5), live_distance_median_mm);
+        check_within("walk: the last live model's 99th percentile distance, mm",
+                     gca_test::quantile(distances_mm, 0.99), live_distance_p99_mm);
+    }
+    check(end.live_model_failure.empty(), "walk: no live model failed");
+    std::printf("walk: a reader copied the live model %zu times during the scan\n", live.reads);
+    check(live.reads > 0 && live.consistent,
+          "walk: a reader's copies during the scan within the limit, their versions not falling");
+}
+
 /// The walk: the states in order, the second start refused, the source closed and the live model
-/// freed before refinement, the files, the parameters, the trajectory and the full model.
+/// freed before refinement, the files, the parameters, the trajectory, the full model and the live
+/// models.
 /// @param directory [in] the test's directory.
 void check_walk(const temporary_directory &directory)
 {
@@ -450,6 +559,7 @@ void check_walk(const temporary_directory &directory)
     patient_writer writer;
     std::future<gca::command_reply> second_start;
     std::optional<gca::scan_interface> scanner;
+    live_log live;
     // The start's answer, as the listener sees it: a copy of its own, stored before the flag.
     std::shared_future<gca::command_reply> answer_seen;
     std::atomic<bool> answer_stored{false};
@@ -480,9 +590,30 @@ void check_walk(const temporary_directory &directory)
         if (s.phase == gca::scan_phase::scanning && s.frames.taken == walk_poses)
             (void)scanner->stop();
     };
-    scanner.emplace(
-        gca::scan_options{scans, small_description.size, test_commit, recorder(log, react)}, source,
-        writer);
+    scanner.emplace(gca::scan_options{.scans_directory = scans,
+                                      .stream_size = small_description.size,
+                                      .commit = test_commit,
+                                      .on_state = recorder(log, react),
+                                      .on_live_model =
+                                          [&live](const gca::live_model &m) {
+                                              const std::lock_guard<std::mutex> lock(live.mutex);
+                                              live.models.push_back(m);
+                                          }},
+                    source, writer);
+    // A reader that copies the live model while the scan runs, as the page's server will.
+    std::thread reader([&live, &scanner] {
+        const std::uint32_t limit = gca::scan_options{}.live_model_points;
+        std::uint64_t last_version = 0;
+        while (live.reading)
+        {
+            const gca::live_model m = scanner->latest_live_model();
+            live.consistent = live.consistent && m.version >= last_version &&
+                              m.points.size() <= limit && (m.frame || m.points.empty());
+            last_version = m.version;
+            live.reads++;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    });
     const gca::scan_state before = scanner->state();
     check(before.phase == gca::scan_phase::idle && before.version == 0,
           "walk: idle before the start, version 0");
@@ -494,6 +625,8 @@ void check_walk(const temporary_directory &directory)
     const gca::command_reply started = answer.get();
     check(started.accepted, ("walk: the start accepted; " + started.refusal).c_str());
     const gca::scan_state end = wait_for_idle(*scanner, before.version, "walk");
+    live.reading = false;
+    reader.join();
     check(!answered_before_scanning,
           "walk: the scanning state published before the start's answer");
     check(snapshots_match && snapshots_read > walk_poses,
@@ -574,6 +707,8 @@ void check_walk(const temporary_directory &directory)
                  trajectory_tolerance.rotation_deg);
     check_within("walk: the trajectory's largest shift from the known one, m", worst.translation_m,
                  trajectory_tolerance.translation_m);
+    if (trajectory.value)
+        check_live_models(live, *trajectory.value, known, source.surfaces(), end);
 
     const gca::read_result<std::vector<gca::model_point>> model =
         gca::read_model(scan / "full.ply");
@@ -629,14 +764,18 @@ struct short_case
     /// Starts the scan interface.
     /// @param react [in] the case's reaction to each state.
     /// @param slow_writing [in] whether the writer is made slow.
-    void begin(std::function<void(const gca::scan_state &)> react = {}, bool slow_writing = false)
+    /// @param adjust [in] changes the scan interface's options before it is built; empty for none.
+    void begin(std::function<void(const gca::scan_state &)> react = {}, bool slow_writing = false,
+               const std::function<void(gca::scan_options &)> &adjust = {})
     {
         gca::sequence_sink *writer = &patient;
         if (slow_writing)
             writer = &slow.emplace();
-        scanner.emplace(gca::scan_options{scans, small_description.size, test_commit,
-                                          recorder(log, std::move(react))},
-                        source, *writer);
+        gca::scan_options options{scans, small_description.size, test_commit,
+                                  recorder(log, std::move(react))};
+        if (adjust)
+            adjust(options);
+        scanner.emplace(options, source, *writer);
     }
 
     /// Starts a scan and waits for idle.
@@ -1117,6 +1256,61 @@ void check_too_close(const temporary_directory &directory)
 }
 } // namespace
 
+/// The live model during tracking loss (docs/methods/tracking.md, "The live model"): the walk's
+/// first 30 frames, frames 10 to 14 without depth, a live model after every fused frame (an
+/// interval of 0): at each lost frame the live model is the one of the last fused frame, its
+/// version, frame and points unchanged, and no live model is taken at a lost frame.
+/// @param directory [in] the test's directory.
+void check_live_model_loss(const temporary_directory &directory)
+{
+    gca_test::synthetic_source_options options = walk_options(loss_poses);
+    options.depth_gap = loss_gap;
+    short_case c("live model during loss", directory, std::move(options));
+    std::optional<gca::live_model> before_loss;
+    std::size_t lost_seen = 0;
+    bool unchanged = true;
+    std::vector<std::uint64_t> taken_at;
+    c.begin(
+        [&c, &before_loss, &lost_seen, &unchanged](const gca::scan_state &s) {
+            if (s.phase != gca::scan_phase::scanning || !s.tracking)
+                return;
+            // The live model a reader copies after the frame's state, as the page will.
+            const gca::live_model now = c.scanner->latest_live_model();
+            if (*s.tracking == gca::tracking_state::lost)
+            {
+                lost_seen++;
+                unchanged =
+                    unchanged && before_loss && now.version == before_loss->version &&
+                    now.frame == before_loss->frame &&
+                    gca_test::sorted_keys(now.points) == gca_test::sorted_keys(before_loss->points);
+            }
+            else
+                before_loss = now;
+        },
+        false,
+        [&taken_at](gca::scan_options &o) {
+            o.live_model_interval = std::chrono::milliseconds{0};
+            o.on_live_model = [&taken_at](const gca::live_model &m) {
+                if (m.frame)
+                    taken_at.push_back(*m.frame);
+            };
+        });
+    gca::command_reply started;
+    const gca::scan_state end = c.run(test_set(), started);
+    std::printf("live model during loss: %zu lost frames seen, %zu live models taken\n", lost_seen,
+                taken_at.size());
+    check(started.accepted && end.frames.lost >= loss_gap.frame_count &&
+              lost_seen == end.frames.lost,
+          "live model during loss: the gap's frames lost, each seen");
+    check(unchanged, "live model during loss: at each lost frame the live model of the last fused "
+                     "frame, its version, frame and points unchanged");
+    bool none_lost = true;
+    for (const std::uint64_t frame : taken_at)
+        none_lost = none_lost && (frame < loss_gap.first_frame ||
+                                  frame >= loss_gap.first_frame + loss_gap.frame_count);
+    check(!taken_at.empty() && none_lost, "live model during loss: no live model at a lost frame");
+}
+
 /// Runs the cases and prints the summary line.
 /// @return 0 when every check passed, 1 otherwise.
 int main()
@@ -1137,6 +1331,7 @@ int main()
     check_tracking_failed(directory);
     check_unfinished(directory);
     check_too_close(directory);
+    check_live_model_loss(directory);
     gca_test::check_no_cuda_error("scan interface");
     std::printf("test_scan_interface: %.1f s\n",
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
