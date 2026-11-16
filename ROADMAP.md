@@ -18,35 +18,35 @@ CODING_STANDARDS.md, "The rewrite's code".
 
 The user agreed on 2026-11-14 to the choices the spec marks (spec) and to the breakdown into
 tickets, asked for `ray-cast-faster-by-measurement` on 2026-11-15 and, after an experiment that
-measured it, for `ray-cast-normal-reads-once`. 34 of 62 tickets are done (git log,
-`Ticket ...`), 21 are `ready-for-agent` and 7 `ready-for-human` [M 2026-11-16: a script over the
-tickets' Status and Blocked-by lines]. Built in the run of 2026-11-15, evening: tracking (each
-frame checked before it is fused), the IMU's samples with the frames, the held color exposure,
-the depth noise's tool, the camera's firmware check, the faster normal of the ray cast. The
-frontier, the open tickets with no open blocker:
+measured it, for `ray-cast-normal-reads-once`. 38 of 64 tickets are done (git log,
+`Ticket ...`), 19 are `ready-for-agent` and 7 `ready-for-human` [M 2026-11-16: a script over the
+tickets' Status and Blocked-by lines]. Built in the run of 2026-11-16: a scan's parameters file
+in full, refinement's fusion of a scan's sequence, the scan interface with its first whole scan,
+and the replay tool (`replay`, its time per stage on request). The frontier, the open tickets
+with no open blocker:
 
-* `scan-interface-first-whole-scan` (agent): the scan interface and its first whole scan; its
-  Comments hold the user's answers on the "too close" notice (R36) and the depth range, and what
-  tracking left for it.
+* `live-model-snapshots` (agent): the scan interface gives the live model while a scan runs,
+  the first of the web chain (brief §7, 33).
+* `http-routes-for-a-scan` (agent): a whole scan worked over HTTP; by decision 33
+  after `live-model-snapshots`, then `websocket-pushes-state-and-live-model`, `page-for-a-scan`
+  and `scanner-service-program`.
 * `relocalize-from-keyframes` (agent): the keyframes as further candidates for a lost frame.
-* `separation-up-from-gravity` (agent): separation's up from the IMU's gravity, now that frames
-  carry the samples.
-* `kernels-under-compute-sanitizer` (agent, parked): written in its worktree and stopped at two
-  stop conditions of compute-sanitizer's debugger interface (`.scratch/rewrite/brief.md`, §7, 35
-  and 37); how its mutants and its fail fast go on is the user's to decide.
+* `separation-up-from-gravity` (agent): separation's up from the IMU's gravity; a scan without
+  IMU samples gets no proposal, with the reason (brief §7, 40).
+* `kernels-under-compute-sanitizer` (agent, parked in its worktree): goes on as its
+  implementer proposed, after `separation-up-from-gravity` and rebased first (brief §7, 39).
 * `measure-aligned-frame-distortion` (hardware: the checkerboard of step 2 and the user's go).
 * `measure-depth-noise-on-the-camera` (hardware: still sequences for the `depth_noise` tool).
 
-The other tickets wait on one of these or on a ticket after it. The scan interface leads to
-`replay-tool` and, by the user's choice of 2026-11-15 (brief §7, 33), to the web chain before the
-rest of the scan: `live-model-snapshots`, `http-routes-for-a-scan`,
-`websocket-pushes-state-and-live-model`, `page-for-a-scan` and `scanner-service-program`; the
-list of scans, the budget's end, refinement and separation each add their routes and part of the
-page after it. The checkerboard's measurement leads to the hardware check of the camera on the
-seam, whose sequences the replay's measurements need. The stream size and the GPU's clock during a
-scan (`per-stage-times-from-replay`) are decided on real sequences. The hash's design is compared
-later on real scans of objects (brief §7, 22); no ticket holds it yet. Tickets run one at a time
-(brief §7, 36). Done when `accept-the-colored-model` is done.
+The other tickets wait on one of these or on a ticket after it. The list of scans, the budget's
+end, refinement and separation each add their routes and part of the page after the web chain.
+The checkerboard's measurement leads to the hardware check of the camera on the seam, whose
+sequences the replay's measurements need (`per-stage-times-from-replay`,
+`tracking-thresholds-from-real-sequences`, `memory-budget-and-refinement-time-measured`,
+`sequence-compression-by-measurement`). The stream size and the GPU's clock during a scan are
+decided on real sequences. The hash's design is compared later on real scans of objects (brief
+§7, 22); no ticket holds it yet. Tickets run one at a time (brief §7, 36). Done when
+`accept-the-colored-model` is done.
 
 ## 2. What the first phase needs from the user (hardware, decision)
 
