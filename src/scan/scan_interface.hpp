@@ -11,11 +11,16 @@
 /// sequence fused at the full voxel size) and idle again. The scan's files go into a directory of
 /// the scans directory named by its start time (docs/SCAN_FILES.md, "A scan's directory"). The
 /// live model is a second value beside the state, published under a lock of its own at most once
-/// a live_model_interval while the scan tracks (scan/live_model.hpp). Also the rule of the "too
-/// close" notice (R36).
+/// a live_model_interval while the scan tracks (scan/live_model.hpp). With the hold of the color
+/// camera's exposure and white balance in front of the source (camera/color_hold.hpp), the state
+/// and the parameters name the properties the camera refused (R13). Unless the sequence is to be
+/// kept, a refined scan's sequence is removed after its full model is written (R18). Also the rule
+/// of the "too close" notice (R36).
 
 #pragma once
 
+#include "camera/camera_properties.hpp"
+#include "camera/color_hold.hpp"
 #include "camera/frame.hpp"
 #include "camera/frame_source.hpp"
 #include "camera/sequence_writer.hpp"
@@ -28,8 +33,10 @@
 
 #include <cuda_runtime_api.h>
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -107,14 +114,20 @@ struct scan_state
                              ///< tracker's or the writer's message; empty for the operator's
                              ///< stop and the service's
     scan_outcome outcome = scan_outcome::none; ///< what became of the last scan
-    std::string outcome_message; ///< why the last scan is unfinished, in plain English; empty
-                                 ///< otherwise
+    /// Why the last scan is unfinished, in plain English; for a refined scan whose sequence was to
+    /// be removed (scan_options::keep_sequence), why it could not be; empty otherwise.
+    std::string outcome_message;
     /// The last refusal: a command refused or a start that failed, with the reason; empty before
     /// the first.
     std::string refusal;
     /// Why a live model of the scan in progress or the last one could not be taken, the last
     /// time one could not, in plain English; empty while each was taken. The scan goes on.
     std::string live_model_failure;
+    /// The reads and writes of the camera's run-time properties the camera refused since the
+    /// source of the scan in progress or the last one opened, each as its line
+    /// (camera/color_hold.hpp, refusal_line()), in order, joined by "; "; empty while none was,
+    /// and for a source without the hold. The scan goes on (R13).
+    std::string property_refusals;
 };
 
 /// The answer to a command.
@@ -154,6 +167,19 @@ struct scan_options
     /// throw, must not wait for a command's answer and must not destroy the scan interface. The
     /// value it is given stays as it is until the call returns. Empty: no call.
     std::function<void(const live_model &)> on_live_model = {};
+    /// The report of the hold in front of the source (camera/color_hold.hpp), whose refusals the
+    /// state's property_refusals and the parameters' refused_properties name; nullptr, the
+    /// default, for a source without the hold: a sequence, the tests' synthetic source. The hold
+    /// is the source or lies inside it, so that the scan thread alone calls it; the scan thread
+    /// reads the report after the source's opening, each frame it asks for and its close. Owned
+    /// by the caller, which keeps the hold alive as long as the scan interface.
+    const color_hold_report *color_report = nullptr;
+    /// Whether a refined scan keeps its sequence: true, the default, for the replay tool and the
+    /// tests; the service's switch (R18), off unless asked for. When false, the sequence is
+    /// removed once the scan is refined, its full model and trajectory written; a scan left
+    /// unfinished, failed or discarded keeps what it has (docs/SCAN_FILES.md, "A scan's
+    /// directory").
+    bool keep_sequence = true;
 };
 
 /// The scan interface. One scan at a time; its thread lives as long as it does.
@@ -290,7 +316,7 @@ private:
     void run() noexcept;
 
     /// Runs one scan from its start to idle again: starting and scanning (run_scanning()), then
-    /// the parameters, refining and the files.
+    /// the parameters, refining and the files, and the sequence's removal when it is not kept.
     /// @param c [in,out] the start's command, answered here.
     /// @param stream [in] the scan thread's CUDA stream, which the scan's GPU work is queued on.
     void run_scan(command &c, cudaStream_t stream) noexcept;
@@ -314,7 +340,8 @@ private:
     /// @param directory [in] the scan's directory.
     /// @param requests [in,out] what the commands during the scan asked.
     /// @param outcome [in] what became of the scan, unless a discard changes it.
-    /// @param message [in] why it is unfinished; empty otherwise.
+    /// @param message [in] why it is unfinished; for a refined scan why its sequence stayed
+    ///        although it was to be removed; empty otherwise.
     void finish(const std::filesystem::path &directory, scan_requests &requests,
                 scan_outcome outcome, std::string message) noexcept;
 
@@ -333,6 +360,13 @@ private:
 
     /// Publishes an empty live model, without a frame, and calls its listener: a scan's start.
     void clear_live_model() noexcept;
+
+    /// Takes the hold's refusals not yet noted into the working state (scan_options::
+    /// color_report): each refusal's line appended to property_refusals, its property flagged in
+    /// m_refused; nothing without the report, or before the source of the scan opened.
+    /// @return whether a refusal was taken; the caller publishes the state then.
+    /// @note Allocates only for a refusal taken.
+    bool note_property_refusals() noexcept;
 
     /// Takes and publishes a live model after a fused frame, when the interval has passed since
     /// the last one published or none was (docs/methods/tracking.md, "The live model"): a live
@@ -386,6 +420,14 @@ private:
     /// When the scan thread decided to take the last live model published or to try one that
     /// failed; none at a scan's start. The scan thread's alone.
     std::optional<std::chrono::steady_clock::time_point> m_live_last;
+
+    /// The place in the hold's report of the refusals noted so far: none until the source of the
+    /// scan in progress opened, as the hold's report is the last opening's until then. The scan
+    /// thread's alone.
+    std::optional<color_report_cursor> m_refusals_noted;
+    /// The properties refused since the scan's source opened, one flag for each row of
+    /// color_property_table, for its parameters. The scan thread's alone.
+    std::array<bool, color_property_count> m_refused{};
 
     std::thread m_thread; ///< the scan thread, started last
 };

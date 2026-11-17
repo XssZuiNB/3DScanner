@@ -3,7 +3,8 @@
 <!--
   index.html - the page on which an operator makes a scan (docs/ROUTES.md; the spec, "The web
   layer and the page"): the object class and the start, the live model in a 3D view, the tracking
-  state, the "too close" notice, the stop, the discard and the refinement that runs. What it does
+  state, the "too close" notice, the camera's settings it refused, the stop, the discard and the
+  refinement that runs. What it does
   is scan_page.js's, its 3D view live_view.js's, its look page.css's.
 -->
 <html lang="en">
@@ -90,6 +91,7 @@
       <p class="next">Next: wait until refinement ends, or discard the scan to keep nothing.</p>
     </section>
     <p class="warning" id="live-model-failure" hidden></p>
+    <p class="warning" id="property-refusals" hidden></p>
     <p class="refusal" id="refusal" role="alert" hidden></p>
     <div class="actions">
       <button class="primary" id="start" type="button" hidden>Start the scan</button>

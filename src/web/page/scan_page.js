@@ -91,6 +91,7 @@ const ENDS = {
  *   outcome: string,
  *   outcome_message: string,
  *   live_model_failure: string,
+ *   property_refusals: string,
  * }}
  */
 let ScanState;
@@ -290,7 +291,9 @@ function lastScanOf(state) {
   const ended = endOf(state);
   switch (state.outcome) {
     case 'refined':
-      return `${scan} is refined and kept. ${ended}`;
+      return state.outcome_message === '' ?
+          `${scan} is refined and kept. ${ended}` :
+          `${scan} is refined and kept; ${state.outcome_message}. ${ended}`;
     case 'unfinished':
       return `${scan} is unfinished: ${state.outcome_message}. ${ended}`;
     case 'discarded':
@@ -329,6 +332,8 @@ class ScanPage {
     this.refiningEnd_ = this.part_('refining-end');
     /** @private @const {!HTMLElement} */
     this.liveModelFailure_ = this.part_('live-model-failure');
+    /** @private @const {!HTMLElement} */
+    this.propertyRefusals_ = this.part_('property-refusals');
     /** @private @const {!HTMLElement} */
     this.refusal_ = this.part_('refusal');
     /** @private @const {!HTMLButtonElement} */
@@ -518,7 +523,8 @@ class ScanPage {
   }
 
   /**
-   * Shows a state: the panel of its phase, the tracking state, the notice and
+   * Shows a state: the panel of its phase, the tracking state, the notice, the
+   * live model that could not be taken and the camera's refused settings, and
    * what the last scan became.
    * @param {!ScanState} state The state.
    * @private
@@ -552,6 +558,10 @@ class ScanPage {
         `A live model could not be taken: ${failure}. The scan goes on.`;
     this.liveModelFailure_.hidden =
         failure === '' || !scanInProgress(state.phase);
+    const refusals = state.property_refusals;
+    this.propertyRefusals_.textContent = `${refusals}. The scan goes on.`;
+    this.propertyRefusals_.hidden =
+        refusals === '' || !scanInProgress(state.phase);
     this.showButtons_();
   }
 

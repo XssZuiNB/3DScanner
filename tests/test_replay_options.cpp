@@ -224,6 +224,7 @@ void test_set_of(const places &p, const std::filesystem::path &directory)
                                        values,
                                        {{640, 400}, {306.18f, 306.14f, 317.41f, 199.13f}, 0.001f},
                                        {"sequence of a kept scan", "", ""},
+                                       {},
                                        time,
                                        time,
                                        {10, 8, 2, 0},

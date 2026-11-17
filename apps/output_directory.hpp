@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: 0BSD
 /// @file output_directory.hpp
-/// The check a program makes of the directory its command line names for what it writes:
-/// orbbec_viewer's --sequence and the replay tool's --scans. The directory must exist, be a
-/// directory, hold nothing, and let the program create a file in it. Host only; it looks and
-/// changes nothing on disk.
+/// The checks a program makes of the directory its command line names for what it writes:
+/// orbbec_viewer's --sequence and the replay tool's --scans, which must hold nothing, and the
+/// service's --scans, which holds the scans made before. The directory must exist, be a directory
+/// and let the program create a file in it. Host only; it looks and changes nothing on disk.
 
 #pragma once
 
@@ -12,10 +12,10 @@
 
 namespace gca
 {
-/// Says why a program cannot write into a directory: it does not exist or is no directory, it
-/// cannot be listed, it holds something already, or it cannot be written. Writing stands for
-/// creating a file in it (access() with W_OK and X_OK), so a directory on a read-only mount is
-/// refused too.
+/// Says why a program cannot write into a directory that must hold nothing: it does not exist or
+/// is no directory, it cannot be listed, it holds something already, or it cannot be written.
+/// Writing stands for creating a file in it (access() with W_OK and X_OK), so a directory on a
+/// read-only mount is refused too.
 /// @param directory [in] the directory the command line names.
 /// @return the reason, without the option's name: "no such directory", "is no directory",
 ///         "cannot be read: <message>", "holds something already" or "cannot be written:
@@ -23,4 +23,14 @@ namespace gca
 ///         program can write there.
 /// @note Allocates for the reason. Two threads may call it at once.
 std::string output_directory_refusal(const std::filesystem::path &directory);
+
+/// Says why a program cannot write into a directory whatever it holds: it does not exist or is
+/// no directory, or it cannot be written, as output_directory_refusal() says; what it holds is
+/// not looked at.
+/// @param directory [in] the directory the command line names.
+/// @return the reason, without the option's name: "no such directory", "is no directory",
+///         "cannot be read: <message>" or "cannot be written: <message>"; empty when the program
+///         can write there.
+/// @note Allocates for the reason. Two threads may call it at once.
+std::string writable_directory_refusal(const std::filesystem::path &directory);
 } // namespace gca

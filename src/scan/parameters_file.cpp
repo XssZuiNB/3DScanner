@@ -45,15 +45,16 @@ constexpr std::string_view class_key = "object_class";
 constexpr std::string_view set_key = "parameters";
 constexpr std::string_view stream_key = "stream";
 constexpr std::string_view source_key = "source";
+constexpr std::string_view refused_key = "refused_properties";
 constexpr std::string_view start_key = "start_utc";
 constexpr std::string_view stop_key = "stop_utc";
 constexpr std::string_view frames_key = "frames";
 constexpr std::string_view end_key = "end";
 
 /// The keys of the top level, in the order the writer writes them.
-constexpr std::array<std::string_view, 10> top_keys = {version_key, commit_key, class_key, set_key,
-                                                       stream_key,  source_key, start_key, stop_key,
-                                                       frames_key,  end_key};
+constexpr std::array<std::string_view, 11> top_keys = {
+    version_key, commit_key, class_key, set_key,    stream_key, source_key,
+    refused_key, start_key,  stop_key,  frames_key, end_key};
 
 /// The keys of "source", in the order the writer writes them.
 constexpr std::array<std::string_view, 3> source_keys = {"camera", "firmware_version",
@@ -573,6 +574,51 @@ std::optional<std::string> read_string(const cv::FileNode &node, const std::stri
     return value;
 }
 
+/// Reads the camera's run-time properties refused: an array of names of color_property_table. A
+/// name is compared with the table's own, so that only its five names, which string_refusal()
+/// admits, are read.
+/// @param root [in] the top level, read by FileStorage.
+/// @param reason [out] why it was refused, naming the key; set only on a refusal.
+/// @return one flag for each row of the table, true for a name the array holds; nothing when the
+///         value is no array, or holds a value that is no string, no name of the table, or a name
+///         twice.
+std::optional<std::array<bool, color_property_count>> read_refused(const cv::FileNode &root,
+                                                                   std::string &reason)
+{
+    const cv::FileNode names = root[std::string(refused_key)];
+    if (!names.isSeq())
+    {
+        reason = in_quotes(refused_key) + " is no JSON array";
+        return std::nullopt;
+    }
+    std::array<bool, color_property_count> refused{};
+    for (const cv::FileNode &node : names)
+    {
+        if (!node.isString())
+        {
+            reason = in_quotes(refused_key) + " holds a value that is no string";
+            return std::nullopt;
+        }
+        const std::string name = node.string();
+        std::size_t k = 0;
+        while (k < color_property_count && name != color_property_table[k].name)
+            k++;
+        if (k == color_property_count)
+        {
+            reason = in_quotes(refused_key) + " holds \"" + name.substr(0, 40) +
+                     "\", no property of the camera the scanner touches";
+            return std::nullopt;
+        }
+        if (refused[k])
+        {
+            reason = in_quotes(refused_key) + " holds \"" + name + "\" twice";
+            return std::nullopt;
+        }
+        refused[k] = true;
+    }
+    return refused;
+}
+
 /// Reads a time of the top level.
 /// @param root [in] the top level, read by FileStorage.
 /// @param key [in] the time's key.
@@ -719,6 +765,11 @@ std::optional<scan_parameters> parse(const std::string &text, std::string &reaso
             return std::nullopt;
         *strings[k] = std::move(*value);
     }
+    const std::optional<std::array<bool, color_property_count>> refused =
+        read_refused(root, reason);
+    if (!refused)
+        return std::nullopt;
+    read.refused_properties = *refused;
 
     const std::optional<utc_time> started = read_time(root, start_key, reason);
     if (!started)
@@ -848,6 +899,16 @@ write_result write_parameters(const std::filesystem::path &path,
         const std::array<const std::string *, 3> strings = strings_of(parameters.source);
         for (std::size_t k = 0; k < source_keys.size(); k++)
             cv::write(storage, std::string(source_keys[k]), *strings[k]);
+        storage.endWriteStruct();
+        // The table's names, printable ASCII without the apostrophe, which OpenCV writes as JSON;
+        // an empty array as "[" and "]" on lines of their own, which it reads back as an empty
+        // sequence [M 2026-11-17: OpenCV 4.8.0, python's cv2].
+        storage.startWriteStruct(std::string(refused_key), cv::FileNode::SEQ);
+        for (std::size_t k = 0; k < color_property_count; k++)
+        {
+            if (parameters.refused_properties[k])
+                cv::write(storage, std::string(), std::string(color_property_table[k].name));
+        }
         storage.endWriteStruct();
         cv::write(storage, std::string(start_key), start);
         cv::write(storage, std::string(stop_key), stop);

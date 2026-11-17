@@ -143,6 +143,7 @@ std::string state_message(const scan_state &state)
     append_field(json, "outcome_message", state.outcome_message);
     append_field(json, "refusal", state.refusal);
     append_field(json, "live_model_failure", state.live_model_failure);
+    append_field(json, "property_refusals", state.property_refusals);
     json += '}';
     return json;
 }

@@ -307,6 +307,23 @@ void scan_interface::clear_live_model() noexcept
         m_options.on_live_model(m_live.value);
 }
 
+bool scan_interface::note_property_refusals() noexcept
+{
+    if (m_options.color_report == nullptr || !m_refusals_noted)
+        return false;
+    const std::span<const color_refusal> taken =
+        m_refusals_noted->take_refusals(*m_options.color_report);
+    for (const color_refusal &refusal : taken)
+    {
+        if (!m_working.property_refusals.empty())
+            m_working.property_refusals += "; ";
+        m_working.property_refusals += refusal_line(refusal);
+        for (std::size_t i = 0; i < color_property_count; i++)
+            m_refused[i] = m_refused[i] || color_property_table[i].property == refusal.property;
+    }
+    return !taken.empty();
+}
+
 void scan_interface::take_live_model(live_model_taker &taker, const sparse_tsdf &model,
                                      std::uint64_t frame, const camera_pose &pose,
                                      cudaStream_t stream) noexcept
@@ -380,6 +397,8 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
     // freed with this function's return.
     const auto start_failed = [this, &c, &made, stream](const std::string &reason) {
         const cudaError_t waited = cudaStreamSynchronize(stream);
+        // The hold's refusals of a source that opened and was closed again; none before.
+        note_property_refusals();
         m_working.phase = scan_phase::idle;
         refuse(c, waited == cudaSuccess
                       ? reason
@@ -406,6 +425,9 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
     const open_result opened = m_source.open(m_options.stream_size);
     if (!opened.opened)
         return start_failed("the frame source refused to open: " + opened.refusal);
+    // The hold's report is this opening's from here on (camera/color_hold.hpp, report()).
+    m_refusals_noted.emplace();
+    note_property_refusals();
     made.source = m_source.describe();
     const std::string not_held = source_refusal(made.source);
     if (!not_held.empty())
@@ -417,6 +439,7 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
     }
     frame current;
     const next_result first = m_source.next(current);
+    note_property_refusals();
     if (first.status != next_status::frame)
     {
         m_source.close();
@@ -536,6 +559,8 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
             break;
         }
         const next_result next = m_source.next(current);
+        if (note_property_refusals())
+            publish();
         if (next.status != next_status::frame)
         {
             made.end = end_of(next.status);
@@ -545,6 +570,7 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
     }
     made.stop = now_utc();
     m_source.close();
+    note_property_refusals();
     const write_result closed = m_writer.close();
     if (!closed.written && made.end != scan_end::writer_failed)
     {
@@ -573,6 +599,9 @@ void scan_interface::run_scan(command &c, cudaStream_t stream) noexcept
     m_working.outcome = scan_outcome::none;
     m_working.outcome_message.clear();
     m_working.live_model_failure.clear();
+    m_working.property_refusals.clear();
+    m_refusals_noted.reset();
+    m_refused = {};
     clear_live_model();
     publish();
 
@@ -588,9 +617,9 @@ void scan_interface::run_scan(command &c, cudaStream_t stream) noexcept
     m_working.end_message = scan.end_message;
 
     // The parameters at the stop, so that a scan left unfinished keeps them.
-    const scan_parameters parameters = {m_options.commit, request.object_class, request.set,
-                                        scan.frames,      scan.source,          scan.start,
-                                        scan.stop,        m_working.frames,     scan.end};
+    const scan_parameters parameters = {
+        m_options.commit, request.object_class, request.set, scan.frames,      scan.source,
+        m_refused,        scan.start,           scan.stop,   m_working.frames, scan.end};
     const write_result kept = write_parameters(scan.directory / parameters_name, parameters);
     if (!kept.written)
         return finish(scan.directory, requests, scan_outcome::unfinished,
@@ -637,6 +666,17 @@ void scan_interface::run_scan(command &c, cudaStream_t stream) noexcept
                           (error ? "; and the trajectory could not be removed: " + error.message()
                                  : std::string()));
     }
-    finish(scan.directory, requests, scan_outcome::refined, {});
+    // Without the switch only a refined scan's sequence goes (R18): the full model and trajectory
+    // stand, and refinement does not read it again. A sequence that cannot be removed leaves the
+    // scan refined, with the reason.
+    std::string sequence_left;
+    if (!m_options.keep_sequence)
+    {
+        std::error_code error;
+        std::filesystem::remove(scan.directory / sequence_file_name, error);
+        if (error)
+            sequence_left = "its sequence could not be removed: " + error.message();
+    }
+    finish(scan.directory, requests, scan_outcome::refined, std::move(sequence_left));
 }
 } // namespace gca

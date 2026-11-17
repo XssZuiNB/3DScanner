@@ -33,14 +33,14 @@ writes into it:
 
 | file | what | when |
 |---|---|---|
-| `frames.sequence` | the sequence (docs/SEQUENCE_FILE.md): every frame taken but the one tracking failed on, with its pose or the mark of tracking loss | while the scan runs |
+| `frames.sequence` | the sequence (docs/SEQUENCE_FILE.md): every frame taken but the one tracking failed on, with its pose or the mark of tracking loss | while the scan runs; removed once the scan is refined, unless the sequence is kept (below) |
 | `parameters.json` | the parameters ("Parameters" below) | at the scan's stop, before refining |
 | `trajectory.txt` | the trajectory ("Trajectory" below), as refinement read it back from the sequence | after refining |
 | `full.ply` | the full model ("Models" below) | after refining |
 
 A scan ends as one of these, which its directory shows:
 
-* **refined**: the four files;
+* **refined**: the four files, or the three without the sequence when it is not kept (below);
 * **unfinished**: the sequence and the parameters, without a trajectory or a full model, when
   refinement failed (the scan interface's state says why), when the scan interface ended during
   the scan (`end` `shut_down`) or during refinement, or when the trajectory or the full model could
@@ -52,8 +52,14 @@ A scan ends as one of these, which its directory shows:
   with the reason in the scan interface's state, never reported as discarded.
 
 A start that fails (the GPU's buffers refused, the source refusing to open, giving no first frame
-or describing itself with a string the parameters cannot hold) leaves nothing on disk. The
-sequence stays after refining; the switch that deletes it then (R18) is not built.
+or describing itself with a string the parameters cannot hold) leaves nothing on disk.
+
+**The sequence switch** (R18; `scan_options::keep_sequence`): the service removes a scan's
+sequence once the scan is refined, its full model and trajectory written, unless it was started
+with `--keep-sequence` (docs/SERVICE.md); the replay tool and the tests keep it. Only a refined
+scan loses its sequence: an unfinished one keeps the sequence it has, so that it can be refined
+again, and a discarded one has nothing. A sequence that cannot be removed leaves the scan refined,
+and the scan interface's state says why (`outcome_message`, docs/ROUTES.md).
 
 ## The models' frame
 
@@ -138,7 +144,8 @@ Example, seven distinct values in the tracked line: frame 7 with the camera's ce
 JSON, written and read with OpenCV's `cv::FileStorage` on memory (ADR 0002: no other JSON
 library). It holds the set of parameters the scan ran with and the scan's facts. Example, a large
 object's scan whose set differs from the object class's own in eight values, so that every value
-of it is another, stopped by the operator after five minutes:
+of it is another, whose camera refused a read of its exposure, stopped by the operator after five
+minutes:
 
     {
         "format_version": 1,
@@ -184,6 +191,9 @@ of it is another, stopped by the operator after five minutes:
             "firmware_version": "1.5.02",
             "sdk_version": "2.10.6"
         },
+        "refused_properties": [
+            "exposure"
+        ],
         "start_utc": "20261116T093012.250000Z",
         "stop_utc": "20261116T093512.750000Z",
         "frames": {
@@ -230,6 +240,7 @@ of it is another, stopped by the operator after five minutes:
 | `camera` | the camera's name, or the kind of source: a sequence's says `sequence` and its path |
 | `firmware_version` | the camera's firmware's version |
 | `sdk_version` | OrbbecSDK's version |
+| `refused_properties` | the camera's run-time properties (AGENTS.md §3, `src/camera/camera_properties.hpp`) the camera refused a read or a write of while the scan's source was open, so that the scan went on with that control automatic or that value unread (R13; `src/camera/color_hold.hpp`): an array of their names, each once, in the order of their numbers, of `auto exposure` (2000), `exposure` (2001), `gain` (2002), `auto white balance` (2003) and `white balance` (2004); its empty form, `[` and `]` on lines of their own, which OpenCV reads back as an empty array [M 2026-11-17: OpenCV 4.8.0, Python's cv2, and ctest `scan_files`], when none was refused and for a source without the hold, a sequence's in a replay. The scan interface's state names each refusal with its step and reason (`property_refusals`, docs/ROUTES.md) |
 | `start_utc`, `stop_utc` | the times the scan started and stopped, in UTC to the microsecond as ISO 8601's basic format, `YYYYMMDDTHHMMSS.ffffffZ`, from `19700101T000000.000000Z` to `99991231T235959.999999Z` (`src/scan/utc_time.hpp`); the system's clock, which counts no leap second and may be set back, so the stop is not checked against the start |
 | `frames` | the frames of the scan, an object of the four counts below, each a whole number from 0 to 2^53 |
 | `taken` | the frames the scanner took, each of which entered the per-frame path: those fused, those lost, and, when the scan ended because tracking failed (`end` is `tracking_failed`), the frame it failed on, which tracking gave neither a pose nor tracking loss and which is in neither the sequence nor the trajectory; so `taken` is `fused` and `lost` together, and 1 more then |
@@ -264,7 +275,10 @@ value states its empty form here when it is added, so the file keeps one version
 before the thirteen keys from `too_close_depth_m` on joined the set (2026-11-15, evening) lacks
 them, and the reader refuses it: `no key "too_close_depth_m" in "parameters"`. A file written
 before the set's six keys of the sparse TSDF's truncation and the normals and the scan's facts
-joined (2026-11-16) lacks them too: `no key "stream" at the top level`.
+joined (2026-11-16) lacks them too: `no key "stream" at the top level`. A file written before
+`refused_properties` joined (2026-11-17) lacks it, and the reader refuses it: `no key
+"refused_properties" at the top level`; so the parameters of every scan kept before then are no
+longer read.
 
 Each object class's own set stands in `src/scan/object_class.cpp`, each value with its
 evidence. A scan stores the set it was made with, and a stored set is read back as it stands,
@@ -290,8 +304,8 @@ byte other than `\b \f \n \r \t` raw, which is no JSON; and a string of more tha
 does not read back (4097 make the writer throw). So a string in the file is at most 4095
 characters of printable ASCII (0x20 to 0x7e) without the apostrophe, and does not both start and
 end with a double quote. A byte above 0x7e is refused too, as the reader checks no UTF-8. A
-commit hash, the object classes' names, a time's text and the keys of why a scan ended lie in
-this set. The source's strings are the source's own: a camera's name and versions as OrbbecSDK
+commit hash, the object classes' names, a time's text, the keys of why a scan ended and the
+properties' names lie in this set. The source's strings are the source's own: a camera's name and versions as OrbbecSDK
 reports them, and a sequence's path, which can hold an apostrophe. The writer refuses another
 string and the reader refuses one, naming the key, so a scan whose source describes itself with
 such a string has to refuse it before it writes anything.
@@ -304,7 +318,8 @@ The reader refuses, naming the key:
   version is refused as such;
 - a key it does not know, a key that stands twice, and a missing key, at the top level and in
   `parameters`, `stream`, `source` and `frames`;
-- a value of another type, an unknown object class, a string outside the set above, a value
+- a value of another type, an unknown object class, a refused property that is no name of the
+  five or stands twice, a string outside the set above, a value
   out of the range above, a count of iterations or points that is no whole number from 0 to
   2^32 - 1, a width or height that is no whole number from 1 to 2^32 - 1, a count of frames that
   is no whole number from 0 to 2^53, frames taken that are not those fused and lost together and

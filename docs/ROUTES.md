@@ -20,7 +20,8 @@ change changes this document, the web layer, the page and those tests together (
 
 The routes have no authentication and no encryption (R6): every browser that reaches the port may
 read the state and give every command. They are for the operator's own network, never for the
-internet. The service chooses the address it listens on; the test listens on `127.0.0.1` alone.
+internet. The service chooses the address it listens on, every interface of the board (`0.0.0.0`)
+unless told otherwise (docs/SERVICE.md); the tests listen on `127.0.0.1` alone.
 
 ## Routes
 
@@ -120,13 +121,14 @@ exactly [S: IEEE 754 binary64, a 53-bit significand].
 | `end` | why the scan in progress or the last one ended, one key of docs/SCAN_FILES.md's closed set (`stopped`, `source_timeout`, `source_failure`, `source_end`, `tracking_failed`, `writer_failed`, `shut_down`); empty before it ended and for a scan discarded |
 | `end_message` | what ended it, in plain English; empty for the operator's stop and the service's |
 | `outcome` | what became of the last scan: `none` before the first ended, `refined`, `unfinished` or `discarded` |
-| `outcome_message` | why the last scan is unfinished, in plain English; empty otherwise |
+| `outcome_message` | why the last scan is unfinished, in plain English; for a refined scan whose sequence the service was to remove (docs/SCAN_FILES.md, "The sequence switch"), why it could not; empty otherwise |
 | `refusal` | the last command refused or start failed, with the reason; empty before the first |
 | `live_model_failure` | why a live model could not be taken, the last time one could not; empty while each was taken |
+| `property_refusals` | the reads and writes of the camera's run-time properties (AGENTS.md §3) the camera refused since the source of the scan in progress or the last one opened, each as the hold's line (`src/camera/color_hold.hpp`, `refusal_line()`: `Color: the camera refused to read <property> (<number>) <step>: <reason>` or `... to switch <property> (<number>) <on\|off> <step>: <reason>`), in order, joined by `; `; empty while none was and for a source without the hold. The scan goes on (R13); the scan's parameters name the properties (`refused_properties`, docs/SCAN_FILES.md), a key that joined them with this one on 2026-11-17, so the parameters of every scan kept before then are no longer read |
 
 Example, a tabletop scan 31 frames in, the camera in view, after a second start was refused:
 
-    {"version":40,"phase":"scanning","scan":"20261117T101112.123456Z","tracking":"tracking","lost_cause":"passed","too_close":false,"frames":{"taken":31,"fused":31,"lost":0,"not_taken":0},"end":"","end_message":"","outcome":"none","outcome_message":"","refusal":"a scan is in progress (scanning)","live_model_failure":""}
+    {"version":40,"phase":"scanning","scan":"20261117T101112.123456Z","tracking":"tracking","lost_cause":"passed","too_close":false,"frames":{"taken":31,"fused":31,"lost":0,"not_taken":0},"end":"","end_message":"","outcome":"none","outcome_message":"","refusal":"a scan is in progress (scanning)","live_model_failure":"","property_refusals":""}
 
 ### A command's answer
 

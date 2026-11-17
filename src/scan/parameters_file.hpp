@@ -2,9 +2,11 @@
 /// @file parameters_file.hpp
 /// A scan's parameters on disk: JSON with a format version, the tree's commit, the object class,
 /// the set of parameters in force, and the scan's facts: the stream's size, intrinsics and depth
-/// unit, what delivered the frames, the times of its start and stop, the frames taken, fused,
-/// lost and not taken, and why it ended (docs/SCAN_FILES.md, "Parameters"). Why a scan ended is
-/// one key of a closed set, never free text: OpenCV writes only some strings as JSON. The writer
+/// unit, what delivered the frames, the camera's run-time properties it refused, the times of its
+/// start and stop, the frames taken, fused, lost and not taken, and why it ended
+/// (docs/SCAN_FILES.md, "Parameters"). Why a scan ended is one key of a closed set, and a property
+/// refused one of the five names of camera/camera_properties.hpp's table, never free text: OpenCV
+/// writes only some strings as JSON. The writer
 /// and the reader use OpenCV's FileStorage on memory and do the file's I/O themselves
 /// (scan/file_io.hpp). The reader refuses, with the reason, a file of another version, a key it
 /// does not know, a key twice or missing, a value of another type, a string that OpenCV does not
@@ -13,12 +15,14 @@
 
 #pragma once
 
+#include "camera/camera_properties.hpp"
 #include "camera/frame_source.hpp"
 #include "scan/file_io.hpp"
 #include "scan/object_class.hpp"
 #include "scan/utc_time.hpp"
 #include "types/frame_description.hpp"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -89,6 +93,11 @@ struct scan_parameters
     /// What delivered the frames and its versions (camera/frame_source.hpp), each string one the
     /// commit's rule admits; an empty string where the source has no such version.
     source_description source;
+    /// The camera's run-time properties the camera refused a read or a write of while the scan's
+    /// source was open (camera/color_hold.hpp): one flag for each row of color_property_table, in
+    /// its order, true for a property refused at least once; all false for a source without the
+    /// hold, a sequence's or the tests' synthetic one.
+    std::array<bool, color_property_count> refused_properties;
     utc_time start;           ///< when the scan started, from 1970 to 9999 (scan/utc_time.hpp)
     utc_time stop;            ///< when it stopped, from 1970 to 9999
     scan_frame_counts frames; ///< the frames taken, fused, lost and not taken
@@ -134,13 +143,14 @@ write_result write_parameters(const std::filesystem::path &path,
 /// @return the parameters; or the reason, naming the path and the key: the file cannot be read,
 ///         does not start with '{' after any white space, is no JSON that OpenCV reads, is of
 ///         another format version, holds a key the reader does not know or a key twice, lacks a
-///         key, holds a value of another type, an unknown object class, a count of iterations
-///         that is no whole number from 0 to 2^32 - 1, a width or height that is no whole number
-///         from 1 to 2^32 - 1, a count of frames that is no whole number from 0 to 2^53, a value
+///         key, holds a value of another type, an unknown object class, a refused property that
+///         is no name of color_property_table or stands twice, a count of iterations that is no
+///         whole number from 0 to 2^32 - 1, a width or height that is no whole number from 1 to
+///         2^32 - 1, a count of frames that is no whole number from 0 to 2^53, a value
 ///         of the stream that no float holds, a time that is not the text of utc_time_of(), an
 ///         unknown key of why the scan ended, or a string, a set or a fact the writer refuses; a
-///         file written before the scan's facts and the set's six keys of 2026-11-16 among them,
-///         which lacks a key.
+///         file written before the scan's facts and the set's six keys of 2026-11-16, or before
+///         "refused_properties" of 2026-11-17, among them, which lacks a key.
 /// @note Allocates. A failed allocation ends the program (std::terminate): the function is
 ///       noexcept.
 read_result<scan_parameters> read_parameters(const std::filesystem::path &path) noexcept;

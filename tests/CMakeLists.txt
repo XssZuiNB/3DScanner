@@ -16,6 +16,11 @@ add_executable(test_viewer_options test_viewer_options.cpp)
 target_link_libraries(test_viewer_options PRIVATE viewer_options)
 add_test(NAME viewer_options COMMAND test_viewer_options)
 
+# The scanner service's command line, on directories the test makes; needs no GPU.
+add_executable(test_service_options test_service_options.cpp)
+target_link_libraries(test_service_options PRIVATE service_options)
+add_test(NAME service_options COMMAND test_service_options)
+
 # The replay tool's command line, on paths the test makes; needs no GPU.
 add_executable(test_replay_options test_replay_options.cpp)
 target_link_libraries(test_replay_options PRIVATE replay_options)
@@ -40,8 +45,9 @@ add_executable(test_orbbec_imu test_orbbec_imu.cpp)
 target_link_libraries(test_orbbec_imu PRIVATE camera)
 add_test(NAME orbbec_imu COMMAND test_orbbec_imu)
 
-# The hold of the color camera's exposure and white balance, in front of a stand-in camera: the
-# synthetic source's frames and a table of the camera's properties; links no OrbbecSDK.
+# The hold of the color camera's exposure and white balance, in front of the tests' stand-in camera
+# (stand_in_camera.hpp, header only): the synthetic source's frames and a table of the camera's
+# properties; links no OrbbecSDK.
 add_executable(test_color_hold test_color_hold.cpp)
 target_link_libraries(test_color_hold PRIVATE synthetic_source)
 add_test(NAME color_hold COMMAND test_color_hold)
@@ -240,3 +246,19 @@ add_test(NAME http_routes COMMAND test_http_routes "${GCA_PAGE_DIRECTORY}")
 add_executable(test_websocket test_websocket.cpp)
 target_link_libraries(test_websocket PRIVATE web synthetic_source httplib::httplib opencv_core)
 add_test(NAME websocket COMMAND test_websocket)
+
+# The scanner service's parts driven as the program drives them, with the stand-in camera in front
+# of the web tests' paced walk, stopped by the signals the test sends itself; scan_in_progress run
+# against it as a program. ctest ends it after 120 s [?: a choice], so that a stop that never ends
+# fails it instead of holding the run.
+add_executable(test_scanner_service test_scanner_service.cpp)
+target_link_libraries(
+    test_scanner_service
+    PRIVATE
+    service
+    synthetic_source
+    httplib::httplib
+    opencv_core
+)
+add_test(NAME scanner_service COMMAND test_scanner_service $<TARGET_FILE:scan_in_progress>)
+set_tests_properties(scanner_service PROPERTIES TIMEOUT 120)

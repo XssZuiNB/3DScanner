@@ -14,8 +14,10 @@
 /// off, leaves the control automatic, and a refused switch on at the start leaves it as the camera
 /// had it. A read refused while held or at the end only goes into the report: the control stays
 /// as it is. Only delivered frames count; a timeout, a failure and the end count none. The frames
-/// pass through unchanged. orbbec_viewer --hold-color prints the report's lines; it builds without
-/// OrbbecSDK, and tests/test_color_hold.cpp drives it.
+/// pass through unchanged. orbbec_viewer --hold-color prints the report's lines, the service logs
+/// them and names the refusals in a scan's state and parameters, each reading the entries added
+/// since it last looked through a color_report_cursor; it builds without OrbbecSDK, and
+/// tests/test_color_hold.cpp drives it.
 
 #pragma once
 
@@ -28,6 +30,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -78,6 +81,34 @@ struct color_hold_report
 {
     std::vector<color_reading> readings; ///< the readings taken
     std::vector<color_refusal> refusals; ///< the reads and writes the camera refused
+};
+
+/// A reader's place in the hold's report of one opening: the readings and the refusals it took so
+/// far, so that each take gives the entries added since the last. The report starts anew at each
+/// opening that took (color_hold::open()), and so does the reader then, with restart(); a reader
+/// that restarts after a refused opening would take the last opening's entries again.
+class color_report_cursor
+{
+public:
+    /// Starts at the report's beginning, as after an opening that took.
+    void restart() noexcept;
+
+    /// Takes the readings added since the last take.
+    /// @param report [in] the hold's report.
+    /// @return them, in order, a view into the report, valid until the report changes; empty when
+    ///         none was added.
+    /// @note Allocates nothing. The thread of the hold's calls.
+    std::span<const color_reading> take_readings(const color_hold_report &report) noexcept;
+
+    /// Takes the refusals added since the last take.
+    /// @param report [in] the hold's report.
+    /// @return them, in order, as take_readings() gives the readings.
+    /// @note Allocates nothing. The thread of the hold's calls.
+    std::span<const color_refusal> take_refusals(const color_hold_report &report) noexcept;
+
+private:
+    std::size_t m_readings = 0; ///< the readings taken since the opening
+    std::size_t m_refusals = 0; ///< the refusals taken since the opening
 };
 
 /// Builds a reading's line.

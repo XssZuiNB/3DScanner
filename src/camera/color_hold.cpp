@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: 0BSD
 /// @file color_hold.cpp
 /// The color camera's exposure and white balance held for a scan: the steps at the opening, after
-/// the settling and at the close, the rule of which control is held, and the report's lines (see
-/// color_hold.hpp).
+/// the settling and at the close, the rule of which control is held, the report's lines and a
+/// reader's place in it (see color_hold.hpp).
 
 #include "color_hold.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <utility>
@@ -91,6 +92,30 @@ const char *step_name(color_step step) noexcept
     return "at an unknown step";
 }
 } // namespace
+
+void color_report_cursor::restart() noexcept
+{
+    m_readings = 0;
+    m_refusals = 0;
+}
+
+std::span<const color_reading> color_report_cursor::take_readings(
+    const color_hold_report &report) noexcept
+{
+    const std::span<const color_reading> taken =
+        std::span(report.readings).subspan(std::min(m_readings, report.readings.size()));
+    m_readings = report.readings.size();
+    return taken;
+}
+
+std::span<const color_refusal> color_report_cursor::take_refusals(
+    const color_hold_report &report) noexcept
+{
+    const std::span<const color_refusal> taken =
+        std::span(report.refusals).subspan(std::min(m_refusals, report.refusals.size()));
+    m_refusals = report.refusals.size();
+    return taken;
+}
 
 std::string reading_line(const color_reading &reading)
 {

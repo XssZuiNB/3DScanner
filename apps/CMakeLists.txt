@@ -11,7 +11,10 @@
 # drive too; replay, the replay tool, which runs a sequence through the scan interface, its
 # command-line reader replay_options, which the offline tests drive too, and build_commit, the
 # tree's commit the programs are built from; output_directory, the check of the directory a
-# command line names for what a program writes, which the viewer and the replay share.
+# command line names for what a program writes, which the viewer, the replay and the service share;
+# scanner_service, the service, its command-line reader service_options and its parts service,
+# which the offline tests drive with a stand-in camera, and scan_in_progress, which asks the
+# service whether a scan is in progress.
 
 # The check of the directory a program's command line names for what it writes, host only;
 # camera gives it the system's message for a directory it refuses.
@@ -130,6 +133,24 @@ target_link_libraries(replay_options PUBLIC scan PRIVATE camera output_directory
 add_executable(replay replay.cpp)
 target_link_libraries(replay PRIVATE build_commit replay_options scan_interface)
 
+# The service's command line, host only: built and tested without the camera and the GPU; camera
+# gives output_directory the system's message.
+add_library(service_options STATIC service_options.cpp service_options.hpp)
+target_include_directories(service_options PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(service_options PRIVATE output_directory)
+
+# The service's parts: the stop signals, the log, and the composition of the hold, the writer, the
+# scan interface and the web layer that serves until a stop signal; links no OrbbecSDK, so that
+# the offline test drives it with a stand-in camera.
+add_library(service STATIC service.cpp service.hpp)
+target_link_libraries(service PUBLIC service_options scan_interface PRIVATE web)
+
+# Whether the service has a scan in progress, asked over HTTP with cpp-httplib's client and the
+# thread library it takes; links no OrbbecSDK, CUDA or OpenCV.
+find_package(Threads REQUIRED)
+add_executable(scan_in_progress scan_in_progress.cpp)
+target_link_libraries(scan_in_progress PRIVATE service_options httplib::httplib Threads::Threads)
+
 # The Orbbec camera test: the viewer's loop on the camera.
 if(GCA_WITH_ORBBEC)
     add_executable(orbbec_viewer orbbec_viewer.cpp)
@@ -141,5 +162,18 @@ if(GCA_WITH_ORBBEC)
         viewer_options
     )
     set_target_properties(orbbec_viewer PROPERTIES
+        BUILD_RPATH "${OrbbecSDK_DIR}")
+
+    # The scanner service (R7): the service's parts on the Orbbec camera; the page's directory of
+    # the build without --page.
+    add_executable(scanner_service scanner_service.cpp)
+    target_link_libraries(scanner_service PRIVATE build_commit orbbec_camera service)
+    target_compile_definitions(
+        scanner_service
+        PRIVATE
+        GCA_DEFAULT_PAGE_DIRECTORY="${GCA_PAGE_DIRECTORY}"
+    )
+    add_dependencies(scanner_service page)
+    set_target_properties(scanner_service PROPERTIES
         BUILD_RPATH "${OrbbecSDK_DIR}")
 endif()

@@ -121,7 +121,8 @@ inline const std::vector<std::string> state_keys = {"version",
                                                     "outcome",
                                                     "outcome_message",
                                                     "refusal",
-                                                    "live_model_failure"};
+                                                    "live_model_failure",
+                                                    "property_refusals"};
 
 /// The keys of the state's frames, in the document's order.
 inline const std::vector<std::string> frames_keys = {"taken", "fused", "lost", "not_taken"};
@@ -144,6 +145,7 @@ struct state_fields
     std::string outcome_message;
     std::string refusal;
     std::string live_model_failure;
+    std::string property_refusals;
 };
 
 /// Gives a map's keys in their order.
@@ -194,6 +196,7 @@ inline std::optional<state_fields> read_state(const std::string &json)
         read.outcome_message = text(root["outcome_message"]);
         read.refusal = text(root["refusal"]);
         read.live_model_failure = text(root["live_model_failure"]);
+        read.property_refusals = text(root["property_refusals"]);
         return read;
     }
     catch (const cv::Exception &e)

@@ -22,6 +22,7 @@
 #include "camera/frame_source.hpp"
 #include "camera/orbbec_device.hpp"
 #include "camera/orbbec_rules.hpp"
+#include "stop_signals.hpp"
 #include "types/console_color.hpp"
 #include "types/frame_description.hpp"
 #include "viewer_loop.hpp"
@@ -29,7 +30,6 @@
 
 #include <atomic>
 #include <csignal>
-#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -55,13 +55,14 @@ void on_stop_signal(int /*signal_number*/)
     g_exit_requested.store(true);
 }
 
-/// Makes Ctrl-C (SIGINT), a kill or a timeout's end (SIGTERM) and a closed terminal or SSH session
-/// (SIGHUP) end the viewer's loop as 'q' does, so that the camera is closed and a sequence gets
-/// its end and its closing line. A second signal only sets the flag again.
+/// Makes the stop signals (stop_signals.hpp), Ctrl-C (SIGINT), a kill or a timeout's end (SIGTERM)
+/// and a closed terminal or SSH session (SIGHUP), end the viewer's loop as 'q' does, so that the
+/// camera is closed and a sequence gets its end and its closing line. A second signal only sets the
+/// flag again.
 void install_stop_handlers()
 {
-    for (const int signal_number : {SIGINT, SIGTERM, SIGHUP})
-        std::signal(signal_number, on_stop_signal);
+    for (const gca::stop_signal &stop : gca::stop_signals)
+        std::signal(stop.number, on_stop_signal);
 }
 
 /// The Orbbec camera, with --hold-color behind the hold of its color controls, and the viewer's
@@ -125,8 +126,7 @@ public:
         else
             std::cout << YELLOW << "No IMU: " << opening.imu_refusal
                       << "; the frames come without its samples" << RESET << std::endl;
-        m_readings_shown = 0;
-        m_refusals_shown = 0;
+        m_hold_shown.restart();
         print_hold();
         return opened;
     }
@@ -192,20 +192,18 @@ private:
         if (!m_hold)
             return;
         const gca::color_hold_report &report = m_hold->report();
-        for (; m_readings_shown < report.readings.size(); m_readings_shown++)
-            std::cout << gca::reading_line(report.readings[m_readings_shown]) << std::endl;
-        for (; m_refusals_shown < report.refusals.size(); m_refusals_shown++)
-            std::cout << YELLOW << gca::refusal_line(report.refusals[m_refusals_shown]) << RESET
-                      << std::endl;
+        for (const gca::color_reading &reading : m_hold_shown.take_readings(report))
+            std::cout << gca::reading_line(reading) << std::endl;
+        for (const gca::color_refusal &refusal : m_hold_shown.take_refusals(report))
+            std::cout << YELLOW << gca::refusal_line(refusal) << RESET << std::endl;
     }
 
     gca::orbbec_device m_camera;
     /// The hold with --hold-color; declared after the camera, so that it is destroyed first.
     std::optional<gca::color_hold> m_hold;
-    std::uint64_t m_skips_shown = 0;     ///< the skipped frames printed since the opening
-    std::uint64_t m_imu_skips_shown = 0; ///< the IMU's lost readings printed since the opening
-    std::size_t m_readings_shown = 0;    ///< the hold's readings printed since the opening
-    std::size_t m_refusals_shown = 0;    ///< the hold's refusals printed since the opening
+    std::uint64_t m_skips_shown = 0;       ///< the skipped frames printed since the opening
+    std::uint64_t m_imu_skips_shown = 0;   ///< the IMU's lost readings printed since the opening
+    gca::color_report_cursor m_hold_shown; ///< the hold's entries printed since the opening
 };
 
 /// Names the sequence --sequence asks for; nothing is created until the loop opens it.

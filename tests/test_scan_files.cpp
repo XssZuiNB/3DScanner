@@ -15,19 +15,21 @@
 ///   a time outside 1970 to 9999 has no text, and a text of another form or a day the calendar
 ///   lacks is no time;
 /// - the parameters of each object class, a set of neither, commits at the edges of the strings
-///   the file holds and the scan's facts at their edges, each key of why a scan ended among them,
-///   are read back equal; the document's example is read as the document says, also after white
-///   space, and written as it shows it; the reader refuses a text that does not start with '{'
-///   (YAML, XML), a key it does not know, a key twice, a missing key (a file written before the
-///   keys of 2026-11-16 among them), another version, a value of another type, an unknown object
-///   class or key of why a scan ended, a string OpenCV does not write as JSON, a time of another
-///   form and each value out of range; the writer refuses such a string, set or fact and writes
-///   nothing;
+///   the file holds and the scan's facts at their edges, each key of why a scan ended and the
+///   camera's properties refused, none, each alone and all, among them, are read back equal; the
+///   document's example is read as the document says, also after white space, and written as it
+///   shows it; the reader refuses a text that does not start with '{' (YAML, XML), a key it does
+///   not know, a key twice, a missing key (a file written before the keys of 2026-11-16 or before
+///   the refused properties of 2026-11-17 among them), another version, a value of another type,
+///   an unknown object class, key of why a scan ended or refused property, a property refused
+///   twice, a string OpenCV does not write as JSON, a time of another form and each value out of
+///   range; the writer refuses such a string, set or fact and writes nothing;
 /// - a writer whose file cannot be created or whose write fails says why, leaves nothing beside
 ///   the file, and leaves a file already there as it was; a longer part file left behind is
 ///   truncated; a directory at the name makes the rename fail.
 /// Needs no GPU and no camera.
 
+#include "camera/camera_properties.hpp"
 #include "check.hpp"
 #include "frame_copy.hpp"
 #include "ply_reader.hpp"
@@ -597,6 +599,9 @@ const std::string parameters_by_hand = R"({
         "firmware_version": "1.5.02",
         "sdk_version": "2.10.6"
     },
+    "refused_properties": [
+        "exposure"
+    ],
     "start_utc": "20261116T093012.250000Z",
     "stop_utc": "20261116T093512.750000Z",
     "frames": {
@@ -670,8 +675,9 @@ const gca::object_class_parameters odd_set = {.live_voxel_size_m = 1.0 / 3.0,
                                               .max_speed_m_s = 10.0 / 11.0};
 
 /// The scan's facts of the document's example: 640x400 with intrinsics a float holds in few
-/// digits, the depth unit 1 mm as a float, the camera with its versions, five minutes and half a
-/// second, the frames counted, stopped by the operator [S: docs/SCAN_FILES.md, "Parameters"].
+/// digits, the depth unit 1 mm as a float, the camera with its versions, the exposure (2001) the
+/// camera refused, five minutes and half a second, the frames counted, stopped by the operator
+/// [S: docs/SCAN_FILES.md, "Parameters"].
 gca::scan_parameters example_parameters()
 {
     return {"db91e0d",
@@ -679,6 +685,7 @@ gca::scan_parameters example_parameters()
             example_set,
             {{640, 400}, {517.25f, 517.5f, 319.75f, 201.25f}, 0.001f},
             {"Orbbec Gemini 2 L", "1.5.02", "2.10.6"},
+            {false, true, false, false, false},
             *gca::utc_time_of(start_text),
             *gca::utc_time_of(stop_text),
             {8990, 8950, 40, 12},
@@ -708,8 +715,9 @@ gca::scan_parameters scan_of(const std::string &commit, gca::object_class kind,
 /// largest width and height, a float's smallest and largest values and negative coordinates in
 /// the intrinsics, empty strings of the source and one of 4095 characters, the first and the last
 /// time the file holds, the stop before the start, the largest counts of frames, and each key of
-/// why a scan ended; the document's example is read as the document says, also after white
-/// space, and written as the document shows it.
+/// why a scan ended; no property refused, each of the five alone and all five; the document's
+/// example is read as the document says, also after white space, and written as the document
+/// shows it.
 /// @param directory [in] the test's directory.
 void test_parameters_round_trip(const temporary_directory &directory)
 {
@@ -752,13 +760,27 @@ void test_parameters_round_trip(const temporary_directory &directory)
     failed.frames = {120, 100, 19, 3};
     failed.end = gca::scan_end::tracking_failed;
     cases.push_back(failed);
+    gca::scan_parameters refused = example_parameters();
+    refused.refused_properties = {};
+    cases.push_back(refused);
+    for (std::size_t k = 0; k < gca::color_property_count; k++)
+    {
+        refused.refused_properties = {};
+        refused.refused_properties[k] = true;
+        cases.push_back(refused);
+    }
+    refused.refused_properties = {true, true, true, true, true};
+    cases.push_back(refused);
     for (const gca::scan_parameters &parameters : cases)
     {
+        std::string refused_names;
+        for (std::size_t k = 0; k < gca::color_property_count; k++)
+            refused_names += parameters.refused_properties[k] ? "1" : "0";
         const std::string what =
             "parameters, " + std::string(gca::name_of(parameters.object_class)) + ", commit " +
             parameters.commit.substr(0, 60) + " (" + std::to_string(parameters.commit.size()) +
             " characters), " + std::to_string(parameters.stream.size.width) + " px wide, ended " +
-            std::string(gca::name_of(parameters.end));
+            std::string(gca::name_of(parameters.end)) + ", refused " + refused_names;
         const std::filesystem::path path = directory / "parameters.json";
         const gca::write_result written = gca::write_parameters(path, parameters);
         check(written.written, (what + ": written; " + written.reason).c_str());
@@ -964,6 +986,24 @@ void test_parameters_refusals(const temporary_directory &directory)
          "no key \"depth_noise_per_m\" " + nested},
         {"a file written before the scan's facts of 2026-11-16",
          valid.substr(0, valid.find(",\n    \"stream\"")) + "\n}\n", "no key \"stream\" " + top},
+        {"a file written before the refused properties of 2026-11-17",
+         replaced(valid, "    \"refused_properties\": [\n        \"exposure\"\n    ],\n", ""),
+         "no key \"refused_properties\" " + top},
+        {"the refused properties a string",
+         replaced(valid, "[\n        \"exposure\"\n    ]", "\"exposure\""),
+         "\"refused_properties\" is no JSON array"},
+        {"the refused properties an object",
+         replaced(valid, "[\n        \"exposure\"\n    ]", "{ \"exposure\": 1.0 }"),
+         "\"refused_properties\" is no JSON array"},
+        {"a refused property a number", replaced(valid, "\"exposure\"\n", "2001.0\n"),
+         "\"refused_properties\" holds a value that is no string"},
+        {"an unknown refused property", replaced(valid, "\"exposure\"\n", "\"focus\"\n"),
+         "\"refused_properties\" holds \"focus\", no property of the camera the scanner touches"},
+        {"a refused property by its number", replaced(valid, "\"exposure\"\n", "\"2001\"\n"),
+         "\"refused_properties\" holds \"2001\", no property of the camera the scanner touches"},
+        {"a refused property twice",
+         replaced(valid, "\"exposure\"\n", "\"exposure\",\n        \"exposure\"\n"),
+         "\"refused_properties\" holds \"exposure\" twice"},
         {"no min_fitness",
          replaced(valid, "        \"min_fitness\": 5.9999999999999998e-01,\n", ""),
          "no key \"min_fitness\" " + nested},

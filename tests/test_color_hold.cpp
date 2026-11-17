@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: 0BSD
 /// @file test_color_hold.cpp
 /// The hold of the color camera's exposure and white balance (camera/color_hold.hpp), in front of
-/// a stand-in camera whose frames are the synthetic source's and whose properties are a table
-/// under OrbbecSDK's numbers 2000 to 2004, written here as numbers. The table's automatic
+/// the tests' stand-in camera (stand_in_camera.hpp), whose frames are here the synthetic source's
+/// and whose properties are a table under OrbbecSDK's numbers 2000 to 2004. The table's automatic
 /// controls move their values with every frame delivered while their switch is on, as the
 /// camera's do, and both switches start off, so that switching them on shows:
 /// - at the opening both controls are switched on; after the 29th frame they are still on, after
@@ -20,7 +20,9 @@
 /// - only delivered frames count: after frames and then timeouts, next() called on, neither
 ///   control is switched off before the 30th frame;
 /// - the report's readings and refusals as lines, against lines written here;
-/// - the rule of what may be written, is_switch(), holds for 2000 and 2003 and no other number.
+/// - the rule of what may be written, is_switch(), holds for 2000 and 2003 and no other number;
+/// - a reader's place in the report (color_report_cursor) takes each entry once, the new ones at
+///   each take, and all of an opening's again after a restart.
 /// Needs no GPU and no camera.
 
 #include "camera/camera_properties.hpp"
@@ -28,6 +30,7 @@
 #include "camera/frame.hpp"
 #include "camera/frame_source.hpp"
 #include "check.hpp"
+#include "stand_in_camera.hpp"
 #include "synthetic_source.hpp"
 #include "types/frame_description.hpp"
 
@@ -44,163 +47,26 @@
 namespace
 {
 using gca_test::check;
+using gca_test::property_access;
+using gca_test::stand_in_camera;
 
 /// The frames' size: small, as the hold does not look at the pixels [?: a choice].
 constexpr gca::frame_size test_size = {32, 24};
 
-/// One property of the stand-in's table.
-struct table_entry
+/// Builds the frames of a case: frames of nothing at the identity pose, then an ending.
+/// @param frames [in] the frames delivered before the ending.
+/// @param ending [in] what next() reports after them.
+/// @return the synthetic source's options.
+gca_test::synthetic_source_options frames_of(std::uint64_t frames,
+                                             gca_test::synthetic_ending ending)
 {
-    std::int32_t value;         ///< its value now
-    bool writable;              ///< whether a write is taken (only the two switches)
-    bool refuse_reads = false;  ///< whether every read is refused
-    bool refuse_writes = false; ///< whether every write is refused
-};
-
-/// One access of the stand-in's properties, in the order they came.
-struct property_access
-{
-    std::uint32_t number;              ///< the property's number
-    std::optional<std::int32_t> write; ///< the value written; nothing for a read
-};
-
-/// A camera whose frames are the synthetic source's and whose properties are a table: the
-/// automatic exposure (2000) moves exposure (2001) by 100 and gain (2002) by 3 with every frame
-/// delivered while it is on, the automatic white balance (2003) white balance (2004) by 50. Every
-/// access is logged; one while closed, of a number not in the table, a write of a property that
-/// is not writable and a refused one are refused with their reasons.
-class stand_in_camera final : public gca::frame_source, public gca::camera_properties
-{
-public:
-    /// Builds the camera, closed, its table at its starting values.
-    /// @param frames [in] the frames delivered before the ending.
-    /// @param ending [in] what next() reports after them.
-    stand_in_camera(std::uint64_t frames, gca_test::synthetic_ending ending)
-        : m_frames(options(frames, ending))
-    {
-    }
-
-    /// Opens the synthetic source.
-    /// @param size [in] the size asked for, test_size.
-    /// @return the synthetic source's result.
-    gca::open_result open(const gca::frame_size &size) noexcept override
-    {
-        const gca::open_result opened = m_frames.open(size);
-        m_open = m_open || opened.opened;
-        return opened;
-    }
-
-    /// Gives the synthetic source's next frame and, with a frame, moves the values of each control
-    /// whose switch is on.
-    /// @param out [out] as the synthetic source fills it.
-    /// @return the synthetic source's result.
-    gca::next_result next(gca::frame &out) noexcept override
-    {
-        const gca::next_result result = m_frames.next(out);
-        if (result.status == gca::next_status::frame)
-        {
-            if (table[2000].value != 0)
-            {
-                table[2001].value += 100;
-                table[2002].value += 3;
-            }
-            if (table[2003].value != 0)
-                table[2004].value += 50;
-        }
-        return result;
-    }
-
-    /// Closes the synthetic source.
-    void close() noexcept override
-    {
-        m_frames.close();
-        m_open = false;
-    }
-
-    /// Describes the stand-in.
-    /// @return "stand-in camera", firmware "9.9.99", SDK "0.0.0".
-    gca::source_description describe() const noexcept override
-    {
-        return {"stand-in camera", "9.9.99", "0.0.0"};
-    }
-
-    /// Reads a property from the table and logs the read.
-    /// @param property [in] the property.
-    /// @return its value; or nothing with the reason: closed, no such number, reads refused.
-    gca::property_reading read_property(gca::color_property property) noexcept override
-    {
-        const auto number = static_cast<std::uint32_t>(property);
-        log.push_back({number, std::nullopt});
-        if (const std::optional<std::string> reason = refusal_of(number))
-            return {std::nullopt, *reason};
-        if (table.at(number).refuse_reads)
-            return {std::nullopt, "the stand-in refuses reads of " + std::to_string(number)};
-        return {table.at(number).value, {}};
-    }
-
-    /// Writes a property into the table and logs the write.
-    /// @param property [in] the property.
-    /// @param value [in] the value.
-    /// @return nothing when taken; otherwise the reason: closed, no such number, read only, writes
-    ///         refused.
-    std::optional<std::string> write_property(gca::color_property property,
-                                              std::int32_t value) noexcept override
-    {
-        const auto number = static_cast<std::uint32_t>(property);
-        log.push_back({number, value});
-        if (const std::optional<std::string> reason = refusal_of(number))
-            return reason;
-        table_entry &entry = table.at(number);
-        if (!entry.writable)
-            return "the stand-in's " + std::to_string(number) + " is read only";
-        if (entry.refuse_writes)
-            return "the stand-in refuses writes of " + std::to_string(number);
-        entry.value = value;
-        return std::nullopt;
-    }
-
-    /// The properties under OrbbecSDK's numbers [S: OrbbecSDK v2.10.6, Property.h], at values of
-    /// the camera's ranges [M 2026-11-13, docs/HARDWARE.md], both switches off.
-    std::map<std::uint32_t, table_entry> table = {
-        {2000, {0, true}}, {2001, {5000, false}}, {2002, {64, false}},
-        {2003, {0, true}}, {2004, {4000, false}},
-    };
-    std::vector<property_access> log;   ///< every access, in order
-    std::vector<std::uint32_t> refused; ///< the numbers refused for being closed or unknown
-
-private:
-    /// Builds the synthetic source's options: frames of nothing, at the identity pose.
-    /// @param frames [in] the frames before the ending.
-    /// @param ending [in] the ending.
-    /// @return the options.
-    static gca_test::synthetic_source_options options(std::uint64_t frames,
-                                                      gca_test::synthetic_ending ending)
-    {
-        gca_test::synthetic_source_options o;
-        o.description = {test_size, {30.0f, 30.0f, 15.5f, 11.5f}, 0.001f};
-        o.scene.trajectory.assign(frames, Eigen::Isometry3d::Identity());
-        o.ending = ending;
-        o.ending_message = "the stand-in's frames ended";
-        return o;
-    }
-
-    /// Refuses an access while closed or of a number not in the table, and records it.
-    /// @param number [in] the property's number.
-    /// @return the reason, or nothing when the access may go on.
-    std::optional<std::string> refusal_of(std::uint32_t number)
-    {
-        if (!m_open || table.count(number) == 0)
-        {
-            refused.push_back(number);
-            return m_open ? "the stand-in has no property " + std::to_string(number)
-                          : std::string("the stand-in is not open");
-        }
-        return std::nullopt;
-    }
-
-    gca_test::synthetic_source m_frames;
-    bool m_open = false;
-};
+    gca_test::synthetic_source_options o;
+    o.description = {test_size, {30.0f, 30.0f, 15.5f, 11.5f}, 0.001f};
+    o.scene.trajectory.assign(frames, Eigen::Isometry3d::Identity());
+    o.ending = ending;
+    o.ending_message = "the stand-in's frames ended";
+    return o;
+}
 
 /// What a case expects of the stand-in's table.
 struct table_state
@@ -299,7 +165,8 @@ void check_line(const std::string &what, const std::string &line, const std::str
 /// second opening holds after its own 30th frame.
 void test_hold_after_settling()
 {
-    stand_in_camera camera(40, gca_test::synthetic_ending::end);
+    gca_test::synthetic_source source(frames_of(40, gca_test::synthetic_ending::end));
+    stand_in_camera camera(source);
     gca::color_hold hold(camera, camera);
     check(hold.open(test_size).opened, "settling: opened");
     check_table(camera, "settling: at the opening", {true, true, 5000, 64, 4000});
@@ -346,7 +213,8 @@ void test_hold_after_settling()
 void test_endings()
 {
     {
-        stand_in_camera camera(35, gca_test::synthetic_ending::failure);
+        gca_test::synthetic_source source(frames_of(35, gca_test::synthetic_ending::failure));
+        stand_in_camera camera(source);
         gca::color_hold hold(camera, camera);
         check(hold.open(test_size).opened, "failure while held: opened");
         check(take_frames(hold, 40) == 35, "failure while held: 35 frames, then the failure");
@@ -357,7 +225,8 @@ void test_endings()
         check(hold.report().refusals.empty(), "failure while held: nothing refused");
     }
     {
-        stand_in_camera camera(10, gca_test::synthetic_ending::failure);
+        gca_test::synthetic_source source(frames_of(10, gca_test::synthetic_ending::failure));
+        stand_in_camera camera(source);
         gca::color_hold hold(camera, camera);
         check(hold.open(test_size).opened, "failure before the settling: opened");
         check(take_frames(hold, 40) == 10, "failure before the settling: 10 frames, the failure");
@@ -369,7 +238,8 @@ void test_endings()
         check_only_listed_touched(camera, "failure before the settling");
     }
     {
-        stand_in_camera camera(40, gca_test::synthetic_ending::end);
+        gca_test::synthetic_source source(frames_of(40, gca_test::synthetic_ending::end));
+        stand_in_camera camera(source);
         {
             gca::color_hold hold(camera, camera);
             check(hold.open(test_size).opened, "destroyed open: opened");
@@ -393,7 +263,8 @@ void test_each_property_refused()
         const bool exposure_refused = number <= 2002;
         const std::uint32_t refused_switch = exposure_refused ? 2000 : 2003;
         const std::uint32_t other_switch = exposure_refused ? 2003 : 2000;
-        stand_in_camera camera(40, gca_test::synthetic_ending::end);
+        gca_test::synthetic_source source(frames_of(40, gca_test::synthetic_ending::end));
+        stand_in_camera camera(source);
         camera.table.at(number).refuse_reads = true;
         camera.table.at(number).refuse_writes = true;
         gca::color_hold hold(camera, camera);
@@ -418,7 +289,8 @@ void test_each_property_refused()
         check(named, (what + ": every refusal names it, the first at the start").c_str());
     }
 
-    stand_in_camera camera(40, gca_test::synthetic_ending::end);
+    gca_test::synthetic_source source(frames_of(40, gca_test::synthetic_ending::end));
+    stand_in_camera camera(source);
     camera.table.at(2001).refuse_reads = true;
     gca::color_hold hold(camera, camera);
     check(hold.open(test_size).opened, "refused reading: opened");
@@ -441,7 +313,8 @@ void test_each_property_refused()
 /// after the close.
 void test_only_delivered_frames_count()
 {
-    stand_in_camera camera(20, gca_test::synthetic_ending::timeout);
+    gca_test::synthetic_source source(frames_of(20, gca_test::synthetic_ending::timeout));
+    stand_in_camera camera(source);
     gca::color_hold hold(camera, camera);
     check(hold.open(test_size).opened, "timeouts: opened");
     gca::frame frame;
@@ -484,7 +357,8 @@ void test_switches_rule()
 /// close both are on.
 void test_switch_off_refused()
 {
-    stand_in_camera camera(40, gca_test::synthetic_ending::end);
+    gca_test::synthetic_source source(frames_of(40, gca_test::synthetic_ending::end));
+    stand_in_camera camera(source);
     gca::color_hold hold(camera, camera);
     check(hold.open(test_size).opened, "switch-off refused: opened");
     check(take_frames(hold, 29) == 29, "switch-off refused: 29 frames");
@@ -505,6 +379,36 @@ void test_switch_off_refused()
 }
 } // namespace
 
+/// A reader's place in the report: after the opening the first reading and the refusal of the
+/// refused read; nothing new before the hold; the two readings of the hold and its two refusals
+/// after the 30th frame; nothing new again; after a restart all three readings and three refusals.
+void test_report_cursor()
+{
+    gca_test::synthetic_source source(frames_of(40, gca_test::synthetic_ending::end));
+    stand_in_camera camera(source);
+    camera.table.at(2002).refuse_reads = true;
+    gca::color_hold hold(camera, camera);
+    gca::color_report_cursor cursor;
+    check(hold.open(test_size).opened, "cursor: opened");
+    const auto sizes = [&](std::size_t readings, std::size_t refusals, const char *what) {
+        const std::size_t taken_readings = cursor.take_readings(hold.report()).size();
+        const std::size_t taken_refusals = cursor.take_refusals(hold.report()).size();
+        std::printf("cursor, %s: %zu readings, %zu refusals\n", what, taken_readings,
+                    taken_refusals);
+        check(taken_readings == readings && taken_refusals == refusals,
+              (std::string("cursor: ") + what).c_str());
+    };
+    sizes(1, 1, "the opening's reading and refusal");
+    check(take_frames(hold, 29) == 29, "cursor: 29 frames");
+    sizes(0, 0, "nothing new before the hold");
+    check(take_frames(hold, 1) == 1, "cursor: the 30th frame");
+    sizes(2, 2, "the hold's two readings and two refusals");
+    sizes(0, 0, "nothing new after a take");
+    cursor.restart();
+    sizes(3, 3, "every entry again after a restart");
+    hold.close();
+}
+
 /// Runs the hold's checks and prints the tables, the lines and the summary line.
 /// @return 0 when every check passed, 1 otherwise.
 int main()
@@ -515,5 +419,6 @@ int main()
     test_switch_off_refused();
     test_only_delivered_frames_count();
     test_switches_rule();
+    test_report_cursor();
     return gca_test::check_summary("test_color_hold");
 }
