@@ -368,6 +368,7 @@ checkers; these are the rules no checker holds.
 | `docs/SERVICE.md` | the scanner service: its options, the camera during a scan, its stop with its order and worst case, its log lines, and `scan_in_progress` with its exits, which the install tool and the service's live check read |
 | `docs/SEQUENCE_FILE.md` | the format of a sequence: a scan's frames with their IMU samples and poses, which the viewer and the scan interface write, refinement and the replay tool read back |
 | `docs/agents/` | how the workflow skills in `.claude/skills/` find the tracker and the domain docs |
+| `docs/WORKSTATION_SETUP.md` | the commands that set up the workstation, the second platform, until `builds-and-verifies-on-the-workstation` folds them into README.md and AGENTS.md |
 
 Rules for these documents: each opens with the notice line above; plain, concise English,
 present tense, current truth only, history in git. One fact lives in one document and the
