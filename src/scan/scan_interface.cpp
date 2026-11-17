@@ -15,6 +15,9 @@
 #include "scan/stage_parameters.hpp"
 #include "scan/trajectory_file.hpp"
 #include "scan/utc_time.hpp"
+#include "separation/gravity.hpp"
+#include "types/gravity_estimate.hpp"
+#include "types/imu_sample.hpp"
 
 #include <cuda_runtime_api.h>
 
@@ -616,10 +619,12 @@ void scan_interface::run_scan(command &c, cudaStream_t stream) noexcept
     m_working.end = scan.end;
     m_working.end_message = scan.end_message;
 
-    // The parameters at the stop, so that a scan left unfinished keeps them.
-    const scan_parameters parameters = {
-        m_options.commit, request.object_class, request.set, scan.frames,      scan.source,
-        m_refused,        scan.start,           scan.stop,   m_working.frames, scan.end};
+    // The parameters at the stop, so that a scan left unfinished keeps them; gravity is estimated
+    // once refinement has read the sequence.
+    scan_parameters parameters = {
+        m_options.commit,  request.object_class, request.set, scan.frames,      scan.source,
+        m_refused,         scan.start,           scan.stop,   m_working.frames, scan.end,
+        gravity_estimate{}};
     const write_result kept = write_parameters(scan.directory / parameters_name, parameters);
     if (!kept.written)
         return finish(scan.directory, requests, scan_outcome::unfinished,
@@ -651,6 +656,14 @@ void scan_interface::run_scan(command &c, cudaStream_t stream) noexcept
     if (refined.end == sequence_fusion_end::failed)
         return finish(scan.directory, requests, scan_outcome::unfinished,
                       "refinement: " + refined.message);
+    // Gravity's up from the samples and the trajectory the fusion read, kept in the parameters
+    // before the sequence can be removed (docs/methods/separation.md, "What it reads from a scan").
+    parameters.gravity =
+        estimate_gravity(refined.trajectory, refined.accelerometer, imu_to_camera()).estimate;
+    const write_result estimated = write_parameters(scan.directory / parameters_name, parameters);
+    if (!estimated.written)
+        return finish(scan.directory, requests, scan_outcome::unfinished,
+                      "the parameters with gravity: " + estimated.reason);
     const write_result trajectory =
         write_trajectory(scan.directory / trajectory_name, refined.trajectory);
     if (!trajectory.written)

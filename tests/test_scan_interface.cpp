@@ -11,16 +11,18 @@
 /// log, and can leave gaps in the indices, deliver a frame of another size or describe itself with
 /// a string the parameters cannot hold; a writer in front of the real one reports a full queue in
 /// a fixed pattern.
-/// - The walk, 240 frames, stopped after its last: the states idle, starting, scanning, refining
-///   and idle, in that order; a second start during it refused with the reason, the scan going on;
-///   the source closed before refining;
-///   the scan's directory named by its start time with its four files and no other; the
-///   parameters with the set, the commit, the source, the counts and the end; the trajectory
-///   within a measured tolerance of the known one; the full model's points within measured
-///   distances of the known surfaces.
+/// - The walk, 240 frames, stopped after its last, its frames with the synthetic IMU's samples and
+///   the hand's acceleration: the states idle, starting, scanning, refining and idle, in that
+///   order; a second start during it refused with the reason, the scan going on; the source closed
+///   before refining; the scan's directory named by its start time with its four files and no
+///   other; the parameters with the set, the commit, the source, the counts, the end and gravity
+///   estimated from every sample, its up within a measured tolerance of the known up; the
+///   trajectory within a measured tolerance of the known one; the full model's points within
+///   measured distances of the known surfaces.
 /// - A discard while scanning, and one while refining (a stop then refused): nothing on disk.
 /// - A source that times out, and one that fails, in the middle: the scan ends with the reason,
-///   and what it had is refined.
+///   and what it had is refined; its frames carry no IMU sample, and its parameters say so for
+///   gravity.
 /// - A source that refuses to open, and one whose description the parameters cannot hold:
 ///   refused at the start with the reason, the source closed, nothing on disk.
 /// - Gaps in the indices and a writer made slow: the frames not taken counted in the state and the
@@ -28,7 +30,10 @@
 ///   trajectory, and those the writer had no room for in none.
 /// - A frame tracking fails on: the scan ends, the frame counted as taken and written nowhere.
 /// - A refinement that fails, and the scan interface's end during a scan: the scan unfinished,
-///   its sequence and parameters kept, no trajectory and no full model.
+///   its sequence and parameters kept, gravity not estimated, no trajectory and no full model.
+/// - The parameters with gravity, and the trajectory, not written after refinement, a directory at
+///   the path of the write's part file: the scan unfinished with the reason, no trajectory and no
+///   full model, the parameters holding gravity not estimated, and gravity's estimate.
 /// - The "too close" rule on built frames, and its notice in the state.
 /// - The live model: in the walk, the empty one at the start, then live models taken repeatedly,
 ///   each within the limit, with its frame's pose bit for bit, at least the interval apart by the
@@ -52,6 +57,7 @@
 #include "scan/trajectory_file.hpp"
 #include "scan/utc_time.hpp"
 #include "scan_comparison.hpp"
+#include "separation/gravity.hpp"
 #include "sparse_tsdf_scenes.hpp"
 #include "stage_checks.hpp"
 #include "stage_frames.hpp"
@@ -59,6 +65,7 @@
 #include "test_files.hpp"
 #include "transform_checks.hpp"
 #include "types/camera_pose.hpp"
+#include "types/gravity_estimate.hpp"
 #include "types/model_point.hpp"
 #include "types/trajectory_entry.hpp"
 
@@ -117,6 +124,11 @@ constexpr double idle_wait_s = 50.0;
 /// and 0.535 mm [M 2026-11-16: this test], as test_tracking.cpp's walk.
 constexpr gca_test::transform_tolerance trajectory_tolerance = {0.1, 0.001};
 
+/// The largest angle of the walk's gravity from the known up, in degrees: about twice what this
+/// test measured, 0.225 degrees from 1594 samples in 7 groups, a spread of 1.77 degrees, the lap of
+/// 8 s with the hand's acceleration and the tracked poses [M 2026-11-17: this test].
+constexpr double gravity_tolerance_deg = 0.5;
+
 /// The tolerances of the walk's full model, in mm: the median, the 99th percentile and the largest
 /// distance of a point from the nearest known surface, 1.3 to 2.5 times what this test measured,
 /// 0.0703, 0.405 and 9.17 mm of 1162157 points [M 2026-11-16: this test]; the largest lie at the
@@ -156,10 +168,12 @@ std::vector<Eigen::Isometry3d> walk_poses_of()
 /// @param count [in] the poses, from the walk's first.
 /// @param ending [in] what the source reports after them.
 /// @param message [in] the message it reports with that.
+/// @param imu [in] the IMU the frames carry samples of, or none.
 /// @return the options.
 gca_test::synthetic_source_options walk_options(
     std::size_t count, gca_test::synthetic_ending ending = gca_test::synthetic_ending::end,
-    const std::string &message = "the sequence's end")
+    const std::string &message = "the sequence's end",
+    std::optional<gca_test::synthetic_imu> imu = std::nullopt)
 {
     std::vector<Eigen::Isometry3d> poses = walk_poses_of();
     poses.resize(std::min(count, poses.size()));
@@ -170,7 +184,7 @@ gca_test::synthetic_source_options walk_options(
             .ending = ending,
             .ending_message = message,
             .open_refusal = {},
-            .imu = std::nullopt};
+            .imu = imu};
 }
 
 /// What a case saw, in order, on the scan thread: the states, and the source's openings and
@@ -544,7 +558,10 @@ void check_walk(const temporary_directory &directory)
     const std::filesystem::path scans = directory / "walk";
     std::filesystem::create_directory(scans);
     event_log log;
-    recorded_source source(walk_options(walk_poses), log);
+    // The camera's 200 Hz, with the hand's acceleration along the walk.
+    recorded_source source(walk_options(walk_poses, gca_test::synthetic_ending::end,
+                                        "the sequence's end", gca_test::synthetic_imu{5000, true}),
+                           log);
     patient_writer writer;
     std::future<gca::command_reply> second_start;
     std::optional<gca::scan_interface> scanner;
@@ -668,6 +685,23 @@ void check_walk(const temporary_directory &directory)
               "walk: the parameters hold the stream, the source, the counts and the end");
         check(p.start <= p.stop && gca::utc_text(p.start) == end.scan,
               "walk: the scan's directory named by its start time, which is before its stop");
+        // Every sample lies between two tracked frames or at frame 0's time: the multiples of
+        // 5 ms up to the last frame's time.
+        const std::uint64_t samples =
+            (walk_poses - 1) * gca_test::synthetic_frame_period_us / 5000 + 1;
+        const gca::gravity_estimate &g = p.gravity;
+        const Eigen::Vector3d known_up =
+            walk_poses_of().front().linear().transpose() * Eigen::Vector3d::UnitZ();
+        std::printf("walk: gravity %s of %llu samples in %llu groups, spread %.3f deg, mean %.4f "
+                    "m/s^2\n",
+                    std::string(gca::name_of(g.outcome)).c_str(),
+                    static_cast<unsigned long long>(g.samples),
+                    static_cast<unsigned long long>(g.groups), g.spread_deg, g.mean_mps2);
+        check(g.outcome == gca::gravity_outcome::estimated && g.samples == samples &&
+                  g.groups == samples / gca::gravity_group_samples,
+              "walk: the parameters hold gravity, estimated from every sample");
+        check_within("walk: gravity's up from the known up, deg",
+                     gca_test::angle_deg(g.up, known_up), gravity_tolerance_deg);
     }
 
     const std::vector<Eigen::Isometry3d> known = walk_poses_of();
@@ -863,8 +897,11 @@ void check_source_endings(const temporary_directory &directory)
         const gca::read_result<gca::scan_parameters> p =
             gca::read_parameters(c.scans / end.scan / "parameters.json");
         check(p.value && p.value->end == e.end &&
+                  p.value->gravity.outcome == gca::gravity_outcome::no_samples &&
                   std::filesystem::exists(c.scans / end.scan / "full.ply"),
-              (std::string(e.what) + ": the parameters' end, and the full model").c_str());
+              (std::string(e.what) +
+               ": the parameters' end, gravity without samples, and the full model")
+                  .c_str());
     }
 }
 
@@ -1166,11 +1203,14 @@ void check_unfinished(const temporary_directory &directory)
         set.full_voxel_size_m = 0.0001;
         gca::command_reply started;
         const gca::scan_state end = c.run(set, started);
+        const gca::read_result<gca::scan_parameters> p =
+            gca::read_parameters(c.scans / end.scan / "parameters.json");
         check(started.accepted && end.outcome == gca::scan_outcome::unfinished &&
                   end.outcome_message.find("refinement: ") == 0 &&
-                  names_in(c.scans / end.scan) == unfinished_files,
+                  names_in(c.scans / end.scan) == unfinished_files && p.value &&
+                  p.value->gravity == gca::gravity_estimate{},
               "refinement failed: unfinished with refinement's reason, its sequence and parameters "
-              "kept");
+              "kept, gravity not estimated");
     }
     short_case c("ended while scanning", directory, walk_options(walk_poses));
     std::atomic<bool> fifth{false};
@@ -1187,8 +1227,65 @@ void check_unfinished(const temporary_directory &directory)
     const gca::read_result<gca::scan_parameters> p =
         gca::read_parameters(c.scans / scan / "parameters.json");
     check(started.accepted && names_in(c.scans / scan) == unfinished_files && p.value &&
-              p.value->end == gca::scan_end::shut_down,
-          "ended while scanning: unfinished, its sequence and parameters kept, ended shut_down");
+              p.value->end == gca::scan_end::shut_down &&
+              p.value->gravity == gca::gravity_estimate{},
+          "ended while scanning: unfinished, its sequence and parameters kept, ended shut_down, "
+          "gravity not estimated");
+}
+
+/// A write after refinement that fails, its part file's path ("<name>.part", scan/file_io.hpp,
+/// write_file()) taken by a directory that the listener places once the scan is refining, after
+/// the parameters at the stop were written: the parameters with gravity, which leaves the scan
+/// unfinished with their reason, keeping the parameters of the stop, gravity not estimated; the
+/// trajectory, written after them, which leaves it unfinished holding gravity's estimate, no
+/// samples here. Neither has a trajectory or a full model.
+/// @param directory [in] the test's directory.
+void check_written_after_refinement(const temporary_directory &directory)
+{
+    const struct
+    {
+        const char *what;               ///< the case
+        const char *part;               ///< the part file the directory stands at
+        const char *reason;             ///< how the scan's outcome message begins
+        gca::gravity_outcome gravity;   ///< the outcome the parameters hold
+        std::vector<std::string> files; ///< the scan's directory's names
+    } cases[] = {
+        {"the parameters with gravity not written",
+         "parameters.json.part",
+         "the parameters with gravity: ",
+         gca::gravity_outcome::not_estimated,
+         {"frames.sequence", "parameters.json", "parameters.json.part"}},
+        {"the trajectory not written",
+         "trajectory.txt.part",
+         "the trajectory: ",
+         gca::gravity_outcome::no_samples,
+         {"frames.sequence", "parameters.json", "trajectory.txt.part"}},
+    };
+    for (const auto &e : cases)
+    {
+        short_case c(e.what, directory, walk_options(short_poses));
+        bool placed = false;
+        c.begin([&c, &placed, &e](const gca::scan_state &s) {
+            if (s.phase != gca::scan_phase::refining || placed)
+                return;
+            std::error_code error;
+            placed = std::filesystem::create_directory(c.scans / s.scan / e.part, error);
+        });
+        gca::command_reply started;
+        const gca::scan_state end = c.run(test_set(), started);
+        const gca::read_result<gca::scan_parameters> p =
+            gca::read_parameters(c.scans / end.scan / "parameters.json");
+        check(started.accepted && placed && end.outcome == gca::scan_outcome::unfinished &&
+                  end.outcome_message.find(e.reason) == 0 &&
+                  names_in(c.scans / end.scan) == e.files && p.value &&
+                  p.value->gravity.outcome == e.gravity &&
+                  (e.gravity != gca::gravity_outcome::not_estimated ||
+                   p.value->gravity == gca::gravity_estimate{}),
+              (std::string(e.what) +
+               ": unfinished with the reason, no trajectory and no full model, the parameters' "
+               "gravity as written before")
+                  .c_str());
+    }
 }
 
 /// The "too close" rule on built frames: a quarter of the pixels with depth nearer is too close,
@@ -1319,6 +1416,7 @@ int main()
     check_not_taken(directory);
     check_tracking_failed(directory);
     check_unfinished(directory);
+    check_written_after_refinement(directory);
     check_too_close(directory);
     check_live_model_loss(directory);
     gca_test::check_no_cuda_error("scan interface");

@@ -50,11 +50,12 @@ constexpr std::string_view start_key = "start_utc";
 constexpr std::string_view stop_key = "stop_utc";
 constexpr std::string_view frames_key = "frames";
 constexpr std::string_view end_key = "end";
+constexpr std::string_view gravity_key = "gravity";
 
 /// The keys of the top level, in the order the writer writes them.
-constexpr std::array<std::string_view, 11> top_keys = {
+constexpr std::array<std::string_view, 12> top_keys = {
     version_key, commit_key, class_key, set_key,    stream_key, source_key,
-    refused_key, start_key,  stop_key,  frames_key, end_key};
+    refused_key, start_key,  stop_key,  frames_key, end_key,    gravity_key};
 
 /// The keys of "source", in the order the writer writes them.
 constexpr std::array<std::string_view, 3> source_keys = {"camera", "firmware_version",
@@ -71,6 +72,8 @@ enum class value_rule
     tally,            ///< a count of frames: a whole number from 0 to 2^53
     float_length,     ///< a float's length: finite and > 0 as a float
     float_coordinate, ///< a float's coordinate: finite as a float
+    coordinate,       ///< a coordinate: finite
+    magnitude,        ///< a magnitude that may be 0: finite and >= 0
 };
 
 /// A number of one of the file's maps: its key, its rule, and how it is read from its struct and
@@ -217,6 +220,28 @@ constexpr std::array<number_entry<scan_frame_counts>, 4> frame_entries = {
     entry_of<&scan_frame_counts::not_taken>(not_taken_key, value_rule::tally),
 };
 
+/// The key of gravity's outcome in "gravity", and those of its counts, which gravity_refusal()
+/// names too.
+constexpr std::string_view outcome_key = "outcome";
+constexpr std::string_view samples_key = "samples";
+constexpr std::string_view groups_key = "groups";
+
+/// Gravity's one table: its up, counts, spread and mean's length, each with its rule and member,
+/// in the order the writer writes them after the outcome. The up's coordinates lie in an Eigen
+/// vector, so those entries are written out.
+constexpr std::array<number_entry<gravity_estimate>, 7> gravity_entries = {{
+    {"up_x", value_rule::coordinate, [](const gravity_estimate &g) { return g.up.x(); },
+     [](gravity_estimate &g, double v) { g.up.x() = v; }},
+    {"up_y", value_rule::coordinate, [](const gravity_estimate &g) { return g.up.y(); },
+     [](gravity_estimate &g, double v) { g.up.y() = v; }},
+    {"up_z", value_rule::coordinate, [](const gravity_estimate &g) { return g.up.z(); },
+     [](gravity_estimate &g, double v) { g.up.z() = v; }},
+    entry_of<&gravity_estimate::samples>(samples_key, value_rule::tally),
+    entry_of<&gravity_estimate::groups>(groups_key, value_rule::tally),
+    entry_of<&gravity_estimate::spread_deg>("spread_deg", value_rule::magnitude),
+    entry_of<&gravity_estimate::mean_mps2>("mean_mps2", value_rule::magnitude),
+}};
+
 /// Gives the keys of a table, in the writer's order.
 /// @param entries [in] the table.
 /// @return its keys.
@@ -252,6 +277,32 @@ constexpr std::optional<std::string_view> key_of(scan_end end) noexcept
         return "writer_failed";
     case scan_end::shut_down:
         return "shut_down";
+    }
+    return std::nullopt;
+}
+
+/// The table of how gravity's estimate ended: one case for each, so -Wswitch names an
+/// enumerator added without its key (tools/verify.sh fails on the warning).
+/// @param outcome [in] how it ended.
+/// @return its key; nothing for a value that is no enumerator.
+constexpr std::optional<std::string_view> key_of(gravity_outcome outcome) noexcept
+{
+    switch (outcome)
+    {
+    case gravity_outcome::not_estimated:
+        return "not_estimated";
+    case gravity_outcome::estimated:
+        return "estimated";
+    case gravity_outcome::no_samples:
+        return "no_samples";
+    case gravity_outcome::too_few_samples:
+        return "too_few_samples";
+    case gravity_outcome::mean_zero:
+        return "mean_zero";
+    case gravity_outcome::spread_too_large:
+        return "spread_too_large";
+    case gravity_outcome::refused:
+        return "refused";
     }
     return std::nullopt;
 }
@@ -312,8 +363,13 @@ std::string rules_refusal(const std::array<number_entry<Struct>, N> &entries, co
                 not_one = number_text(value) + ", not a number in (0, 1]";
             break;
         case value_rule::float_coordinate:
+        case value_rule::coordinate:
             if (!std::isfinite(value))
                 not_one = number_text(value) + ", not a finite number";
+            break;
+        case value_rule::magnitude:
+            if (!(std::isfinite(value) && value >= 0.0))
+                not_one = number_text(value) + ", not a finite number >= 0";
             break;
         case value_rule::size:
             // Exact: a width or height is a std::uint32_t.
@@ -395,6 +451,37 @@ std::string frames_refusal(const scan_frame_counts &frames, scan_end end)
                (failed ? ", \"lost\" " : " and \"lost\" ") + std::to_string(frames.lost) +
                (failed ? " and the frame tracking failed on" : "") + " together, for " +
                in_quotes(end_key) + " " + in_quotes(name_of(end));
+    return {};
+}
+
+/// Checks that gravity's estimate is one the file holds (docs/SCAN_FILES.md, "Parameters"): its
+/// outcome an enumerator, each number by its rule, the samples and groups from 0 to 2^53 as
+/// integers, and its up unit within gravity_up_tolerance when estimated and zero otherwise.
+/// @param gravity [in] the estimate.
+/// @return the reason it is not, naming the key; empty when it is.
+std::string gravity_refusal(const gravity_estimate &gravity)
+{
+    if (!key_of(gravity.outcome))
+        return key_in(outcome_key, gravity_key) + " is " +
+               std::to_string(static_cast<int>(gravity.outcome)) +
+               ", no enumerator of how gravity's estimate ended";
+    std::string reason = rules_refusal(gravity_entries, gravity, gravity_key);
+    if (reason.empty())
+        reason = exact_refusal(samples_key, gravity_key, gravity.samples, 0);
+    if (reason.empty())
+        reason = exact_refusal(groups_key, gravity_key, gravity.groups, 0);
+    if (!reason.empty())
+        return reason;
+    const std::string up = "the up (" + number_text(gravity.up.x()) + ", " +
+                           number_text(gravity.up.y()) + ", " + number_text(gravity.up.z()) +
+                           ") in " + in_quotes(gravity_key);
+    const bool estimated = gravity.outcome == gravity_outcome::estimated;
+    if (estimated && !up_is_unit(gravity.up))
+        return up + " is not of length 1 within 1e-9, for " + in_quotes(outcome_key) +
+               " \"estimated\"";
+    if (!estimated && gravity.up != Eigen::Vector3d::Zero())
+        return up + " is not 0, 0, 0, for " + in_quotes(outcome_key) + " " +
+               in_quotes(*key_of(gravity.outcome));
     return {};
 }
 
@@ -495,13 +582,13 @@ std::string keys_refusal(const cv::FileNode &map, const std::array<std::string_v
 /// @return the struct, or nothing when the map's keys are not the table's, a value is no real
 ///         number, a whole number is not one of its rule's, or a float's number is not finite or
 ///         lies outside the float's range.
-template <typename Struct, std::size_t N>
+template <typename Struct, std::size_t N, std::size_t K>
 std::optional<Struct> read_numbers(const cv::FileNode &root, std::string_view map_key,
                                    const std::array<number_entry<Struct>, N> &entries,
-                                   std::string &reason)
+                                   const std::array<std::string_view, K> &keys, std::string &reason)
 {
     const cv::FileNode map = root[std::string(map_key)];
-    reason = keys_refusal(map, keys_of(entries), "in " + in_quotes(map_key));
+    reason = keys_refusal(map, keys, "in " + in_quotes(map_key));
     if (!reason.empty())
         return std::nullopt;
     Struct values{};
@@ -542,6 +629,8 @@ std::optional<Struct> read_numbers(const cv::FileNode &root, std::string_view ma
             break;
         case value_rule::length:
         case value_rule::share:
+        case value_rule::coordinate:
+        case value_rule::magnitude:
             break;
         }
         if (not_one != nullptr)
@@ -552,6 +641,60 @@ std::optional<Struct> read_numbers(const cv::FileNode &root, std::string_view ma
         entry.put(values, value);
     }
     return values;
+}
+
+/// Reads the numbers of a map that holds nothing else (read_numbers() above).
+/// @param root [in] the top level, read by FileStorage.
+/// @param map_key [in] the map's key at the top level; the map is a map.
+/// @param entries [in] the struct's table, whose keys are the map's.
+/// @param reason [out] why the map was refused, naming the key; set only on a refusal.
+/// @return the struct, or nothing on a refusal.
+template <typename Struct, std::size_t N>
+std::optional<Struct> read_numbers(const cv::FileNode &root, std::string_view map_key,
+                                   const std::array<number_entry<Struct>, N> &entries,
+                                   std::string &reason)
+{
+    return read_numbers(root, map_key, entries, keys_of(entries), reason);
+}
+
+/// Reads gravity's estimate: the outcome, a key of its closed set, then the numbers.
+/// @param root [in] the top level, read by FileStorage; "gravity" is a map.
+/// @param reason [out] why it was refused, naming the key; set only on a refusal.
+/// @return the estimate, or nothing when the map's keys are not the outcome's and the table's, the
+///         outcome is no string or no key of the set, or a number is no real number, a count no
+///         whole number from 0 to 2^53, or the estimate one gravity_refusal() refuses.
+std::optional<gravity_estimate> read_gravity(const cv::FileNode &root, std::string &reason)
+{
+    std::array<std::string_view, gravity_entries.size() + 1> keys{outcome_key};
+    for (std::size_t k = 0; k < gravity_entries.size(); k++)
+        keys[k + 1] = gravity_entries[k].key;
+    std::optional<gravity_estimate> gravity =
+        read_numbers(root, gravity_key, gravity_entries, keys, reason);
+    if (!gravity)
+        return std::nullopt;
+    const cv::FileNode node = root[std::string(gravity_key)][std::string(outcome_key)];
+    if (!node.isString())
+    {
+        reason = key_in(outcome_key, gravity_key) + " is no string";
+        return std::nullopt;
+    }
+    const std::string name = node.string();
+    const std::optional<gravity_outcome> outcome = gravity_outcome_named(name);
+    if (!outcome)
+    {
+        // The keys from the one table, so that a new key changes one place.
+        std::string names;
+        for (int k = 0; key_of(static_cast<gravity_outcome>(k)); k++)
+            names += (k == 0 ? "" : ", ") + std::string(*key_of(static_cast<gravity_outcome>(k)));
+        reason = key_in(outcome_key, gravity_key) + " is \"" + name.substr(0, 40) +
+                 "\", no key of how gravity's estimate ended (" + names + ")";
+        return std::nullopt;
+    }
+    gravity->outcome = *outcome;
+    reason = gravity_refusal(*gravity);
+    if (!reason.empty())
+        return std::nullopt;
+    return gravity;
 }
 
 /// Reads a string that the file holds (string_refusal()).
@@ -705,7 +848,8 @@ std::optional<scan_parameters> parse(const std::string &text, std::string &reaso
     reason = keys_refusal(root, top_keys, "at the top level");
     if (!reason.empty())
         return std::nullopt;
-    for (const std::string_view map_key : {set_key, stream_key, source_key, frames_key})
+    for (const std::string_view map_key :
+         {set_key, stream_key, source_key, frames_key, gravity_key})
     {
         if (!root[std::string(map_key)].isMap())
         {
@@ -791,6 +935,10 @@ std::optional<scan_parameters> parse(const std::string &text, std::string &reaso
         return std::nullopt;
     read.frames = *frames;
     read.end = *end;
+    const std::optional<gravity_estimate> gravity = read_gravity(root, reason);
+    if (!gravity)
+        return std::nullopt;
+    read.gravity = *gravity;
     return read;
 }
 
@@ -839,13 +987,36 @@ std::string parameters_refusal(const scan_parameters &parameters, std::string &s
     if (!key_of(parameters.end))
         return in_quotes(end_key) + " is " + std::to_string(static_cast<int>(parameters.end)) +
                ", no enumerator of why a scan ended";
-    return frames_refusal(parameters.frames, parameters.end);
+    reason = frames_refusal(parameters.frames, parameters.end);
+    if (!reason.empty())
+        return reason;
+    return gravity_refusal(parameters.gravity);
 }
 } // namespace
 
 std::string_view name_of(scan_end end) noexcept
 {
     return key_of(end).value_or(std::string_view{});
+}
+
+std::string_view name_of(gravity_outcome outcome) noexcept
+{
+    return key_of(outcome).value_or(std::string_view{});
+}
+
+std::optional<gravity_outcome> gravity_outcome_named(std::string_view name) noexcept
+{
+    // The enumerators run from 0 without a gap (types/gravity_estimate.hpp): the first value
+    // without a key ends them.
+    for (int k = 0;; k++)
+    {
+        const gravity_outcome outcome = static_cast<gravity_outcome>(k);
+        const std::optional<std::string_view> key = key_of(outcome);
+        if (!key)
+            return std::nullopt;
+        if (*key == name)
+            return outcome;
+    }
 }
 
 std::optional<scan_end> scan_end_named(std::string_view name) noexcept
@@ -914,6 +1085,13 @@ write_result write_parameters(const std::filesystem::path &path,
         cv::write(storage, std::string(stop_key), stop);
         write_numbers(storage, frames_key, frame_entries, parameters.frames);
         cv::write(storage, std::string(end_key), std::string(name_of(parameters.end)));
+        storage.startWriteStruct(std::string(gravity_key), cv::FileNode::MAP);
+        cv::write(storage, std::string(outcome_key),
+                  std::string(name_of(parameters.gravity.outcome)));
+        // Exact: a count is at most 2^53 once gravity_refusal() admits it.
+        for (const number_entry<gravity_estimate> &entry : gravity_entries)
+            cv::write(storage, std::string(entry.key), entry.get(parameters.gravity));
+        storage.endWriteStruct();
         text = storage.releaseAndGetString();
     }
     catch (const cv::Exception &e)

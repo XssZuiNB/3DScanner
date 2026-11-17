@@ -5,9 +5,9 @@
 The camera's accelerometer and gyroscope come with the frames: each frame a frame source
 delivers carries, for each of the two sensors, the samples taken since the samples the frame
 before carried, each with its own timestamp on the frames' clock. The sequence keeps them with
-their frame (docs/SEQUENCE_FILE.md). No stage reads them yet: separation's up from gravity is the
-first reader (`separation-up-from-gravity`), the gyroscope as tracking's prior a candidate built
-only on a measured benefit (ROADMAP.md, "Candidates"). The code: the sample
+their frame (docs/SEQUENCE_FILE.md). Separation's gravity reads the accelerometer's at refinement
+(docs/methods/separation.md, "Gravity's up"); the gyroscope as tracking's prior is a candidate built
+only on a measured benefit (ROADMAP.md, "Candidates"). The code: the sample and the IMU's rotation
 `src/types/imu_sample.hpp`, the frame's lists `src/camera/frame.*`, the camera's streams
 `src/camera/orbbec_device.*`, its queue and the placement on the frames' clock
 `src/camera/orbbec_imu.*` and `src/camera/orbbec_rules.*`, the synthetic source's samples
@@ -42,9 +42,9 @@ make it unusable wherever its IMU does not stream (on a USB 2 link, unverified),
 goes on and the source says what it went without. The opening names the reason
 (`orbbec_opening::imu_refusal`, `src/camera/orbbec_imu.hpp`, `imu_refusal()`), and
 `orbbec_viewer` prints it as `No IMU: <reason>; the frames come without its samples`. A scan
-without samples runs and is refined as usual (the scan interface refuses none); separation then
-proposes no support plane and box, without gravity (the user's decision of 2026-11-16,
-`separation-up-from-gravity`).
+without samples runs and is refined as usual (the scan interface refuses none); its parameters
+say `no_samples` for gravity, and separation proposes no support plane and box (the user's decision
+of 2026-11-16; docs/methods/separation.md, "No samples").
 
 ## A sample
 
@@ -55,8 +55,11 @@ A sample (`gca::imu_sample`) is a timestamp and three floats:
   accelerometer's in m/s², the gyroscope's in rad/s [S: OrbbecSDK v2.10.6,
   examples/src/1.stream.imu/README.md]. The accelerometer measures specific force, the
   acceleration less gravity, as every accelerometer does: held still it reads 9.81 m/s²
-  pointing up [S: the physics of a proof mass]; that OrbbecSDK reports it with that sign is
-  unverified [?]. The gyroscope's rate is taken right-handed about each axis [?].
+  pointing up [S: the physics of a proof mass]. OrbbecSDK reports it with that sign: the
+  recording of 2026-11-16 read 9.61 m/s² pointing up, held roughly still, and the gravity found
+  from it with this sign lies 0.86° from its full model's dominant level plane, which lies below
+  the cameras [M 2026-11-16 recording, early: docs/methods/separation.md, "Gravity's up"]. The
+  gyroscope's rate is taken right-handed about each axis [?].
 
 ## The axes
 
@@ -69,7 +72,10 @@ whose rotation to the color camera lies within 0.001 of the identity (docs/HARDW
 y down, z forward. Whether the IMU's axes lie so is unverified [?]: the report may be a
 placeholder. Until the live check measures it, the
 rotation from the IMU's axes to the camera frame is the identity [?: initial], one constant of
-this document that a reader of the samples applies.
+this document that a reader of the samples applies (`gca::imu_to_camera()`,
+`src/types/imu_sample.hpp`). Early evidence agrees within about a degree: the gravity found with
+the identity on the recording of 2026-11-16 lies 0.86° from its full model's dominant level plane
+[M 2026-11-16 recording, early: docs/methods/separation.md, "Gravity's up"].
 
 What that predicts, and the live check checks (`hardware-check-orbbec-on-seam`): the camera held
 still and level, looking ahead, the accelerometer reads about (0, -9.81, 0) m/s²; turned to the
@@ -150,10 +156,13 @@ for one, every period from time 0 on, in the camera frame (x right, y down, z fo
 test knows the truth: between frames i - 1 and i the camera turns at the constant rate
 ω_i = log(R_{i-1}^T R_i) / (t_i - t_{i-1}), in the camera frame, R_i the rotation of pose i, and
 at a time t of (t_{i-1}, t_i] its rotation is R(t) = R_{i-1} exp((t - t_{i-1}) ω_i). The
-gyroscope reads ω_i, the accelerometer gravity's specific force R(t)^T (0, 0, g) with g =
-9.80665 m/s² [S: the standard acceleration of gravity, CGPM 1901], the world's z up; no
-acceleration of the hand. Before frame 0, at its time 0, the camera rests at pose 0. Frame i
-carries the samples of (t_{i-1}, t_i], frame 0 the one at 0.
+gyroscope reads ω_i, the accelerometer the specific force R(t)^T (a_i + (0, 0, g)) with g =
+9.80665 m/s² [S: the standard acceleration of gravity, CGPM 1901], the world's z up; a_i is the
+hand's acceleration when the test asks for it, the second difference of the trajectory's positions
+at frame i over the frames' period, the camera resting at the first pose before frame 0 and at the
+last after the last frame, else 0. Before frame 0, at its time 0, the camera rests at pose 0. Frame
+i carries the samples of (t_{i-1}, t_i], frame 0 the one at 0; a test takes a trajectory's samples
+without its frames through `append_imu_samples()`.
 
 ## On the per-frame path
 

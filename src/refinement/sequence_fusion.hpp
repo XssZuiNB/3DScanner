@@ -4,16 +4,18 @@
 /// "The fusion of the sequence"): the sequence is read back in order, each frame tracking gave a
 /// pose is fused at that pose into a sparse TSDF of the full model's parameters, a frame of
 /// tracking loss is skipped, and the full model is extracted and copied to the host as model
-/// points (types/model_point.hpp), with the trajectory as the sequence holds it. A sequence that
+/// points (types/model_point.hpp), with the trajectory and the accelerometer's samples as the
+/// sequence holds them, which separation's gravity takes (separation/gravity.hpp). A sequence that
 /// holds a frame nothing tracked is refused, and so is a fusion whose pool was used up; one cut off
 /// is fused up to its last whole frame; the caller can stop the fusion between two frames. A
-/// failure is a value with its reason, and gives neither a model nor a trajectory.
+/// failure is a value with its reason, and gives neither a model nor a trajectory nor samples.
 
 #pragma once
 
 #include "fusion/sparse_tsdf.hpp"
 #include "geometry/organized_points.hpp"
 #include "types/frame_description.hpp"
+#include "types/imu_sample.hpp"
 #include "types/model_point.hpp"
 #include "types/trajectory_entry.hpp"
 
@@ -31,9 +33,9 @@ namespace gca
 enum class sequence_fusion_end
 {
     done,      ///< every whole frame was read and the full model extracted
-    cancelled, ///< the caller stopped it between two frames; no model and no trajectory
+    cancelled, ///< the caller stopped it between two frames; no model, trajectory or samples
     failed,    ///< the sequence, a step or CUDA failed, or the pool was used up; the message says
-               ///< why; no model and no trajectory
+               ///< why; no model, trajectory or samples
 };
 
 /// What the fusion of a sequence gave.
@@ -48,6 +50,10 @@ struct sequence_fusion_result
     /// for tracking loss, as the sequence holds them, bit for bit; filled only when done, so that
     /// no caller keeps a part of it.
     std::vector<trajectory_entry> trajectory;
+    /// The accelerometer's samples of the frames read, tracked or not, in the sequence's order,
+    /// bit for bit (types/imu_sample.hpp); empty for a sequence of a camera without its IMU;
+    /// filled only when done.
+    std::vector<imu_sample> accelerometer;
     std::uint64_t frames_fused = 0;   ///< the frames fused at their poses, up to the end
     std::uint64_t frames_skipped = 0; ///< the frames of tracking loss, not fused, up to the end
     /// Whether the sequence ended early, cut off within or after a frame's record as a writer
@@ -74,8 +80,9 @@ struct sequence_fusion_result
 ///        which ends cancelled. It must not throw.
 /// @param stream [in] the CUDA stream of the current device the work is queued on and waited for;
 ///        owned by the caller.
-/// @return done, with the model, the trajectory and the counts; cancelled when go_on said false,
-///         with the counts of the frames read before; failed with the reason, naming the sequence
+/// @return done, with the model, the trajectory, the accelerometer's samples and the counts;
+///         cancelled when go_on said false, with the counts of the frames read before; failed
+///         with the reason, naming the sequence
 ///         and the frame where there is one: the sequence cannot be opened (the reader's reason:
 ///         no file, another version, another size), its reading fails other than by its early end,
 ///         a frame is marked as tracked by nothing, a request is refused (the sparse TSDF's
@@ -86,12 +93,13 @@ struct sequence_fusion_result
 ///      "The pool and the memory budget": one at a time). The call does not check it: with the
 ///      live model's still held, the full model's request either fails as a value, when CUDA
 ///      cannot grant it, or takes a second budget of the memory the board's CPU and GPU share.
-/// @note Allocates device memory, pinned host memory, and host memory for the trajectory and the
-///       model: at its peak about 56 bytes a point on the host, the points as copied and as model
-///       points, 28 bytes each, besides 28 bytes a point on the GPU; not a step of the per-frame
-///       path. A failed host allocation ends the program (std::terminate): the function is
-///       noexcept. Waits where the upload waits for its staging buffer, for the usage, for the
-///       extraction twice, and for the points' copy. Not while another thread uses the stream.
+/// @note Allocates device memory, pinned host memory, and host memory for the trajectory, the
+///       accelerometer's samples, 20 bytes each, and the model: at its peak about 56 bytes a point
+///       on the host, the points as copied and as model points, 28 bytes each, besides 28 bytes a
+///       point on the GPU; not a step of the per-frame path. A failed host allocation ends the
+///       program (std::terminate): the function is noexcept. Waits where the upload waits for its
+///       staging buffer, for the usage, for the extraction twice, and for the points' copy. Not
+///       while another thread uses the stream.
 sequence_fusion_result fuse_sequence(const std::filesystem::path &sequence, const frame_size &size,
                                      const sparse_tsdf_parameters &full_model,
                                      const organized_points_parameters &range,

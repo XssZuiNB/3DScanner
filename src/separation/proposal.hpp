@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: 0BSD
 /// @file proposal.hpp
-/// Separation's proposal (R15): from the full model and its trajectory, the support plane, the
-/// dominant plane under the object, and a box that stands upright on it around what stands on the
-/// plane where the views of the trajectory meet; on the host in double. The trajectory gives which
-/// way is up, from the camera held roughly upright, and where its views meet. The plane is the one
-/// with the most points near the views among the planes whose normal lies near up with the meeting
-/// point above them; after its fits it is checked against both conditions again, and its points
-/// must lie flat on it. The box is the least rectangle around the footprint of the piece standing
-/// nearest to the meeting point, grown by a margin. The result is a value for every call: proposed,
-/// no plane, nothing on the plane, the views do not meet, or refused, each with its reason. The
-/// constants stand here, each [?: initial]. The method, its sources and its measurements:
-/// docs/methods/separation.md.
+/// Separation's proposal (R15): from the full model, its trajectory and gravity's up, the support
+/// plane, the dominant plane under the object, and a box that stands upright on it around what
+/// stands on the plane where the views of the trajectory meet; on the host in double. Gravity's up
+/// comes from the camera's accelerometer (separation/gravity.hpp), the trajectory tells where the
+/// views meet. The plane is the one with the most points near the views among the planes whose
+/// normal lies near up with the meeting point above them; after its fits it is checked against
+/// both conditions again, and its points must lie flat on it. The box is the least rectangle
+/// around the footprint of the piece standing nearest to the meeting point, grown by a margin. The
+/// result is a value for every call: proposed, no plane, nothing on the plane, the views do not
+/// meet, no gravity, or refused, each with its reason. The constants stand here, each
+/// [?: initial]. The method, its sources and its measurements: docs/methods/separation.md.
 
 #pragma once
 
 #include "types/camera_pose.hpp"
+#include "types/gravity_estimate.hpp"
 #include "types/model_point.hpp"
 
 #include <cmath>
@@ -28,15 +29,6 @@
 
 namespace gca
 {
-/// γ, the weight of the mean of the cameras' up axes (-y) against the level x axes in the
-/// trajectory's up: 0.01 [?: initial; docs/methods/separation.md, "The trajectory's up"].
-inline constexpr double separation_up_weight = 0.01;
-
-/// The least length of the mean of the cameras' up axes (-y): 0.25, the camera pitched down by
-/// 75.5 degrees on average [?: initial; S: computed, cos 75.5 deg = 0.25]. Below it the views give
-/// no up.
-inline constexpr double separation_least_up_length = 0.25;
-
 /// The least eigenvalue of (1/N) Σ (I - z z^T) over the cameras' optical axes z at which the views
 /// meet: sin² 5 deg [?: initial; docs/methods/separation.md, "The views' meeting point"].
 inline constexpr double separation_least_axis_spread = 0.007596123493895969;
@@ -48,8 +40,8 @@ inline constexpr std::size_t separation_sample_points = 20000;
 /// of 12 % of the window's points with the chance 0.1 %, docs/methods/separation.md].
 inline constexpr std::uint32_t separation_hypotheses = 4000;
 
-/// The largest angle of the support plane's normal from the trajectory's up, in degrees: 45
-/// [?: initial].
+/// The largest angle of the support plane's normal from gravity's up, in degrees: 45
+/// [?: initial: far above gravity's error and a support's tilt, far below a wall's 90].
 inline constexpr double separation_largest_tilt_deg = 45.0;
 
 /// d_in, the half thickness of the plane's band, in voxels: 3 [?: initial; the fused model's
@@ -142,9 +134,12 @@ enum class separation_end
     /// fitted plane left the conditions; or the last band's points lie farther from it than
     /// separation_largest_band_spread_voxels v in the root mean square.
     no_plane,
-    nothing_on_plane, ///< a plane, but nothing stands on it within the window
-    /// The views' optical axes are near parallel, or the cameras' up axes give no up.
-    views_do_not_meet,
+    nothing_on_plane,  ///< a plane, but nothing stands on it within the window
+    views_do_not_meet, ///< the tracked frames' optical axes are near parallel
+    /// Gravity gives no up (types/gravity_estimate.hpp): not estimated, no accelerometer sample,
+    /// too few, their mean 0, their spread too wide, or its estimate refused; the operator sets
+    /// plane and box.
+    no_gravity,
     refused, ///< the inputs, before anything was computed; the message says why
 };
 
@@ -156,14 +151,14 @@ struct separation_proposal
     support_plane plane{Eigen::Vector3d::Zero(), 0.0}; ///< the support plane when proposed
     /// The box when proposed.
     separation_box box{Eigen::Isometry3d::Identity(), Eigen::Vector3d::Zero()};
-    /// The trajectory's up, a unit vector in the models' frame; zero when refused or when the views
-    /// do not meet.
+    /// Gravity's up as given, a unit vector in the models' frame; zero when refused or without
+    /// gravity.
     Eigen::Vector3d up = Eigen::Vector3d::Zero();
-    /// The views' meeting point, in the models' frame, in m; zero when refused or when the views do
-    /// not meet.
+    /// The views' meeting point, in the models' frame, in m; zero when refused, without gravity
+    /// or when the views do not meet.
     Eigen::Vector3d meeting_point_m = Eigen::Vector3d::Zero();
-    /// W, how far from the meeting point the proposal looked, in m; 0 when refused or when the
-    /// views do not meet.
+    /// W, how far from the meeting point the proposal looked, in m; 0 when refused, without
+    /// gravity or when the views do not meet.
     double window_m = 0.0;
     /// The window's points in the plane's band: of the proposed plane, of the plane nothing stands
     /// on, or for no plane of the last plane counted; 0 when no hypothesis was a candidate or
@@ -179,9 +174,9 @@ struct separation_proposal
     }
 };
 
-/// Proposes the separation of a full model (docs/methods/separation.md): checks the inputs; the
-/// trajectory's up, perpendicular to the cameras' level x axes and near the mean of their up axes;
-/// the views' meeting point m, nearest to their optical axes; the window, the model's points within
+/// Proposes the separation of a full model (docs/methods/separation.md): checks the inputs;
+/// gravity's up, or the end without it; the views' meeting point m, nearest to the tracked frames'
+/// optical axes; the window, the model's points within
 /// min(the median camera's distance from m, D) of m; the support plane by random sample consensus
 /// among the planes whose normal lies within 45 degrees of up with m above them, the most points
 /// within d_in winning, then fitted by orthogonal least squares, both conditions checked again and
@@ -195,16 +190,21 @@ struct separation_proposal
 ///        at least one, else refused; each position finite and each quaternion of norm 1 within
 ///        pose_norm_tolerance (types/camera_pose.hpp, fault_of()), else refused; frames in tracking
 ///        loss left out; host memory, read during the call.
+/// @param gravity [in] gravity's estimate of the scan (separation/gravity.hpp, estimate_gravity(),
+///        or the scan's parameters): an outcome of the closed set, else refused; when estimated, up
+///        in the models' frame, finite and of length 1 within gravity_up_tolerance (up_is_unit()),
+///        else refused; any other outcome ends the proposal without gravity.
 /// @param parameters [in] v and D (separation_parameters), else refused; the model's points lie
 ///        within D of a camera, as a scan fuses them, else the window leaves out what lies farther.
 /// @return the proposal (separation_proposal): proposed, with the plane, the box and the evidence;
-///         no plane, nothing on the plane or the views do not meet, each with the reason and the
-///         evidence found before it; or refused, with the reason, when an input
-///         breaks one of the conditions above.
+///         no gravity, with gravity's reason (reason_of()), before the views; no plane, nothing on
+///         the plane or the views do not meet, each with the reason and the evidence found before
+///         it; or refused, with the reason, when an input breaks one of the conditions above.
 /// @note Host only; allocates the window's points in double, the sample and the footprint's
 ///       cells, and throws std::bad_alloc when an allocation fails. Holds no state: two threads may
 ///       propose at once.
 separation_proposal propose_separation(std::span<const model_point> full_model,
                                        std::span<const camera_pose> trajectory,
+                                       const gravity_estimate &gravity,
                                        const separation_parameters &parameters);
 } // namespace gca

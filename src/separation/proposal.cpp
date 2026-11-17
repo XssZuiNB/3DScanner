@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: 0BSD
 /// @file proposal.cpp
 /// Separation's proposal of the support plane and the box (see proposal.hpp and
-/// docs/methods/separation.md), in named steps: the checks of the inputs, the trajectory's up and
-/// meeting point, the window and its sample, the plane's hypotheses, fits and judgement, the
-/// footprint's cells and pieces, the object's choice and the box.
+/// docs/methods/separation.md), in named steps: the checks of the inputs, gravity's up, the
+/// trajectory's meeting point, the window and its sample, the plane's hypotheses, fits and
+/// judgement, the footprint's cells and pieces, the object's choice and the box.
 
 #include "separation/proposal.hpp"
 
+#include "separation/gravity.hpp"
 #include "separation/plane_fit.hpp"
+#include "separation/separation_messages.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdio>
 #include <limits>
 #include <numbers>
 #include <optional>
@@ -20,7 +21,6 @@
 #include <utility>
 #include <vector>
 
-#include <Eigen/Cholesky>
 #include <Eigen/Eigenvalues>
 
 namespace gca
@@ -31,24 +31,15 @@ namespace
 /// fixed value, so that a proposal is the same in every run].
 constexpr std::uint64_t sample_seed = 20261115;
 
-/// Writes a number for a message, in up to six significant digits.
-/// @param value [in] the number.
-/// @return its text, "nan" or "inf" included.
-std::string text_of(double value)
-{
-    std::array<char, 32> text{};
-    std::snprintf(text.data(), text.size(), "%.6g", value);
-    return text.data();
-}
-
 /// Says why the inputs are refused (docs/methods/separation.md, "The ends"), before any is used.
 /// @param full_model [in] the full model's points.
 /// @param trajectory [in] the trajectory.
+/// @param gravity [in] gravity's estimate.
 /// @param parameters [in] v and D.
-/// @return the reason, naming the parameter, the pose or the point; empty when every input is
-///         accepted.
+/// @return the reason, naming the parameter, gravity, the pose or the point; empty when every
+///         input is accepted.
 std::string refusal_of(std::span<const model_point> full_model,
-                       std::span<const camera_pose> trajectory,
+                       std::span<const camera_pose> trajectory, const gravity_estimate &gravity,
                        const separation_parameters &parameters)
 {
     const double v = parameters.voxel_size_m;
@@ -60,31 +51,31 @@ std::string refusal_of(std::span<const model_point> full_model,
     if (depth > separation_largest_depth_voxels * v)
         return "the farthest depth " + text_of(depth) + " m is more than " +
                text_of(separation_largest_depth_voxels) + " voxels of " + text_of(v) + " m";
+    if (!is_outcome(gravity.outcome))
+        return "gravity's outcome " + std::to_string(static_cast<int>(gravity.outcome)) +
+               " is no outcome";
+    if (gravity.outcome == gravity_outcome::estimated && !up_is_unit(gravity.up))
+        return "gravity's up (" + text_of(gravity.up.x()) + ", " + text_of(gravity.up.y()) + ", " +
+               text_of(gravity.up.z()) + ") is not finite with a length within " +
+               text_of(gravity_up_tolerance) + " of 1";
     if (trajectory.empty())
         return "the trajectory holds no pose";
     for (std::size_t i = 0; i < trajectory.size(); i++)
-        switch (fault_of(trajectory[i]))
-        {
-        case pose_fault::none:
-            break;
-        case pose_fault::position_not_finite:
-            return "pose " + std::to_string(i) + ": its position is not finite";
-        case pose_fault::norm_not_one:
-            return "pose " + std::to_string(i) + ": its quaternion's norm differs from 1 by " +
-                   text_of(trajectory[i].orientation.norm() - 1.0) + ", more than " +
-                   text_of(pose_norm_tolerance);
-        }
+    {
+        const std::string fault = fault_text(trajectory[i]);
+        if (!fault.empty())
+            return "pose " + std::to_string(i) + ": " + fault;
+    }
     for (std::size_t k = 0; k < full_model.size(); k++)
         if (!full_model[k].position_m.allFinite())
             return "point " + std::to_string(k) + ": its position is not finite";
     return "";
 }
 
-/// What the trajectory tells: which way is up, where its views meet and how far the window
-/// reaches.
+/// Where the views meet and how far the window reaches, with gravity's up.
 struct view_geometry
 {
-    Eigen::Vector3d up;              ///< u, unit, in the models' frame
+    Eigen::Vector3d up;              ///< u, gravity's up, unit, in the models' frame
     Eigen::Vector3d meeting_point_m; ///< m, in the models' frame, in m
     double window_m;                 ///< W, in m
 };
@@ -96,41 +87,27 @@ struct view_result
     std::string reason;                    ///< why the views do not meet; empty otherwise
 };
 
-/// Finds the trajectory's up, its views' meeting point and the window (docs/methods/separation.md,
-/// "The trajectory's up", "The views' meeting point", "The window").
+/// Finds the views' meeting point and the window (docs/methods/separation.md, "The views' meeting
+/// point", "The window").
 /// @param trajectory [in] the trajectory, camera to model, in the models' frame and m: at least one
 ///        pose, each finite with a unit quaternion.
+/// @param up [in] gravity's up, unit, in the models' frame.
 /// @param max_depth_m [in] D, in m, finite and > 0.
-/// @return the geometry; or nothing with the reason when the mean of the cameras' up axes is
-///         shorter than separation_least_up_length, or the least eigenvalue of
+/// @return the geometry; or nothing with the reason when the least eigenvalue of
 ///         (1/N) Σ (I - z z^T) lies below separation_least_axis_spread.
-view_result views_of(std::span<const camera_pose> trajectory, double max_depth_m)
+view_result views_of(std::span<const camera_pose> trajectory, const Eigen::Vector3d &up,
+                     double max_depth_m)
 {
     const double count = static_cast<double>(trajectory.size());
-    Eigen::Vector3d mean_up = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d level = Eigen::Matrix3d::Zero();
     Eigen::Matrix3d across = Eigen::Matrix3d::Zero();
     Eigen::Vector3d across_centres = Eigen::Vector3d::Zero();
     for (const camera_pose &pose : trajectory)
     {
-        const Eigen::Matrix3d r = pose.orientation.toRotationMatrix();
-        const Eigen::Vector3d x = r.col(0);
-        const Eigen::Vector3d z = r.col(2);
-        mean_up -= r.col(1);
-        level += x * x.transpose();
+        const Eigen::Vector3d z = pose.orientation.toRotationMatrix().col(2);
         const Eigen::Matrix3d off_axis = Eigen::Matrix3d::Identity() - z * z.transpose();
         across += off_axis;
         across_centres += off_axis * pose.position_m;
     }
-    mean_up /= count;
-    level /= count;
-    if (!(mean_up.norm() >= separation_least_up_length))
-        return {std::nullopt, "the cameras' up axes give no up: the mean of their up axes is " +
-                                  text_of(mean_up.norm()) + " long, less than " +
-                                  text_of(separation_least_up_length)};
-    // The u that minimizes Σ (x_i · u)² / N + γ |u - ū|²: (M + γ I) u = γ ū, normalized.
-    const Eigen::Matrix3d damped = level + separation_up_weight * Eigen::Matrix3d::Identity();
-    const Eigen::Vector3d up = damped.ldlt().solve(mean_up).normalized();
 
     const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> spread(across / count);
     if (!(spread.eigenvalues()(0) >= separation_least_axis_spread))
@@ -154,7 +131,7 @@ view_result views_of(std::span<const camera_pose> trajectory, double max_depth_m
     return {view_geometry{up, meeting, std::min(*middle, max_depth_m)}, ""};
 }
 
-/// Turns a plane's normal to the side of the trajectory's up.
+/// Turns a plane's normal to the side of gravity's up.
 /// @param normal [in] the normal, unit, in the models' frame.
 /// @param up [in] u, unit, in the models' frame.
 /// @return normal, or -normal when normal · up < 0.
@@ -234,7 +211,7 @@ band_points band_of(std::span<const Eigen::Vector3d> points, const support_plane
 /// Says whether a plane lies under the object (docs/methods/separation.md, "The support plane"):
 /// its normal within separation_largest_tilt_deg of up, the meeting point above it.
 /// @param plane [in] the plane, its normal turned toward up, in the models' frame.
-/// @param views [in] the trajectory's up and meeting point.
+/// @param views [in] gravity's up and the meeting point.
 /// @return whether both conditions hold.
 bool under_object(const support_plane &plane, const view_geometry &views)
 {
@@ -248,7 +225,7 @@ bool under_object(const support_plane &plane, const view_geometry &views)
 /// candidate when its normal, turned toward up, lies within separation_largest_tilt_deg of up and
 /// the meeting point lies above it; the candidate with the most sampled points within the band.
 /// @param sample [in] the sampled points of the window, in the models' frame, in m.
-/// @param views [in] the trajectory's up and meeting point.
+/// @param views [in] gravity's up and the meeting point.
 /// @param band_m [in] d_in, in m.
 /// @param generator [in,out] the generator the three points are drawn from.
 /// @return the best candidate, the first on a tie; nothing when no hypothesis is a candidate, also
@@ -299,7 +276,7 @@ struct plane_result
 /// separation_largest_band_spread_voxels v of it.
 /// @param window [in] the window's points, in the models' frame, in m.
 /// @param hypothesis [in] the best hypothesis, in the models' frame.
-/// @param views [in] the trajectory's up and meeting point.
+/// @param views [in] gravity's up and the meeting point.
 /// @param voxel_m [in] v, in m.
 /// @return the plane, its normal turned toward up, and its band's count; or nothing with the count
 ///         of the band that fell short or was judged, and the reason.
@@ -662,13 +639,20 @@ separation_box box_of(const footprint &shape, const std::vector<std::uint32_t> &
 
 separation_proposal propose_separation(std::span<const model_point> full_model,
                                        std::span<const camera_pose> trajectory,
+                                       const gravity_estimate &gravity,
                                        const separation_parameters &parameters)
 {
     separation_proposal result;
-    result.message = refusal_of(full_model, trajectory, parameters);
+    result.message = refusal_of(full_model, trajectory, gravity, parameters);
     if (!result.message.empty())
         return result;
-    const view_result views = views_of(trajectory, parameters.max_depth_m);
+    if (gravity.outcome != gravity_outcome::estimated)
+    {
+        result.end = separation_end::no_gravity;
+        result.message = reason_of(gravity);
+        return result;
+    }
+    const view_result views = views_of(trajectory, gravity.up, parameters.max_depth_m);
     if (!views.geometry)
     {
         result.end = separation_end::views_do_not_meet;

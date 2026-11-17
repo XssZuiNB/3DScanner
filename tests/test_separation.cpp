@@ -1,41 +1,59 @@
 // SPDX-License-Identifier: 0BSD
 /// @file test_separation.cpp
-/// Separation's proposal of the support plane and the box (separation/proposal.hpp,
-/// propose_separation()) and the shared plane fit (separation/plane_fit.hpp) on full models built
-/// here; the method is docs/methods/separation.md. A full model is the points of known surfaces
-/// sampled one per voxel's square, each moved along its surface's normal by Gaussian noise from a
-/// fixed seed: the support plane without the parts things stand on, the box, other things standing
-/// around, walls; its trajectory is a walk of the synthetic source (synthetic_source.hpp) around
-/// the box. The models' frame is the first camera's, as a scan's, so the plane lies tilted in it.
+/// Separation's gravity (separation/gravity.hpp, estimate_gravity()), its proposal of the support
+/// plane and the box (separation/proposal.hpp, propose_separation()) and the shared plane fit
+/// (separation/plane_fit.hpp) on full models built here; the method is docs/methods/separation.md.
+/// A full model is the points of known surfaces sampled one per voxel's square, each moved along
+/// its surface's normal by Gaussian noise from a fixed seed: the support plane without the parts
+/// things stand on, the box, other things standing around, walls; its trajectory is a walk of the
+/// synthetic source (synthetic_source.hpp) around the box at 30 frames a second, a lap of the
+/// tabletop box in 20 s and of the large box in 40 s, and its accelerometer's samples the
+/// synthetic source's at 200 Hz along the walk, with the hand's acceleration. The models' frame is
+/// the first camera's, as a scan's, so the plane lies tilted in it.
 /// - The plane fit: a tilted plane's points give its normal and centroid; fewer than three points
 ///   give nothing.
+/// - Gravity on the tabletop walk: as walked, shaken by 2 cm at 1.5 Hz, rolled by 60 degrees,
+///   half of it rolling at 90 degrees a second, with a stretch of tracking loss whose samples
+///   stay, with a gap of frames not taken whose samples go, and with the IMU's axes turned by 90
+///   degrees and that rotation given: up within a measured tolerance of the known up, the samples
+///   taken counted; the samples of exactly the least groups: estimated; the turned samples with
+///   the identity given: no gravity, the spread too large; no sample, three seconds of samples,
+///   one sample short of the least groups, all samples zero: no gravity with their outcomes;
+///   refusals as values: the rotation not unit, a frame's timestamp not rising, a pose not finite,
+///   a sample's time not rising, a sample not finite.
 /// - A tabletop box among four other things, one of them larger than the box, one 3 cm beside it,
-///   and a large box among three: the plane within an angle and a distance of the known one, the
-///   box upright on it, its x axis along its longer side, holding the known box within the margin
-///   and none of the other things' points.
+///   and a large box among three: gravity within the tolerance of the known up, the plane within
+///   an angle and a distance of the known one, the box upright on it, its x axis along its longer
+///   side, holding the known box within the margin and none of the other things' points.
 /// - The box near a wall that holds more of the window's points than the support plane, for both
 ///   object classes, from half a walk in front of it: still the support plane, the box as above.
 /// - A flat board whose top holds more of the window's points than the table seen around it, the
 ///   views meeting under its top: still the table.
-/// - The camera rolled by 15, 30, 40, 45 and 60 degrees: right up to 30 degrees on every scene,
-///   right or no plane beyond. The large box in a room's corner: right as walked and rolled by
-///   30 degrees either way; its proposals at 45 and 60 degrees, a side wall, are printed only.
+/// - Every scene's walk rolled by 15, 30, 40, 45 and 60 degrees, and shaken: right. The large box
+///   in a room's corner: right as walked and rolled by 30, 45 and 60 degrees either way, where up
+///   from the cameras' axes proposed a side wall (docs/methods/separation.md, "The roll").
 /// - Two things nearer than a footprint's cell join, two farther apart than 2 sqrt 2 cells do not,
 ///   for both object classes.
 /// - A sphere alone, an empty model and a steep ramp alone: no plane. The support plane alone:
 ///   nothing on the plane.
-/// - Parallel views and up axes that cancel: the views do not meet.
-/// - Refusals as values: the voxel size and the farthest depth outside their ranges, no pose, a
-///   pose not finite or its quaternion not unit, while one within the tolerance is taken, a point
-///   not finite.
+/// - Parallel views: the views do not meet. Each outcome of gravity without up: no gravity, before
+///   the views, with gravity's reason.
+/// - Refusals as values: the voxel size and the farthest depth outside their ranges, gravity's
+///   outcome no enumerator, an estimated up not unit, no pose, a pose not finite or its quaternion
+///   not unit, while one within the tolerance is taken, a point not finite.
 
+#include "camera/orbbec_imu.hpp"
 #include "check.hpp"
 #include "scan/object_class.hpp"
+#include "separation/gravity.hpp"
 #include "separation/plane_fit.hpp"
 #include "separation/proposal.hpp"
 #include "stage_checks.hpp"
 #include "stage_frames.hpp"
 #include "synthetic_source.hpp"
+#include "types/gravity_estimate.hpp"
+#include "types/imu_sample.hpp"
+#include "types/trajectory_entry.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -68,6 +86,37 @@ using gca_test::synthetic_texture;
 /// (docs/methods/sparse-tsdf.md, "What the extraction gives"), without their tails].
 constexpr double noise_voxels = 0.25;
 
+/// The frames of a lap at 30 frames a second: 600 around the tabletop box, 20 s, and 1200 around
+/// the large box, 40 s [?: a choice, a hand-held lap].
+constexpr std::size_t tabletop_lap_frames = 600;
+constexpr std::size_t large_lap_frames = 1200;
+
+/// The accelerometer's period, in µs: 200 Hz, the camera's (docs/methods/imu-samples.md).
+constexpr std::uint64_t imu_period_us = 5000;
+
+// A group of gravity's spread is one second of samples (separation/gravity.hpp,
+// gravity_group_samples) only while the camera's IMU runs at orbbec_imu_rate_hz, which separation
+// does not read: here both are seen, so that a change of the rate fails this test's build until
+// the group's size is decided anew (docs/methods/separation.md, "The spread").
+static_assert(static_cast<double>(gca::gravity_group_samples) == gca::orbbec_imu_rate_hz,
+              "a group of gravity's spread is one second of the camera's IMU samples");
+
+/// The hand's shake: its amplitude in m, its frequency in Hz, along a fixed direction that is
+/// neither level nor vertical [?: a choice: a hand's sway and a walk's bob, 1.78 m/s² at its
+/// peak].
+constexpr double shake_m = 0.02;
+constexpr double shake_hz = 1.5;
+
+/// The rate of a walk's roll about the optical axis, in degrees a second: 90, tracking's ω_max
+/// (docs/methods/tracking.md, "Parameters") [?: a choice: the fastest turn a hand gives that
+/// tracking passes].
+constexpr double roll_rate_deg_s = 90.0;
+
+/// The largest angle of gravity's up from the known up, in degrees: about twice the largest over
+/// every case [M 2026-11-17: this test; the largest 0.0934 deg, the large box by a wall, half a lap
+/// of 20 s from rest; shaken 0.0734 deg, the tabletop box].
+constexpr double gravity_tolerance_deg = 0.2;
+
 /// What a point of a test model belongs to.
 enum class part
 {
@@ -86,17 +135,26 @@ struct test_scene
     std::vector<synthetic_box> other_boxes; ///< things standing around
     std::vector<synthetic_sphere> balls;    ///< things standing around, or the scene's only thing
     std::vector<synthetic_surface> planes;  ///< walls and other planes, each an other part
-    std::vector<Eigen::Isometry3d> walk;    ///< the camera's poses, camera to world, at least one
+    /// The camera's poses, camera to world, one for each frame at 30 frames a second, at least one.
+    std::vector<Eigen::Isometry3d> walk;
 };
 
 /// A full model built from a scene, in the models' frame, the walk's first camera's.
 struct built_model
 {
-    std::vector<gca::model_point> points;     ///< the model
-    std::vector<part> parts;                  ///< what each point belongs to
-    Eigen::Isometry3d to_model;               ///< from the world frame into the models' frame
-    std::vector<gca::camera_pose> trajectory; ///< the walk in the models' frame
-    gca::separation_parameters parameters;    ///< v and D of the scene's object class
+    std::vector<gca::model_point> points;  ///< the model
+    std::vector<part> parts;               ///< what each point belongs to
+    Eigen::Isometry3d to_model;            ///< from the world frame into the models' frame
+    gca::separation_parameters parameters; ///< v and D of the scene's object class
+};
+
+/// A walk as a scan gives it to separation, in a model's frame.
+struct walked
+{
+    /// Every frame of the walk, frame i at i synthetic_frame_period_us, tracked, camera to model.
+    std::vector<gca::trajectory_entry> trajectory;
+    std::vector<gca::camera_pose> poses;        ///< the tracked frames' poses, in their order
+    std::vector<gca::imu_sample> accelerometer; ///< the samples along the walk, in the IMU's axes
 };
 
 /// Returns the level direction at a turn from the world's x axis toward its y.
@@ -215,11 +273,11 @@ void sample_sphere(built_model &model, const synthetic_sphere &ball, double spac
     }
 }
 
-/// Builds a scene's full model in the frame of its walk's first camera, and its trajectory there.
+/// Builds a scene's full model in the frame of its walk's first camera.
 /// @param scene [in] the scene.
 /// @param seed [in] the noise's seed.
-/// @return the model, its parts, the walk, the object class's v and as D the far depth its
-///         tests were measured at (gca_test::measured_range_of()).
+/// @return the model, its parts, the object class's v and as D the far depth its tests were
+///         measured at (gca_test::measured_range_of()).
 built_model build(const test_scene &scene, std::uint64_t seed)
 {
     const gca::object_class_parameters kind = gca::parameters_of(scene.kind);
@@ -244,13 +302,49 @@ built_model build(const test_scene &scene, std::uint64_t seed)
         sample_sphere(model, ball, v, part::other, noise, generator);
     for (const synthetic_surface &plane : scene.planes)
         sample_rectangle(model, plane, v, part::other, {}, noise, generator);
-    for (const Eigen::Isometry3d &pose : scene.walk)
-    {
-        const Eigen::Isometry3d in_model = model.to_model * pose;
-        model.trajectory.push_back(
-            {in_model.translation(), Eigen::Quaterniond(in_model.linear()).normalized()});
-    }
     return model;
+}
+
+/// Returns the known up in a model's frame.
+/// @param model [in] the model, for its frame.
+/// @return the world's z axis turned into the models' frame.
+Eigen::Vector3d known_up(const built_model &model)
+{
+    return model.to_model.linear() * Eigen::Vector3d::UnitZ();
+}
+
+/// Gives a walk as a scan gives it: every frame tracked at its pose in the model's frame, and the
+/// synthetic source's accelerometer samples along it with the hand's acceleration, turned into
+/// the IMU's axes.
+/// @param model [in] the model, for its frame.
+/// @param walk [in] the poses, camera to world, frame i at i synthetic_frame_period_us.
+/// @param imu_to_camera [in] the rotation from the IMU's axes into the camera frame the samples
+///        are given in: each sample is Q^T of the camera frame's.
+/// @return the trajectory, the poses and the samples.
+walked walked_of(const built_model &model, const std::vector<Eigen::Isometry3d> &walk,
+                 const Eigen::Quaterniond &imu_to_camera = Eigen::Quaterniond::Identity())
+{
+    walked out;
+    std::vector<gca::imu_sample> gyro;
+    const gca_test::synthetic_imu imu{imu_period_us, true};
+    const Eigen::Matrix3d into_imu = imu_to_camera.toRotationMatrix().transpose();
+    for (std::size_t i = 0; i < walk.size(); i++)
+    {
+        const Eigen::Isometry3d in_model = model.to_model * walk[i];
+        const gca::camera_pose pose{in_model.translation(),
+                                    Eigen::Quaterniond(in_model.linear()).normalized()};
+        out.trajectory.push_back({i, i * gca_test::synthetic_frame_period_us, pose});
+        out.poses.push_back(pose);
+        gca_test::append_imu_samples(walk, i, imu, out.accelerometer, gyro);
+    }
+    for (gca::imu_sample &sample : out.accelerometer)
+    {
+        const Eigen::Vector3d turned = into_imu * Eigen::Vector3d(sample.x, sample.y, sample.z);
+        sample.x = static_cast<float>(turned.x());
+        sample.y = static_cast<float>(turned.y());
+        sample.z = static_cast<float>(turned.z());
+    }
+    return out;
 }
 
 /// Returns a horizontal rectangle of the world, its normal up.
@@ -279,11 +373,11 @@ synthetic_surface wall_at(double y_m, double half_x_m, double height_m)
             synthetic_texture::plane};
 }
 
-/// Builds a walk, or half of it.
-/// @param walk [in] the walk.
+/// Builds a walk, or half of it, at 30 frames a second.
+/// @param walk [in] the walk, its pose count the frames of a whole lap.
 /// @param front_only [in] whether to keep only the poses with y below the walk's centre, the half
-///        in front of a wall along +y.
-/// @return the poses, camera to world.
+///        in front of a wall along +y, one stretch of the lap.
+/// @return the poses, camera to world, frame i the i-th kept.
 std::vector<Eigen::Isometry3d> walk_of(const gca_test::synthetic_walk &walk, bool front_only)
 {
     const std::optional<std::vector<Eigen::Isometry3d>> poses = gca_test::walk_around(walk);
@@ -314,6 +408,42 @@ std::vector<Eigen::Isometry3d> rolled(const std::vector<Eigen::Isometry3d> &walk
     return out;
 }
 
+/// Returns a walk whose cameras roll about their optical axes at a constant rate: frame i rolled by
+/// the rate times its time, so that the camera turns about a level axis between frames, which a
+/// sample's interpolated orientation follows and the earlier frame's does not
+/// (docs/methods/separation.md, "Into the models' frame").
+/// @param walk [in] the poses, camera to world, frame i at i synthetic_frame_period_us.
+/// @param deg_per_s [in] the roll's rate, in degrees a second, from the camera's x toward its y.
+/// @return the rolling poses.
+std::vector<Eigen::Isometry3d> rolling(const std::vector<Eigen::Isometry3d> &walk, double deg_per_s)
+{
+    std::vector<Eigen::Isometry3d> out;
+    for (std::size_t i = 0; i < walk.size(); i++)
+    {
+        const double t_s = 1e-6 * static_cast<double>(i * gca_test::synthetic_frame_period_us);
+        out.push_back(rolled({walk[i]}, deg_per_s * t_s).front());
+    }
+    return out;
+}
+
+/// Returns a walk whose camera shakes: each position moved by shake_m sin(2π shake_hz t) along
+/// (1, 2, 2) / 3 of the world, t frame i's time.
+/// @param walk [in] the poses, camera to world, frame i at i synthetic_frame_period_us.
+/// @return the shaken poses.
+std::vector<Eigen::Isometry3d> shaken(const std::vector<Eigen::Isometry3d> &walk)
+{
+    const Eigen::Vector3d along = Eigen::Vector3d(1.0, 2.0, 2.0) / 3.0;
+    std::vector<Eigen::Isometry3d> out;
+    for (std::size_t i = 0; i < walk.size(); i++)
+    {
+        const double t_s = 1e-6 * static_cast<double>(i * gca_test::synthetic_frame_period_us);
+        Eigen::Isometry3d moved = walk[i];
+        moved.translation() += shake_m * std::sin(2.0 * std::numbers::pi * shake_hz * t_s) * along;
+        out.push_back(moved);
+    }
+    return out;
+}
+
 /// Returns the trajectory of a walk in a model's frame.
 /// @param model [in] the model, for its frame.
 /// @param walk [in] the poses, camera to world.
@@ -330,6 +460,17 @@ std::vector<gca::camera_pose> trajectory_of(const built_model &model,
     return out;
 }
 
+/// Returns an estimate that holds a known up, for the proposal's cases that are not gravity's.
+/// @param up [in] the up, unit, in the models' frame.
+/// @return the estimate, estimated.
+gca::gravity_estimate estimate_of(const Eigen::Vector3d &up)
+{
+    gca::gravity_estimate known;
+    known.outcome = gca::gravity_outcome::estimated;
+    known.up = up;
+    return known;
+}
+
 /// The tolerances a right proposal is checked against.
 struct proposal_tolerance
 {
@@ -339,8 +480,8 @@ struct proposal_tolerance
     double excess_voxels;   ///< the largest excess of the box's faces over the known box beyond μ
 };
 
-/// The tolerances, each about twice the largest over the scenes and the rolls up to 30 degrees
-/// [M 2026-11-15: this test; the largest 0.0114 deg, by a wall on the table; 0.08 voxels, the
+/// The tolerances, each about twice the largest over the scenes, every roll and the shaken walks
+/// [M 2026-11-17: this test; the largest 0.0114 deg, by a wall on the table; 0.08 voxels, the
 /// board; 1.22 voxels, the large box, the noise's farthest draw, 4.9 σ, beyond the margin].
 constexpr proposal_tolerance tolerance = {0.03, 0.2, 2.0};
 
@@ -404,8 +545,8 @@ proposal_measure measure(const test_scene &scene, const built_model &model,
 /// @param model [in] its model.
 /// @param proposal [in] the proposal.
 /// @param what [in] the case, printed.
-void check_right(const test_scene &scene, const built_model &model,
-                 const gca::separation_proposal &proposal, const std::string &what)
+void check_proposal_right(const test_scene &scene, const built_model &model,
+                          const gca::separation_proposal &proposal, const std::string &what)
 {
     check(proposal.proposed(), (what + ": proposed").c_str());
     if (!proposal.proposed())
@@ -416,10 +557,8 @@ void check_right(const test_scene &scene, const built_model &model,
     const proposal_measure m = measure(scene, model, proposal);
     const double voxel_mm = 1e3 * model.parameters.voxel_size_m;
     const double margin_mm = gca::separation_margin_voxels * voxel_mm;
-    std::printf("%s: plane %zu points, object %zu points, window %.3f m, the trajectory's up %.2f "
-                "deg from the known up\n",
-                what.c_str(), proposal.plane_points, proposal.object_points, proposal.window_m,
-                angle_deg(proposal.up, model.to_model.linear() * Eigen::Vector3d::UnitZ()));
+    std::printf("%s: plane %zu points, object %zu points, window %.3f m\n", what.c_str(),
+                proposal.plane_points, proposal.object_points, proposal.window_m);
     check_within((what + ": the plane's angle from the known one, deg").c_str(), m.plane_angle_deg,
                  tolerance.angle_deg);
     check_within((what + ": the plane's distance at the box's foot, voxels").c_str(),
@@ -442,6 +581,48 @@ void check_right(const test_scene &scene, const built_model &model,
                     m.others_inside);
 }
 
+/// Estimates gravity along a walk and checks it: estimated, up within gravity_tolerance_deg of the
+/// known up.
+/// @param model [in] the model, for its frame.
+/// @param walk [in] the poses, camera to world, at 30 frames a second.
+/// @param what [in] the case, printed.
+/// @return the walk as a scan gives it, and the estimate.
+std::pair<walked, gca::gravity_estimate> checked_gravity(const built_model &model,
+                                                         const std::vector<Eigen::Isometry3d> &walk,
+                                                         const std::string &what)
+{
+    walked scan = walked_of(model, walk);
+    const gca::gravity_result gravity =
+        gca::estimate_gravity(scan.trajectory, scan.accelerometer, gca::imu_to_camera());
+    const gca::gravity_estimate &e = gravity.estimate;
+    check(e.outcome == gca::gravity_outcome::estimated, (what + ": gravity estimated").c_str());
+    std::printf(
+        "%s: gravity of %llu samples in %llu groups, spread %.3f deg, mean %.4f m/s^2; %s\n",
+        what.c_str(), static_cast<unsigned long long>(e.samples),
+        static_cast<unsigned long long>(e.groups), e.spread_deg, e.mean_mps2,
+        gca::reason_of(e).c_str());
+    check_within((what + ": gravity's up from the known up, deg").c_str(),
+                 angle_deg(e.up, known_up(model)), gravity_tolerance_deg);
+    return {std::move(scan), e};
+}
+
+/// Estimates gravity along a walk and proposes from it: both right.
+/// @param scene [in] the scene, with its object.
+/// @param model [in] its model.
+/// @param walk [in] the poses, camera to world, at 30 frames a second.
+/// @param what [in] the case, printed.
+/// @return the proposal.
+gca::separation_proposal check_right(const test_scene &scene, const built_model &model,
+                                     const std::vector<Eigen::Isometry3d> &walk,
+                                     const std::string &what)
+{
+    const auto [scan, gravity] = checked_gravity(model, walk, what);
+    const gca::separation_proposal proposal =
+        gca::propose_separation(model.points, scan.poses, gravity, model.parameters);
+    check_proposal_right(scene, model, proposal, what);
+    return proposal;
+}
+
 /// Counts a model's points of one part within a distance of a point.
 /// @param model [in] the model.
 /// @param which [in] the part.
@@ -459,9 +640,19 @@ std::size_t part_points_within(const built_model &model, part which,
     return count;
 }
 
+/// Gives a walk the frames of a lap at 30 frames a second.
+/// @param walk [in] the walk.
+/// @param frames [in] the frames of a whole lap.
+/// @return the walk with that pose count.
+gca_test::synthetic_walk lap_of(gca_test::synthetic_walk walk, std::size_t frames)
+{
+    walk.pose_count = frames;
+    return walk;
+}
+
 /// The tabletop scene: the shared tabletop box on its plane among four other things, a tall
 /// narrow box, a flat box larger than the box in points and a ball, each at least 9 cm from it, and
-/// a small box 3 cm beside it [?: a choice], walked around once (tabletop_walk()).
+/// a small box 3 cm beside it [?: a choice], walked around once (tabletop_walk()) in 20 s.
 /// @return the scene.
 test_scene tabletop_scene()
 {
@@ -475,20 +666,20 @@ test_scene tabletop_scene()
              beside(gca_test::tabletop_box, 90.0, 0.03, 0.05, 0.08)},
             {{Eigen::Vector3d(0.30, -0.25, 0.04), 0.04}},
             {},
-            walk_of(gca_test::tabletop_walk(), false)};
+            walk_of(lap_of(gca_test::tabletop_walk(), tabletop_lap_frames), false)};
 }
 
 /// The large box: 1.2 m x 0.8 m x 1.0 m, a large object of 0.5 m to 2 m (GLOSSARY.md), turned by
 /// 25 degrees [?: a choice].
 constexpr synthetic_box large_box = {0.10, -0.05, 25.0, 1.20, 0.80, 1.00};
 
-/// The walk once around the large box: 24 poses, 2.3 m to 2.7 m from its centre, 1.5 m to 1.7 m
+/// The walk once around the large box in 40 s: 2.3 m to 2.7 m from its centre, 1.5 m to 1.7 m
 /// high, rolled by up to 10 degrees, looking at points within 0.1 m of its centre [?: a choice].
 /// @param centre_m [in] the point walked around.
 /// @return the walk.
 gca_test::synthetic_walk large_walk(const Eigen::Vector3d &centre_m)
 {
-    return {centre_m, 24, 2.5, 0.2, 1.6, 0.1, 10.0, 0.1};
+    return {centre_m, large_lap_frames, 2.5, 0.2, 1.6, 0.1, 10.0, 0.1};
 }
 
 /// The large scene: the large box on a floor of 4.2 m x 4.2 m among a cabinet, a crate larger than
@@ -508,15 +699,16 @@ test_scene large_scene()
 
 /// The tabletop box on a small table, 0.6 m x 0.5 m, against a wall of 1.2 m x 1.0 m at the
 /// table's back edge, 0.15 m behind the box, seen from the half of a steep walk in front of it:
-/// 0.32 m to 0.38 m from the box, 0.61 m to 0.71 m high, looking down by about 60 degrees
-/// [?: a choice: where the mean of the cameras' up axes leans by 50 degrees].
+/// 0.32 m to 0.38 m from the box, 0.61 m to 0.71 m high, looking down by about 60 degrees, half of
+/// a lap of 20 s [?: a choice: where the mean of the cameras' up axes leaned by 50 degrees, which
+/// up from the cameras' axes had to correct (docs/methods/separation.md, "The roll")].
 /// @return the scene.
 test_scene tabletop_wall_scene()
 {
     const gca_test::synthetic_walk walk = {Eigen::Vector3d(gca_test::tabletop_box.centre_x_m,
                                                            gca_test::tabletop_box.centre_y_m,
                                                            0.5 * gca_test::tabletop_box.height_m),
-                                           24,
+                                           tabletop_lap_frames,
                                            0.35,
                                            0.03,
                                            0.66,
@@ -551,12 +743,13 @@ test_scene large_wall_scene()
 }
 
 /// A flat board, 0.8 m x 0.7 m x 0.04 m, on the tabletop plane, walked around at its middle
-/// height: its top holds more of the window's points than the table seen around it [?: a choice].
+/// height in 20 s: its top holds more of the window's points than the table seen around it
+/// [?: a choice].
 /// @return the scene.
 test_scene board_scene()
 {
     const gca_test::synthetic_walk walk = {
-        Eigen::Vector3d(0.0, 0.0, 0.02), 12, 0.65, 0.05, 0.40, 0.05, 10.0, 0.02};
+        Eigen::Vector3d(0.0, 0.0, 0.02), tabletop_lap_frames, 0.65, 0.05, 0.40, 0.05, 10.0, 0.02};
     return {"a flat board",
             gca::object_class::tabletop_object,
             floor_at(Eigen::Vector3d::Zero(), gca_test::tabletop_plane.half_size_x_m,
@@ -598,41 +791,229 @@ void check_plane_fit()
     check(!gca::fit_plane(points).has_value(), "the plane fit: nothing from two points");
 }
 
-/// Proposes from a scene's walk with every camera rolled: right up to 30 degrees; beyond, either
-/// right or no plane when asked to check it, else only printed.
+/// Counts the samples whose time lies in an interval.
+/// @param samples [in] the samples.
+/// @param after_us [in] the interval's start, in µs, not in it.
+/// @param before_us [in] the interval's end, in µs, not in it.
+/// @return the count of samples with after_us < t < before_us.
+std::size_t samples_between(const std::vector<gca::imu_sample> &samples, std::uint64_t after_us,
+                            std::uint64_t before_us)
+{
+    return static_cast<std::size_t>(
+        std::count_if(samples.begin(), samples.end(), [&](const gca::imu_sample &s) {
+            return s.timestamp_us > after_us && s.timestamp_us < before_us;
+        }));
+}
+
+/// Checks an estimate that has to be estimated within the tolerance of the known up, and its
+/// samples taken.
+/// @param model [in] the model, for the known up.
+/// @param result [in] the estimate.
+/// @param samples [in] the samples it has to have taken.
+/// @param what [in] the case, printed.
+void check_estimated(const built_model &model, const gca::gravity_result &result,
+                     std::size_t samples, const std::string &what)
+{
+    const gca::gravity_estimate &e = result.estimate;
+    std::printf("%s: %llu samples in %llu groups, spread %.3f deg, mean %.4f m/s^2; %s%s\n",
+                what.c_str(), static_cast<unsigned long long>(e.samples),
+                static_cast<unsigned long long>(e.groups), e.spread_deg, e.mean_mps2,
+                gca::reason_of(e).c_str(), result.refusal.c_str());
+    check(e.outcome == gca::gravity_outcome::estimated, (what + ": estimated").c_str());
+    check(e.samples == samples, (what + ": the samples taken").c_str());
+    check(e.groups == samples / gca::gravity_group_samples, (what + ": the groups").c_str());
+    check_within((what + ": gravity's up from the known up, deg").c_str(),
+                 angle_deg(e.up, known_up(model)), gravity_tolerance_deg);
+}
+
+/// Checks an estimate that has to end without up.
+/// @param result [in] the estimate.
+/// @param outcome [in] the outcome it has to have.
+/// @param what [in] the case, printed.
+void check_no_up(const gca::gravity_result &result, gca::gravity_outcome outcome,
+                 const std::string &what)
+{
+    const gca::gravity_estimate &e = result.estimate;
+    std::printf("%s: %llu samples in %llu groups, spread %.3f deg, mean %.4f m/s^2: %s\n",
+                what.c_str(), static_cast<unsigned long long>(e.samples),
+                static_cast<unsigned long long>(e.groups), e.spread_deg, e.mean_mps2,
+                gca::reason_of(e).c_str());
+    check(e.outcome == outcome && e.up == Eigen::Vector3d::Zero() && result.refusal.empty(),
+          (what + ": no up, its outcome").c_str());
+}
+
+/// Gravity on the tabletop walk (docs/methods/separation.md, "Gravity's up"): as walked, shaken,
+/// rolled, half of it rolling, with tracking loss, with a gap, from a later first frame, with the
+/// IMU's axes turned; the turned samples without their rotation, no sample, three seconds, the
+/// least groups' samples exactly and one fewer, zero samples; refusals.
+void check_gravity()
+{
+    const test_scene scene = tabletop_scene();
+    const built_model model = build(scene, 71);
+    const Eigen::Quaterniond identity = gca::imu_to_camera();
+    const walked as_walked = walked_of(model, scene.walk);
+    const std::size_t all = as_walked.accelerometer.size();
+    check_estimated(model,
+                    gca::estimate_gravity(as_walked.trajectory, as_walked.accelerometer, identity),
+                    all, "gravity, as walked");
+    const walked shake = walked_of(model, shaken(scene.walk));
+    check_estimated(model, gca::estimate_gravity(shake.trajectory, shake.accelerometer, identity),
+                    all, "gravity, shaken by 2 cm at 1.5 Hz");
+    const walked roll = walked_of(model, rolled(scene.walk, 60.0));
+    check_estimated(model, gca::estimate_gravity(roll.trajectory, roll.accelerometer, identity),
+                    all, "gravity, rolled by 60 deg");
+    // Half the lap, its cameras rolling at roll_rate_deg_s: between two frames the camera turns
+    // about its optical axis, a level axis but for the look down, so a sample turned by the earlier
+    // frame's orientation instead of the interpolated one leans by up to 3 degrees, along the
+    // walk's tangent, which half a lap does not average out.
+    const std::vector<Eigen::Isometry3d> half(scene.walk.begin(),
+                                              scene.walk.begin() + tabletop_lap_frames / 2);
+    const walked turning = walked_of(model, rolling(half, roll_rate_deg_s));
+    check_estimated(model,
+                    gca::estimate_gravity(turning.trajectory, turning.accelerometer, identity),
+                    turning.accelerometer.size(), "gravity, half the lap rolling at 90 deg/s");
+
+    // Frames 200 to 259 in tracking loss: the samples between frames 199 and 260 are not taken.
+    walked lost = walked_of(model, shaken(scene.walk));
+    for (std::size_t i = 200; i < 260; i++)
+        lost.trajectory[i].pose.reset();
+    check_estimated(model, gca::estimate_gravity(lost.trajectory, lost.accelerometer, identity),
+                    all - samples_between(lost.accelerometer, lost.trajectory[199].timestamp_us,
+                                          lost.trajectory[260].timestamp_us),
+                    "gravity, shaken, frames 200 to 259 in tracking loss");
+
+    // Frames 400 to 429 not taken: neither they nor their samples, those of (t_399, t_429], are
+    // there; frames 399 and 430 enclose the rest.
+    walked gap = walked_of(model, shaken(scene.walk));
+    const std::uint64_t gap_after_us = gap.trajectory[399].timestamp_us;
+    const std::uint64_t gap_last_us = gap.trajectory[429].timestamp_us;
+    gap.trajectory.erase(gap.trajectory.begin() + 400, gap.trajectory.begin() + 430);
+    std::erase_if(gap.accelerometer, [&](const gca::imu_sample &s) {
+        return s.timestamp_us > gap_after_us && s.timestamp_us <= gap_last_us;
+    });
+    check_estimated(model, gca::estimate_gravity(gap.trajectory, gap.accelerometer, identity),
+                    gap.accelerometer.size(), "gravity, shaken, frames 400 to 429 not taken");
+
+    // The trajectory from frame 10 on: the samples before its first frame are not taken.
+    walked later = walked_of(model, scene.walk);
+    const std::uint64_t first_us = later.trajectory[10].timestamp_us;
+    later.trajectory.erase(later.trajectory.begin(), later.trajectory.begin() + 10);
+    check_estimated(model, gca::estimate_gravity(later.trajectory, later.accelerometer, identity),
+                    all - samples_between(later.accelerometer, 0, first_us) - 1,
+                    "gravity, the trajectory from frame 10 on");
+
+    // The IMU's axes turned by 90 degrees about a tilted axis: right with that rotation given,
+    // spread too wide with the identity.
+    const Eigen::Quaterniond turned(
+        Eigen::AngleAxisd(0.5 * std::numbers::pi, Eigen::Vector3d(1.0, 1.0, 1.0).normalized()));
+    const walked axes = walked_of(model, scene.walk, turned);
+    check_estimated(model, gca::estimate_gravity(axes.trajectory, axes.accelerometer, turned), all,
+                    "gravity, the IMU's axes turned by 90 deg, the rotation given");
+    check_no_up(gca::estimate_gravity(axes.trajectory, axes.accelerometer, identity),
+                gca::gravity_outcome::spread_too_large,
+                "gravity, the IMU's axes turned by 90 deg, the identity given");
+
+    check_no_up(gca::estimate_gravity(as_walked.trajectory, {}, identity),
+                gca::gravity_outcome::no_samples, "gravity, no sample");
+    walked short_scan = walked_of(model, scene.walk);
+    short_scan.trajectory.resize(90);
+    std::erase_if(short_scan.accelerometer, [&](const gca::imu_sample &s) {
+        return s.timestamp_us > short_scan.trajectory.back().timestamp_us;
+    });
+    const gca::gravity_result three =
+        gca::estimate_gravity(short_scan.trajectory, short_scan.accelerometer, identity);
+    check_no_up(three, gca::gravity_outcome::too_few_samples, "gravity, three seconds");
+    check(three.estimate.samples == short_scan.accelerometer.size() &&
+              three.estimate.groups < gca::gravity_least_groups,
+          "gravity, three seconds: the samples and groups counted");
+    // The least groups at its boundary: the lap's first samples filling exactly
+    // gravity_least_groups groups are estimated; one sample fewer fills a group fewer, too few.
+    // Their up is printed, not checked: five seconds from rest lean it by the walk's change of
+    // velocity, 0.264 degrees [M 2026-11-17: this test], within the 2.3 degrees the method allows
+    // one stretch of five seconds (docs/methods/separation.md, "The mean").
+    walked least = walked_of(model, scene.walk);
+    least.accelerometer.resize(gca::gravity_least_groups * gca::gravity_group_samples);
+    const gca::gravity_result filled =
+        gca::estimate_gravity(least.trajectory, least.accelerometer, identity);
+    std::printf("gravity, %zu samples: %llu groups, spread %.3f deg, up %.4f deg from the known\n",
+                least.accelerometer.size(), static_cast<unsigned long long>(filled.estimate.groups),
+                filled.estimate.spread_deg, angle_deg(filled.estimate.up, known_up(model)));
+    check(filled.estimate.outcome == gca::gravity_outcome::estimated &&
+              filled.estimate.samples == least.accelerometer.size() &&
+              filled.estimate.groups == gca::gravity_least_groups,
+          "gravity, the least groups' samples exactly: estimated, the samples and groups counted");
+    least.accelerometer.pop_back();
+    const gca::gravity_result short_one =
+        gca::estimate_gravity(least.trajectory, least.accelerometer, identity);
+    check_no_up(short_one, gca::gravity_outcome::too_few_samples,
+                "gravity, one sample short of the least groups");
+    check(short_one.estimate.samples == least.accelerometer.size() &&
+              short_one.estimate.groups == gca::gravity_least_groups - 1,
+          "gravity, one sample short of the least groups: the samples and a group fewer counted");
+    walked zero = walked_of(model, scene.walk);
+    for (gca::imu_sample &s : zero.accelerometer)
+        s.x = s.y = s.z = 0.0f;
+    check_no_up(gca::estimate_gravity(zero.trajectory, zero.accelerometer, identity),
+                gca::gravity_outcome::mean_zero, "gravity, every sample zero");
+
+    // Refusals as values, each naming its input.
+    const auto refused = [&](const std::string &what, const std::vector<gca::trajectory_entry> &t,
+                             const std::vector<gca::imu_sample> &a, const Eigen::Quaterniond &q,
+                             const std::string &expected) {
+        const gca::gravity_result r = gca::estimate_gravity(t, a, q);
+        check_refusal("gravity, " + what, r.estimate.outcome == gca::gravity_outcome::refused,
+                      r.refusal,
+                      r.refusal.find(expected) == 0 && r.estimate.up == Eigen::Vector3d::Zero());
+    };
+    const std::vector<gca::trajectory_entry> &t = as_walked.trajectory;
+    const std::vector<gca::imu_sample> &a = as_walked.accelerometer;
+    Eigen::Quaterniond long_q = identity;
+    long_q.coeffs() *= 1.0 + 2e-9;
+    refused("the rotation's norm 1 + 2e-9", t, a, long_q,
+            "the rotation from the IMU's axes into the camera frame: its quaternion's norm "
+            "differs from 1 by 2");
+    std::vector<gca::trajectory_entry> bad_t = t;
+    bad_t[5].timestamp_us = bad_t[4].timestamp_us;
+    refused("a frame's timestamp not rising", bad_t, a, identity,
+            "frame 5 of the trajectory: its timestamp 133332 us does not follow the frame "
+            "before's 133332 us");
+    bad_t = t;
+    bad_t[7].pose->position_m.x() = std::numeric_limits<double>::quiet_NaN();
+    refused("a pose not finite", bad_t, a, identity,
+            "frame 7 of the trajectory: its position is not finite");
+    bad_t = t;
+    bad_t[8].pose->orientation.coeffs() *= 1.0 + 2e-9;
+    refused("a quaternion of norm 1 + 2e-9", bad_t, a, identity,
+            "frame 8 of the trajectory: its quaternion's norm differs from 1 by 2");
+    std::vector<gca::imu_sample> bad_a = a;
+    bad_a[3].timestamp_us = bad_a[2].timestamp_us;
+    refused("a sample's time not rising", t, bad_a, identity,
+            "accelerometer sample 3: its time 10000 us does not follow the sample before's "
+            "10000 us");
+    bad_a = a;
+    bad_a[9].y = std::numeric_limits<float>::infinity();
+    refused("a sample not finite", t, bad_a, identity,
+            "accelerometer sample 9: its value is not finite");
+}
+
+/// Proposes from a scene's walk with every camera rolled: right at every roll.
 /// @param scene [in] the scene, with its object.
 /// @param model [in] its model.
 /// @param rolls_deg [in] the rolls, in degrees.
-/// @param beyond_checked [in] whether a roll beyond 30 degrees is checked to be right or no plane.
 void check_rolls(const test_scene &scene, const built_model &model,
-                 const std::vector<double> &rolls_deg, bool beyond_checked)
+                 const std::vector<double> &rolls_deg)
 {
-    const Eigen::Vector3d up = model.to_model.linear() * Eigen::Vector3d::UnitZ();
     for (const double roll_deg : rolls_deg)
-    {
-        const std::string what = std::string(scene.name) + ", rolled by " +
-                                 std::to_string(static_cast<int>(roll_deg)) + " deg";
-        const gca::separation_proposal turned = gca::propose_separation(
-            model.points, trajectory_of(model, rolled(scene.walk, roll_deg)), model.parameters);
-        std::printf("%s: the trajectory's up %.2f deg from the known up, %s\n", what.c_str(),
-                    angle_deg(turned.up, up),
-                    turned.proposed() ? "proposed" : turned.message.c_str());
-        if (std::abs(roll_deg) <= 30.0 || (beyond_checked && turned.proposed()))
-            check_right(scene, model, turned, what);
-        else if (beyond_checked)
-            check(turned.end == gca::separation_end::no_plane,
-                  (what + ": right or no plane").c_str());
-        else if (turned.proposed())
-            std::printf("%s: the plane %.2f deg from the known one\n", what.c_str(),
-                        angle_deg(turned.plane.normal, up));
-    }
+        check_right(scene, model, rolled(scene.walk, roll_deg),
+                    std::string(scene.name) + ", rolled by " +
+                        std::to_string(static_cast<int>(roll_deg)) + " deg");
 }
 
 /// The large box in a room's corner: the wall behind it and a side wall on each side, 1.5 m from
 /// the walk's centre, seen from the half of the large walk in front of the back wall [?: a choice,
-/// the spec review's scene]: right as walked and rolled by 30 degrees either way. Rolled by 45 and
-/// 60 degrees, up leans so far toward a side wall that the wall passes the plane's conditions;
-/// those proposals are printed, not checked (docs/methods/separation.md, "The roll").
+/// the spec review's scene]: right as walked, rolled by 30, 45 and 60 degrees either way, where up
+/// from the cameras' axes leaned so far toward a side wall that the wall passed the plane's
+/// conditions (docs/methods/separation.md, "The roll"), and shaken.
 void check_corner()
 {
     test_scene scene = large_wall_scene();
@@ -642,16 +1023,13 @@ void check_corner()
     scene.planes.push_back({Eigen::Vector3d(-1.5, 0.0, 1.3), Eigen::Vector3d::UnitY(),
                             Eigen::Vector3d::UnitZ(), 1.5, 1.3, synthetic_texture::plane});
     const built_model model = build(scene, 5);
-    std::printf("%s: %zu points, %zu poses\n", scene.name, model.points.size(),
-                model.trajectory.size());
-    check_right(scene, model,
-                gca::propose_separation(model.points, model.trajectory, model.parameters),
-                scene.name);
-    check_rolls(scene, model, {30.0, -30.0, 45.0, -45.0, 60.0, -60.0}, false);
+    std::printf("%s: %zu points, %zu poses\n", scene.name, model.points.size(), scene.walk.size());
+    check_right(scene, model, scene.walk, scene.name);
+    check_rolls(scene, model, {30.0, -30.0, 45.0, -45.0, 60.0, -60.0});
+    check_right(scene, model, shaken(scene.walk), std::string(scene.name) + ", shaken");
 }
 
-/// The right scenes, from their walks as built and rolled: right up to 30 degrees, and at every
-/// roll either right or no plane.
+/// The right scenes, from their walks as built, rolled and shaken: right every time.
 /// @param scenes [in] the scenes, each with its object.
 void check_right_scenes(const std::vector<test_scene> &scenes)
 {
@@ -660,10 +1038,8 @@ void check_right_scenes(const std::vector<test_scene> &scenes)
     {
         const built_model model = build(scene, seed++);
         std::printf("%s: %zu points, %zu poses\n", scene.name, model.points.size(),
-                    model.trajectory.size());
-        const gca::separation_proposal proposal =
-            gca::propose_separation(model.points, model.trajectory, model.parameters);
-        check_right(scene, model, proposal, scene.name);
+                    scene.walk.size());
+        const gca::separation_proposal proposal = check_right(scene, model, scene.walk, scene.name);
         if (!scene.planes.empty() && proposal.proposed())
         {
             const std::size_t support = part_points_within(
@@ -677,7 +1053,8 @@ void check_right_scenes(const std::vector<test_scene> &scenes)
                   (std::string(scene.name) + ": the other plane holds more of the window's points")
                       .c_str());
         }
-        check_rolls(scene, model, {15.0, 30.0, 40.0, 45.0, 60.0}, true);
+        check_rolls(scene, model, {15.0, 30.0, 40.0, 45.0, 60.0});
+        check_right(scene, model, shaken(scene.walk), std::string(scene.name) + ", shaken");
     }
 }
 
@@ -711,8 +1088,14 @@ void check_neighbours()
                                      std::to_string(static_cast<int>(gap_voxels)) +
                                      " voxels beside it";
             const built_model model = build(c.scene, seed++);
+            if (gap_voxels >= gca::separation_cell_voxels)
+            {
+                check_right(c.scene, model, c.scene.walk, what);
+                continue;
+            }
+            const auto [scan, gravity] = checked_gravity(model, c.scene.walk, what);
             const gca::separation_proposal proposal =
-                gca::propose_separation(model.points, model.trajectory, model.parameters);
+                gca::propose_separation(model.points, scan.poses, gravity, model.parameters);
             std::size_t neighbour = 0;
             std::size_t held = 0;
             for (std::size_t k = 0; k < model.points.size(); k++)
@@ -722,12 +1105,19 @@ void check_neighbours()
                     held += proposal.box.holds(model.points[k].position_m.cast<double>()) ? 1 : 0;
                 }
             std::printf("%s: the box holds %zu of its %zu points\n", what.c_str(), held, neighbour);
-            if (gap_voxels < gca::separation_cell_voxels)
-                check(proposal.proposed() && held == neighbour,
-                      (what + ": joined, the box holds it").c_str());
-            else
-                check_right(c.scene, model, proposal, what);
+            check(proposal.proposed() && held == neighbour,
+                  (what + ": joined, the box holds it").c_str());
         }
+}
+
+/// Proposes for a scene without its object, gravity from its walk.
+/// @param scene [in] the scene.
+/// @param model [in] its model.
+/// @return the proposal.
+gca::separation_proposal proposal_of(const test_scene &scene, const built_model &model)
+{
+    const auto [scan, gravity] = checked_gravity(model, scene.walk, scene.name);
+    return gca::propose_separation(model.points, scan.poses, gravity, model.parameters);
 }
 
 /// A ramp alone, 0.8 m square and steeper than the plane's cone, 55 degrees, walked around: no
@@ -745,8 +1135,7 @@ void check_ramp()
                     Eigen::Vector3d(0.0, std::cos(tilt), std::sin(tilt)), 0.4, 0.4,
                     synthetic_texture::plane}};
     const built_model model = build(ramp, 61);
-    const gca::separation_proposal proposal =
-        gca::propose_separation(model.points, model.trajectory, model.parameters);
+    const gca::separation_proposal proposal = proposal_of(ramp, model);
     std::printf("%s: %zu points: %s\n", ramp.name, model.points.size(),
                 proposal.proposed() ? "proposed" : proposal.message.c_str());
     check(proposal.end == gca::separation_end::no_plane, "a steep ramp alone: no plane");
@@ -757,11 +1146,8 @@ void check_board()
 {
     const test_scene scene = board_scene();
     const built_model model = build(scene, 11);
-    std::printf("%s: %zu points, %zu poses\n", scene.name, model.points.size(),
-                model.trajectory.size());
-    const gca::separation_proposal proposal =
-        gca::propose_separation(model.points, model.trajectory, model.parameters);
-    check_right(scene, model, proposal, scene.name);
+    std::printf("%s: %zu points, %zu poses\n", scene.name, model.points.size(), scene.walk.size());
+    const gca::separation_proposal proposal = check_right(scene, model, scene.walk, scene.name);
     const std::size_t table =
         part_points_within(model, part::support, proposal.meeting_point_m, proposal.window_m);
     const std::size_t board =
@@ -781,12 +1167,11 @@ void check_without_proposal()
     sphere.other_boxes.clear();
     sphere.balls = {{Eigen::Vector3d(0.03, -0.02, 0.10), 0.10}};
     const built_model alone = build(sphere, 21);
-    const gca::separation_proposal no_plane =
-        gca::propose_separation(alone.points, alone.trajectory, alone.parameters);
+    const gca::separation_proposal no_plane = proposal_of(sphere, alone);
     std::printf("%s: %zu points: %s\n", sphere.name, alone.points.size(), no_plane.message.c_str());
     check(no_plane.end == gca::separation_end::no_plane, "a sphere alone: no plane");
-    const gca::separation_proposal empty =
-        gca::propose_separation({}, alone.trajectory, alone.parameters);
+    const gca::separation_proposal empty = gca::propose_separation(
+        {}, trajectory_of(alone, sphere.walk), estimate_of(known_up(alone)), alone.parameters);
     std::printf("an empty model: %s\n", empty.message.c_str());
     check(empty.end == gca::separation_end::no_plane, "an empty model: no plane");
 
@@ -796,16 +1181,15 @@ void check_without_proposal()
     bare.other_boxes.clear();
     bare.balls.clear();
     const built_model table = build(bare, 22);
-    const gca::separation_proposal nothing =
-        gca::propose_separation(table.points, table.trajectory, table.parameters);
+    const gca::separation_proposal nothing = proposal_of(bare, table);
     std::printf("%s: %s\n", bare.name, nothing.message.c_str());
     check(nothing.end == gca::separation_end::nothing_on_plane, "the table alone: nothing on it");
     check(nothing.plane_points >= gca::separation_least_plane_points,
           "the table alone: the plane's points given");
 }
 
-/// Trajectories whose views do not meet.
-void check_views_do_not_meet()
+/// Trajectories whose views do not meet, and gravity without up before them.
+void check_views_and_no_gravity()
 {
     const built_model model = build(tabletop_scene(), 31);
     std::vector<Eigen::Isometry3d> sweep;
@@ -818,28 +1202,41 @@ void check_views_do_not_meet()
         if (pose)
             sweep.push_back(*pose);
     }
-    const gca::separation_proposal parallel =
-        gca::propose_separation(model.points, trajectory_of(model, sweep), model.parameters);
+    const gca::separation_proposal parallel = gca::propose_separation(
+        model.points, trajectory_of(model, sweep), estimate_of(known_up(model)), model.parameters);
     std::printf("a sweep of parallel views: %s\n", parallel.message.c_str());
     check(parallel.end == gca::separation_end::views_do_not_meet &&
               parallel.message.find("optical axes do not meet") != std::string::npos,
           "a sweep of parallel views: the views do not meet");
 
-    std::vector<Eigen::Isometry3d> flipped = tabletop_scene().walk;
-    for (std::size_t k = 1; k < flipped.size(); k += 2)
-        flipped[k] = rolled({flipped[k]}, 180.0).front();
-    const gca::separation_proposal cancelled =
-        gca::propose_separation(model.points, trajectory_of(model, flipped), model.parameters);
-    std::printf("every other view upside down: %s\n", cancelled.message.c_str());
-    check(cancelled.end == gca::separation_end::views_do_not_meet &&
-              cancelled.message.find("give no up") != std::string::npos,
-          "every other view upside down: the views do not meet");
+    // Each outcome without up ends the proposal without gravity, before the views.
+    for (int k = 0; k <= static_cast<int>(gca::gravity_outcome::refused); k++)
+    {
+        gca::gravity_estimate none;
+        none.outcome = static_cast<gca::gravity_outcome>(k);
+        if (none.outcome == gca::gravity_outcome::estimated)
+            continue;
+        none.samples = 900;
+        none.groups = 4;
+        const gca::separation_proposal without = gca::propose_separation(
+            model.points, trajectory_of(model, sweep), none, model.parameters);
+        std::printf("outcome %d: %s\n", k, without.message.c_str());
+        check(
+            without.end == gca::separation_end::no_gravity &&
+                without.message == gca::reason_of(none) &&
+                without.message.find("no gravity: ") == 0 &&
+                without.meeting_point_m == Eigen::Vector3d::Zero(),
+            ("gravity's outcome " + std::to_string(k) + ": no gravity, before the views").c_str());
+    }
 }
 
 /// Refusals as values, each with the reason, and a quaternion within the tolerance taken.
 void check_refusals()
 {
-    const built_model model = build(tabletop_scene(), 41);
+    const test_scene scene = tabletop_scene();
+    const built_model model = build(scene, 41);
+    const std::vector<gca::camera_pose> trajectory = trajectory_of(model, scene.walk);
+    const gca::gravity_estimate up = estimate_of(known_up(model));
     const gca::separation_parameters good = model.parameters;
     struct parameter_case
     {
@@ -861,38 +1258,56 @@ void check_refusals()
     for (const parameter_case &c : parameter_cases)
     {
         const gca::separation_proposal p =
-            gca::propose_separation(model.points, model.trajectory, c.parameters);
+            gca::propose_separation(model.points, trajectory, up, c.parameters);
         check_refusal(c.what, p.end == gca::separation_end::refused, p.message,
                       p.message.find(c.expected) != std::string::npos);
     }
     const gca::separation_proposal at_largest = gca::propose_separation(
-        model.points, model.trajectory,
+        model.points, trajectory, up,
         {good.voxel_size_m, gca::separation_largest_depth_voxels * good.voxel_size_m});
     check(at_largest.end != gca::separation_end::refused,
           "a farthest depth of 10^5 voxels is taken");
 
-    const gca::separation_proposal no_pose = gca::propose_separation(model.points, {}, good);
+    gca::gravity_estimate odd = up;
+    odd.outcome = static_cast<gca::gravity_outcome>(99);
+    const gca::separation_proposal no_outcome =
+        gca::propose_separation(model.points, trajectory, odd, good);
+    check_refusal("gravity's outcome 99", no_outcome.end == gca::separation_end::refused,
+                  no_outcome.message, no_outcome.message == "gravity's outcome 99 is no outcome");
+    odd = up;
+    odd.up *= 1.0 + 2e-9;
+    const gca::separation_proposal long_up =
+        gca::propose_separation(model.points, trajectory, odd, good);
+    check_refusal("gravity's up of length 1 + 2e-9", long_up.end == gca::separation_end::refused,
+                  long_up.message, long_up.message.find("gravity's up (") == 0);
+    odd.up = up.up * (1.0 + 0.5e-9);
+    check(gca::propose_separation(model.points, trajectory, odd, good).proposed(),
+          "gravity's up of length 1 + 0.5e-9 is taken");
+
+    const gca::separation_proposal no_pose = gca::propose_separation(model.points, {}, up, good);
     check_refusal("no pose", no_pose.end == gca::separation_end::refused, no_pose.message,
                   no_pose.message == "the trajectory holds no pose");
-    std::vector<gca::camera_pose> poses = model.trajectory;
+    std::vector<gca::camera_pose> poses = trajectory;
     poses[3].position_m.y() = nan;
-    const gca::separation_proposal not_finite = gca::propose_separation(model.points, poses, good);
+    const gca::separation_proposal not_finite =
+        gca::propose_separation(model.points, poses, up, good);
     check_refusal("a pose not finite", not_finite.end == gca::separation_end::refused,
                   not_finite.message, not_finite.message == "pose 3: its position is not finite");
-    poses = model.trajectory;
+    poses = trajectory;
     poses[5].orientation.coeffs() *= 1.0 + 2e-9;
-    const gca::separation_proposal not_unit = gca::propose_separation(model.points, poses, good);
+    const gca::separation_proposal not_unit =
+        gca::propose_separation(model.points, poses, up, good);
     check_refusal("a quaternion of norm 1 + 2e-9", not_unit.end == gca::separation_end::refused,
                   not_unit.message,
                   not_unit.message.find("pose 5: its quaternion's norm differs from 1 by 2") == 0);
-    poses = model.trajectory;
+    poses = trajectory;
     poses[5].orientation.coeffs() *= 1.0 + 0.5e-9;
-    check(gca::propose_separation(model.points, poses, good).proposed(),
+    check(gca::propose_separation(model.points, poses, up, good).proposed(),
           "a quaternion of norm 1 + 0.5e-9 is taken");
     std::vector<gca::model_point> points = model.points;
     points[7].position_m.z() = static_cast<float>(nan);
     const gca::separation_proposal bad_point =
-        gca::propose_separation(points, model.trajectory, good);
+        gca::propose_separation(points, trajectory, up, good);
     check_refusal("a point not finite", bad_point.end == gca::separation_end::refused,
                   bad_point.message, bad_point.message == "point 7: its position is not finite");
 }
@@ -901,6 +1316,7 @@ void check_refusals()
 int main()
 {
     check_plane_fit();
+    check_gravity();
     check_right_scenes(
         {tabletop_scene(), large_scene(), tabletop_wall_scene(), large_wall_scene()});
     check_corner();
@@ -908,7 +1324,7 @@ int main()
     check_ramp();
     check_board();
     check_without_proposal();
-    check_views_do_not_meet();
+    check_views_and_no_gravity();
     check_refusals();
     return gca_test::check_summary("test_separation");
 }

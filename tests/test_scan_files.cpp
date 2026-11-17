@@ -16,14 +16,16 @@
 ///   lacks is no time;
 /// - the parameters of each object class, a set of neither, commits at the edges of the strings
 ///   the file holds and the scan's facts at their edges, each key of why a scan ended and the
-///   camera's properties refused, none, each alone and all, among them, are read back equal; the
-///   document's example is read as the document says, also after white space, and written as it
-///   shows it; the reader refuses a text that does not start with '{' (YAML, XML), a key it does
-///   not know, a key twice, a missing key (a file written before the keys of 2026-11-16 or before
-///   the refused properties of 2026-11-17 among them), another version, a value of another type,
-///   an unknown object class, key of why a scan ended or refused property, a property refused
-///   twice, a string OpenCV does not write as JSON, a time of another form and each value out of
-///   range; the writer refuses such a string, set or fact and writes nothing;
+///   camera's properties refused, none, each alone and all, and gravity's estimate, each key of
+///   its outcome and its numbers at their edges, among them, are read back equal; the document's
+///   example is read as the document says, also after white space, and written as it shows it;
+///   the reader refuses a text that does not start with '{' (YAML, XML), a key it does not know,
+///   a key twice, a missing key (a file written before the keys of 2026-11-16 or before the
+///   refused properties or gravity of 2026-11-17 among them), another version, a value of another
+///   type, an unknown object class, key of why a scan ended, of gravity's outcome or refused
+///   property, a property refused twice, a string OpenCV does not write as JSON, a time of
+///   another form, gravity's up not unit when estimated or not zero otherwise, and each value out
+///   of range; the writer refuses such a string, set or fact and writes nothing;
 /// - a writer whose file cannot be created or whose write fails says why, leaves nothing beside
 ///   the file, and leaves a file already there as it was; a longer part file left behind is
 ///   truncated; a directory at the name makes the rename fail.
@@ -40,6 +42,7 @@
 #include "scan/trajectory_file.hpp"
 #include "scan/utc_time.hpp"
 #include "test_files.hpp"
+#include "types/gravity_estimate.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -610,7 +613,17 @@ const std::string parameters_by_hand = R"({
         "lost": 40.0,
         "not_taken": 12.0
     },
-    "end": "stopped"
+    "end": "stopped",
+    "gravity": {
+        "outcome": "estimated",
+        "up_x": 4.7999999999999998e-01,
+        "up_y": -6.4000000000000001e-01,
+        "up_z": -5.9999999999999998e-01,
+        "samples": 59400.0,
+        "groups": 297.0,
+        "spread_deg": 1.2500000000000000e+00,
+        "mean_mps2": 9.7500000000000000e+00
+    }
 }
 )";
 
@@ -626,6 +639,7 @@ const std::string cx_text = "3.1975000000000000e+02";
 const std::string unit_text = "1.0000000474974513e-03";
 const std::string start_text = "20261116T093012.250000Z";
 const std::string stop_text = "20261116T093512.750000Z";
+const std::string up_x_text = "4.7999999999999998e-01";
 
 /// The set of the document's example, a large object's scan, each value written out here and
 /// every one another, so that two keys swapped show [S: docs/SCAN_FILES.md, "Parameters"].
@@ -674,10 +688,25 @@ const gca::object_class_parameters odd_set = {.live_voxel_size_m = 1.0 / 3.0,
                                               .max_turn_rate_deg_s = 100.0 / 7.0,
                                               .max_speed_m_s = 10.0 / 11.0};
 
+/// The gravity of the document's example: estimated, up (0.48, -0.64, -0.6), of length 1 within a
+/// double's rounding, 59 400 samples in 297 groups, a spread of 1.25 degrees, a mean of 9.75 m/s²,
+/// every number another [S: docs/SCAN_FILES.md, "Parameters"].
+gca::gravity_estimate example_gravity()
+{
+    gca::gravity_estimate gravity;
+    gravity.outcome = gca::gravity_outcome::estimated;
+    gravity.up = Eigen::Vector3d(0.48, -0.64, -0.6);
+    gravity.samples = 59400;
+    gravity.groups = 297;
+    gravity.spread_deg = 1.25;
+    gravity.mean_mps2 = 9.75;
+    return gravity;
+}
+
 /// The scan's facts of the document's example: 640x400 with intrinsics a float holds in few
 /// digits, the depth unit 1 mm as a float, the camera with its versions, the exposure (2001) the
-/// camera refused, five minutes and half a second, the frames counted, stopped by the operator
-/// [S: docs/SCAN_FILES.md, "Parameters"].
+/// camera refused, five minutes and half a second, the frames counted, stopped by the operator,
+/// gravity estimated [S: docs/SCAN_FILES.md, "Parameters"].
 gca::scan_parameters example_parameters()
 {
     return {"db91e0d",
@@ -689,7 +718,8 @@ gca::scan_parameters example_parameters()
             *gca::utc_time_of(start_text),
             *gca::utc_time_of(stop_text),
             {8990, 8950, 40, 12},
-            gca::scan_end::stopped};
+            gca::scan_end::stopped,
+            example_gravity()};
 }
 
 /// Gives a scan's parameters with the scan's facts of the document's example.
@@ -771,6 +801,35 @@ void test_parameters_round_trip(const temporary_directory &directory)
     }
     refused.refused_properties = {true, true, true, true, true};
     cases.push_back(refused);
+    // Each outcome of gravity's estimate without up, its numbers as an estimate gives them, and
+    // the numbers at their edges.
+    for (int k = 0; !gca::name_of(static_cast<gca::gravity_outcome>(k)).empty(); k++)
+    {
+        gca::scan_parameters outcome = example_parameters();
+        outcome.gravity = {};
+        outcome.gravity.outcome = static_cast<gca::gravity_outcome>(k);
+        if (outcome.gravity.outcome == gca::gravity_outcome::estimated)
+            outcome.gravity = example_gravity();
+        else if (outcome.gravity.outcome == gca::gravity_outcome::spread_too_large)
+            outcome.gravity = {
+                outcome.gravity.outcome, Eigen::Vector3d::Zero(), 3994, 19, 50.38037, 6.2106};
+        cases.push_back(outcome);
+    }
+    check(cases.size() == 29, "parameters: seven keys of gravity's outcome");
+    gca::scan_parameters gravity_edges = example_parameters();
+    gravity_edges.gravity = {gca::gravity_outcome::estimated,
+                             Eigen::Vector3d(-1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0),
+                             9007199254740992u,
+                             9007199254740992u,
+                             180.0,
+                             0.0};
+    cases.push_back(gravity_edges);
+    gravity_edges.gravity.up = -Eigen::Vector3d::UnitZ();
+    gravity_edges.gravity.samples = 0;
+    gravity_edges.gravity.groups = 0;
+    gravity_edges.gravity.spread_deg = 0.0;
+    gravity_edges.gravity.mean_mps2 = std::numeric_limits<double>::max();
+    cases.push_back(gravity_edges);
     for (const gca::scan_parameters &parameters : cases)
     {
         std::string refused_names;
@@ -780,7 +839,9 @@ void test_parameters_round_trip(const temporary_directory &directory)
             "parameters, " + std::string(gca::name_of(parameters.object_class)) + ", commit " +
             parameters.commit.substr(0, 60) + " (" + std::to_string(parameters.commit.size()) +
             " characters), " + std::to_string(parameters.stream.size.width) + " px wide, ended " +
-            std::string(gca::name_of(parameters.end)) + ", refused " + refused_names;
+            std::string(gca::name_of(parameters.end)) + ", refused " + refused_names +
+            ", gravity " + std::string(gca::name_of(parameters.gravity.outcome)) + " of " +
+            std::to_string(parameters.gravity.samples) + " samples";
         const std::filesystem::path path = directory / "parameters.json";
         const gca::write_result written = gca::write_parameters(path, parameters);
         check(written.written, (what + ": written; " + written.reason).c_str());
@@ -834,6 +895,21 @@ void test_parameters_round_trip(const temporary_directory &directory)
     }
     check(!gca::scan_end_named("paused") && !gca::scan_end_named(""),
           "parameters: no key of why a scan ended beyond the seven");
+
+    const std::vector<std::string> outcome_keys = {
+        "not_estimated", "estimated",        "no_samples", "too_few_samples",
+        "mean_zero",     "spread_too_large", "refused"};
+    for (std::size_t k = 0; k < outcome_keys.size(); k++)
+    {
+        const std::optional<gca::gravity_outcome> outcome =
+            gca::gravity_outcome_named(outcome_keys[k]);
+        check(outcome && static_cast<std::size_t>(*outcome) == k &&
+                  gca::name_of(static_cast<gca::gravity_outcome>(k)) == outcome_keys[k],
+              ("parameters: gravity's outcome, the key " + outcome_keys[k]).c_str());
+    }
+    check(!gca::gravity_outcome_named("guessed") && !gca::gravity_outcome_named("") &&
+              gca::name_of(static_cast<gca::gravity_outcome>(7)).empty(),
+          "parameters: no key of gravity's outcome beyond the seven");
 }
 
 /// The parameters' writer refuses each kind of commit or string of the source that OpenCV does
@@ -1111,6 +1187,44 @@ void test_parameters_refusals(const temporary_directory &directory)
         {"the end a number", replaced(valid, "\"end\": \"stopped\"", "\"end\": 0"),
          "\"end\" is no string"},
         {"no end", replaced(valid, ",\n    \"end\": \"stopped\"", ""), "no key \"end\" " + top},
+        {"a file written before gravity of 2026-11-17",
+         valid.substr(0, valid.find(",\n    \"gravity\"")) + "\n}\n", "no key \"gravity\" " + top},
+        {"gravity a number", map_replaced(valid, "gravity", "1.0"),
+         "\"gravity\" is no JSON object"},
+        {"an unknown key in gravity",
+         replaced(valid, "\"samples\"", "\"rate_hz\": 200.0,\n        \"samples\""),
+         "unknown key \"rate_hz\" in \"gravity\""},
+        {"no outcome", replaced(valid, "        \"outcome\": \"estimated\",\n", ""),
+         "no key \"outcome\" in \"gravity\""},
+        {"no up_z", replaced(valid, "        \"up_z\": -5.9999999999999998e-01,\n", ""),
+         "no key \"up_z\" in \"gravity\""},
+        {"an outcome not of the closed set",
+         replaced(valid, "\"outcome\": \"estimated\"", "\"outcome\": \"guessed\""),
+         "\"outcome\" in \"gravity\" is \"guessed\", no key of how gravity's estimate ended "
+         "(not_estimated, estimated, no_samples, too_few_samples, mean_zero, spread_too_large, "
+         "refused)"},
+        {"the outcome a number", replaced(valid, "\"outcome\": \"estimated\"", "\"outcome\": 1.0"),
+         "\"outcome\" in \"gravity\" is no string"},
+        {"an up not unit", replaced(valid, up_x_text, "4.8000001e-01"),
+         "the up (0.48000001, -0.64, -0.6) in \"gravity\" is not of length 1 within 1e-9, for "
+         "\"outcome\" \"estimated\""},
+        {"an up for no samples",
+         replaced(valid, "\"outcome\": \"estimated\"", "\"outcome\": \"no_samples\""),
+         "the up (0.48, -0.64, -0.6) in \"gravity\" is not 0, 0, 0, for \"outcome\" "
+         "\"no_samples\""},
+        {"an up not finite", replaced(valid, up_x_text, ".Nan"), "\"up_x\" in \"gravity\" is "},
+        {"samples written as an integer",
+         replaced(valid, "\"samples\": 59400.0", "\"samples\": 59400"),
+         "\"samples\" in \"gravity\" " + not_real},
+        {"samples with a fraction", replaced(valid, "\"samples\": 59400.0", "\"samples\": 59400.5"),
+         "\"samples\" in \"gravity\" is 59400.5, not a whole number from 0 to 2^53"},
+        {"groups above 2^53",
+         replaced(valid, "\"groups\": 297.0", "\"groups\": 9007199254740994.0"),
+         "\"groups\" in \"gravity\" is 9007199254740994, not a whole number from 0 to 2^53"},
+        {"a spread below 0", replaced(valid, "1.2500000000000000e+00", "-1.25"),
+         "\"spread_deg\" in \"gravity\" is -1.25, not a finite number >= 0"},
+        {"a mean not finite", replaced(valid, "9.7500000000000000e+00", ".Nan"),
+         "\"mean_mps2\" in \"gravity\" is "},
         {"a file cut short", valid.substr(0, valid.find("\"parameters\"")),
          "no JSON that OpenCV reads"},
         {"an empty file", "", "no JSON object: the first byte after any white space is not '{'"},
@@ -1218,6 +1332,23 @@ void test_parameters_refusals(const temporary_directory &directory)
         {"an end that is no enumerator",
          with([](auto &p) { p.end = static_cast<gca::scan_end>(7); }),
          "\"end\" is 7, no enumerator of why a scan ended"},
+        {"gravity's outcome no enumerator",
+         with([](auto &p) { p.gravity.outcome = static_cast<gca::gravity_outcome>(7); }),
+         "\"outcome\" in \"gravity\" is 7, no enumerator of how gravity's estimate ended"},
+        {"an estimated up of length 1 + 2e-9",
+         with([](auto &p) { p.gravity.up = Eigen::Vector3d(0.0, 0.0, 1.0 + 2e-9); }),
+         "the up (0, 0, 1.000000002) in \"gravity\" is not of length 1 within 1e-9, for "
+         "\"outcome\" \"estimated\""},
+        {"an up for an estimate not made",
+         with([](auto &p) { p.gravity.outcome = gca::gravity_outcome::not_estimated; }),
+         "the up (0.48, -0.64, -0.6) in \"gravity\" is not 0, 0, 0, for \"outcome\" "
+         "\"not_estimated\""},
+        {"samples above 2^53", with([](auto &p) { p.gravity.samples = 9007199254740993u; }),
+         "\"samples\" in \"gravity\" is 9007199254740993, not a whole number from 0 to 2^53"},
+        {"a spread not finite", with([nan](auto &p) { p.gravity.spread_deg = nan; }),
+         "\"spread_deg\" in \"gravity\" is "},
+        {"a mean below 0", with([](auto &p) { p.gravity.mean_mps2 = -9.75; }),
+         "\"mean_mps2\" in \"gravity\" is -9.75, not a finite number >= 0"},
     };
     for (const auto &r : refused)
     {

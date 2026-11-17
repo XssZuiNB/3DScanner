@@ -34,7 +34,7 @@ writes into it:
 | file | what | when |
 |---|---|---|
 | `frames.sequence` | the sequence (docs/SEQUENCE_FILE.md): every frame taken but the one tracking failed on, with its pose or the mark of tracking loss | while the scan runs; removed once the scan is refined, unless the sequence is kept (below) |
-| `parameters.json` | the parameters ("Parameters" below) | at the scan's stop, before refining |
+| `parameters.json` | the parameters ("Parameters" below) | at the scan's stop, before refining, gravity not yet estimated; again once refinement has read the sequence, with gravity, before the trajectory and the full model |
 | `trajectory.txt` | the trajectory ("Trajectory" below), as refinement read it back from the sequence | after refining |
 | `full.ply` | the full model ("Models" below) | after refining |
 
@@ -145,7 +145,7 @@ JSON, written and read with OpenCV's `cv::FileStorage` on memory (ADR 0002: no o
 library). It holds the set of parameters the scan ran with and the scan's facts. Example, a large
 object's scan whose set differs from the object class's own in eight values, so that every value
 of it is another, whose camera refused a read of its exposure, stopped by the operator after five
-minutes:
+minutes and refined, gravity estimated from 59 400 of its accelerometer's samples:
 
     {
         "format_version": 1,
@@ -202,7 +202,17 @@ minutes:
             "lost": 40.0,
             "not_taken": 12.0
         },
-        "end": "stopped"
+        "end": "stopped",
+        "gravity": {
+            "outcome": "estimated",
+            "up_x": 4.7999999999999998e-01,
+            "up_y": -6.4000000000000001e-01,
+            "up_z": -5.9999999999999998e-01,
+            "samples": 59400.0,
+            "groups": 297.0,
+            "spread_deg": 1.2500000000000000e+00,
+            "mean_mps2": 9.7500000000000000e+00
+        }
     }
 
 | key | what |
@@ -248,6 +258,13 @@ minutes:
 | `lost` | the frames in tracking loss, of which nothing was fused |
 | `not_taken` | the frames the scanner did not take: those the frame source delivered while the sequence's writer had no room, and the gaps in the frames' indices, frames the source did not deliver |
 | `end` | why the scan ended, one key of the closed set below; a discarded scan has no parameters and so no end |
+| `gravity` | gravity's up as refinement estimated it from the accelerometer's samples of the scan's sequence and its trajectory (docs/methods/separation.md, "Gravity's up"; `src/separation/gravity.hpp`), which separation's proposal takes, so that a scan whose sequence was removed can still be separated: an object of the eight keys below; its empty form, `not_estimated` with every number 0, until refinement writes its estimate (`not_estimated` below) |
+| `outcome` | how the estimate ended, one key of the closed set below |
+| `up_x`, `up_y`, `up_z` | up, the unit direction opposite gravity, in the models' frame: finite, its length within 1e-9 of 1 [?: a choice, as a pose's quaternion] when `outcome` is `estimated`, and 0, 0, 0 otherwise |
+| `samples` | the accelerometer's samples taken, those between two tracked frames or at a tracked frame's time, a whole number from 0 to 2^53 |
+| `groups` | the groups of gravity's group size they fill (docs/methods/separation.md, "The spread"), a whole number from 0 to 2^53 |
+| `spread_deg` | the root mean square of the angles between the groups' means and the mean, in degrees, finite and >= 0; 0 where it was not computed |
+| `mean_mps2` | the length of the samples' mean, in m/s², finite and >= 0; 0 without samples taken |
 
 Why a scan ended is one of seven keys, never free text: OpenCV writes only some strings as JSON
 ("Strings" below), and a reason in the operator's words belongs to the scan's state, not to its
@@ -263,6 +280,20 @@ file (`src/scan/parameters_file.hpp`, `scan_end`).
 | `writer_failed` | the sequence's writer failed; the frame it failed on was fused into the live model and counted before the writer refused it, so the sequence and the trajectory may lack the last frame counted as fused |
 | `shut_down` | the service was asked to stop during the scan |
 
+How gravity's estimate ended is one of seven keys, never free text, so that the page can say why a
+scan has no proposal (the user's decision of 2026-11-16: a scan without the IMU's samples gets
+none, with the reason):
+
+| `outcome` | the estimate |
+|---|---|
+| `not_estimated` | none was made. The parameters written at the scan's stop hold it, and refinement writes them again with its estimate before the trajectory and the full model ("A scan's directory"). So an unfinished scan holds it when it ended before that write, or the write failed and left the file as it was; one left unfinished after it, its trajectory or full model not written or the process killed before them, holds the estimate. A replay of the kept sequence (`build/apps/replay`) is a scan of its own and estimates gravity anew |
+| `estimated` | up holds gravity's up |
+| `no_samples` | the scan's frames carry no accelerometer sample: the camera opened without its IMU |
+| `too_few_samples` | the samples taken fill fewer than gravity's least groups (docs/methods/separation.md, "The spread") |
+| `mean_zero` | the samples' mean is 0 |
+| `spread_too_large` | the groups' means spread about their mean by more than gravity's largest spread (docs/methods/separation.md, "The spread") |
+| `refused` | the estimate refused the trajectory or the samples, a sample not finite among them; why is not kept |
+
 The ranges each stage takes these values in are the stage's own, narrower than the file's: the
 scan's request of its buffers refuses a value outside them, naming it (`src/tracking/tracker.hpp`,
 `src/fusion/sparse_tsdf.hpp`, `src/geometry/organized_normals.hpp`), so a file can hold a set the
@@ -277,8 +308,9 @@ them, and the reader refuses it: `no key "too_close_depth_m" in "parameters"`. A
 before the set's six keys of the sparse TSDF's truncation and the normals and the scan's facts
 joined (2026-11-16) lacks them too: `no key "stream" at the top level`. A file written before
 `refused_properties` joined (2026-11-17) lacks it, and the reader refuses it: `no key
-"refused_properties" at the top level`; so the parameters of every scan kept before then are no
-longer read.
+"refused_properties" at the top level`. A file written before `gravity` joined (2026-11-17, later)
+lacks it, and the reader refuses it: `no key "gravity" at the top level`; so the parameters of
+every scan kept before then are no longer read.
 
 Each object class's own set stands in `src/scan/object_class.cpp`, each value with its
 evidence. A scan stores the set it was made with, and a stored set is read back as it stands,
@@ -317,14 +349,17 @@ The reader refuses, naming the key:
 - a `format_version` other than the integer 1; it checks this first, so a file of another
   version is refused as such;
 - a key it does not know, a key that stands twice, and a missing key, at the top level and in
-  `parameters`, `stream`, `source` and `frames`;
+  `parameters`, `stream`, `source`, `frames` and `gravity`;
 - a value of another type, an unknown object class, a refused property that is no name of the
   five or stands twice, a string outside the set above, a value
   out of the range above, a count of iterations or points that is no whole number from 0 to
   2^32 - 1, a width or height that is no whole number from 1 to 2^32 - 1, a count of frames that
   is no whole number from 0 to 2^53, frames taken that are not those fused and lost together and
   the frame tracking failed on when `end` is `tracking_failed`, a
-  time of another form or a day the calendar lacks, and an `end` outside the seven keys;
+  time of another form or a day the calendar lacks, an `end` outside the seven keys, an
+  `outcome` outside its seven, an up that is not unit when estimated or not 0, 0, 0 otherwise, a
+  count of samples or groups that is no whole number from 0 to 2^53, and a spread or a mean's
+  length that is not finite and >= 0;
 - a number written as an integer: OpenCV reads an integer beyond 2147483647 wrapped to 32
   bits without a word, so every number is written with a decimal point or an exponent;
 - a text that OpenCV's parser does not read.

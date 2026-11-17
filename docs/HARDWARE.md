@@ -682,26 +682,30 @@ the call is not timed again [?].
 
 ## Separation
 
-What separation's proposal takes on the board after refinement (docs/methods/separation.md), on
-the host's CPU.
+What separation's gravity and proposal take on the board after refinement
+(docs/methods/separation.md), on the host's CPU.
 
-**The proposal** (`propose_separation()`, `src/separation/proposal.hpp`) on the large scene of
+**The proposal** (`propose_separation()`, `src/separation/proposal.hpp`) and **gravity's estimate**
+(`estimate_gravity()`, `src/separation/gravity.hpp`) on the large scene of
 `tests/test_separation.cpp`, `large_scene()` built with the noise's seed 2: 2 048 582 points, the large
-box among a cabinet, a crate and a ball on a floor of 4.2 m x 4.2 m at 4 mm voxels, and its walk of
-24 poses. A scratch program, built with g++ 11.4 `-O3 -DNDEBUG` against the Release build's
+box among a cabinet, a crate and a ball on a floor of 4.2 m x 4.2 m at 4 mm voxels, its walk of 1200
+poses, a lap of 40 s at 30 frames a second, and the synthetic accelerometer's 7994 samples at 200 Hz
+along it. A scratch program, built with g++ 11.4 `-O3 -DNDEBUG` against the Release build's
 `libseparation.a`, builds the model once and times each call by `std::chrono::steady_clock`: 5 s
 unrecorded, then 20 s recorded, one thread pinned to cpu0 by `taskset -c 0`, holding the build lock,
-so no compiler runs beside it. Every call proposed the right box.
+so no compiler runs beside it. Every call estimated gravity and proposed the right box.
 
-40 calls recorded: median 502.5 ms, p95 504.5 ms, max 504.7 ms [M 2026-11-15, 04:30:22 to 04:30:48,
-MAXN_SUPER by `nvpmodel -q`, cpu0 at 1728 MHz after the warm-up and at the end by
-`scaling_cur_freq`]. The board's state moves the time by a tenth: the same build of the module took
-454.8 ms at 03:22 and 515.0 ms at 04:13 [M 2026-11-15, the same program; ?: the cause, not
-measured]. A copy of the module with a clock between its steps gave, per call: the checks and the
-trajectory 6 ms, the window 58 ms, the 4000 hypotheses 159 ms, the plane's fits and judgement 74 ms,
-the standing points and the sort of their cells 159 ms, the pieces 2 ms, the object's hull and box
-39 ms [M 2026-11-15, 04:30:48 to 04:30:58, the mean over every call of 10 s, the same conditions]. Other models are
-unmeasured.
+44 calls recorded [M 2026-11-17, 07:16:59 to 07:17:25, MAXN_SUPER by `nvpmodel -q`, cpu0 at
+1574 MHz before the run and 960 MHz read after it ended, by `scaling_cur_freq`]: gravity's estimate
+median 1.667 ms, p95 1.716 ms, max 1.750 ms; the proposal median 455.3 ms, p95 456.7 ms, max
+457.5 ms. Before gravity, with up from the cameras' axes and the walk of 24 poses, the proposal took
+a median of 502.5 ms [M 2026-11-15, 04:30:22 to 04:30:48, the same method]; the board's state moves
+the time by a tenth: the same build of the module took 454.8 ms at 03:22 and 515.0 ms at 04:13
+[M 2026-11-15, the same program; ?: the cause, not measured]. A copy of the module of 2026-11-15
+with a clock between its steps gave, per call: the checks and the trajectory 6 ms, the window 58 ms,
+the 4000 hypotheses 159 ms, the plane's fits and judgement 74 ms, the standing points and the sort of
+their cells 159 ms, the pieces 2 ms, the object's hull and box 39 ms [M 2026-11-15, 04:30:48 to
+04:30:58, the mean over every call of 10 s, the same conditions]. Other models are unmeasured.
 
 ## Connections
 

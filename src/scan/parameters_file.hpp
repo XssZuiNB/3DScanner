@@ -3,10 +3,11 @@
 /// A scan's parameters on disk: JSON with a format version, the tree's commit, the object class,
 /// the set of parameters in force, and the scan's facts: the stream's size, intrinsics and depth
 /// unit, what delivered the frames, the camera's run-time properties it refused, the times of its
-/// start and stop, the frames taken, fused, lost and not taken, and why it ended
-/// (docs/SCAN_FILES.md, "Parameters"). Why a scan ended is one key of a closed set, and a property
-/// refused one of the five names of camera/camera_properties.hpp's table, never free text: OpenCV
-/// writes only some strings as JSON. The writer
+/// start and stop, the frames taken, fused, lost and not taken, why it ended, and gravity's up as
+/// refinement estimated it (docs/SCAN_FILES.md, "Parameters"). Why a scan ended and how gravity's
+/// estimate ended are each one key of a closed set, and a property refused one of the five names
+/// of camera/camera_properties.hpp's table, never free text: OpenCV writes only some strings as
+/// JSON. The writer
 /// and the reader use OpenCV's FileStorage on memory and do the file's I/O themselves
 /// (scan/file_io.hpp). The reader refuses, with the reason, a file of another version, a key it
 /// does not know, a key twice or missing, a value of another type, a string that OpenCV does not
@@ -21,6 +22,7 @@
 #include "scan/object_class.hpp"
 #include "scan/utc_time.hpp"
 #include "types/frame_description.hpp"
+#include "types/gravity_estimate.hpp"
 
 #include <array>
 #include <cstdint>
@@ -56,6 +58,17 @@ std::string_view name_of(scan_end end) noexcept;
 /// @param name [in] the key, as name_of() gives it.
 /// @return why it ended; nothing when the name is no key of the set.
 std::optional<scan_end> scan_end_named(std::string_view name) noexcept;
+
+/// Gives the key of how gravity's estimate ended, as the file writes it.
+/// @param outcome [in] how it ended, one of the enumerators (types/gravity_estimate.hpp).
+/// @return the enumerator's name, a static string (docs/SCAN_FILES.md lists them); empty for a
+///         value that is no enumerator.
+std::string_view name_of(gravity_outcome outcome) noexcept;
+
+/// Finds how gravity's estimate ended from its key.
+/// @param name [in] the key, as name_of() gives it.
+/// @return the outcome; nothing when the name is no key of the set.
+std::optional<gravity_outcome> gravity_outcome_named(std::string_view name) noexcept;
 
 /// The frames of a scan, counted as the scanner took them or not.
 struct scan_frame_counts
@@ -102,6 +115,11 @@ struct scan_parameters
     utc_time stop;            ///< when it stopped, from 1970 to 9999
     scan_frame_counts frames; ///< the frames taken, fused, lost and not taken
     scan_end end;             ///< why the scan ended
+    /// Gravity's up as refinement estimated it (separation/gravity.hpp): not_estimated with every
+    /// number 0 until refinement writes its estimate (docs/SCAN_FILES.md); an estimated up of
+    /// length 1 within gravity_up_tolerance, zero otherwise; the samples and groups at most 2^53;
+    /// the spread and the mean's length finite and >= 0.
+    gravity_estimate gravity;
 
     /// Compares two scans' parameters value by value.
     /// @param other [in] the other parameters.
@@ -129,7 +147,10 @@ std::string source_refusal(const source_description &source) noexcept;
 ///         the stream's width or height is 0, fx or fy is not finite and > 0, cx or cy not finite,
 ///         the depth unit not finite and > 0; a time lies outside 1970 to 9999; why the scan
 ///         ended is no enumerator; a count of frames lies above 2^53, or taken is not fused + lost,
-///         and 1 more when the scan ended because tracking failed; the commit or a string of the
+///         and 1 more when the scan ended because tracking failed; gravity's outcome is no
+///         enumerator, its up not unit when estimated or not zero otherwise, a count of samples or
+///         groups above 2^53, the spread or the mean's length not finite and >= 0; the commit or a
+///         string of the
 ///         source is one the file does not hold (source_refusal() says which; nothing is written
 ///         then); or OpenCV could not write the JSON; or the file could not be written
 ///         (scan/file_io.hpp, write_file()).
@@ -146,11 +167,12 @@ write_result write_parameters(const std::filesystem::path &path,
 ///         key, holds a value of another type, an unknown object class, a refused property that
 ///         is no name of color_property_table or stands twice, a count of iterations that is no
 ///         whole number from 0 to 2^32 - 1, a width or height that is no whole number from 1 to
-///         2^32 - 1, a count of frames that is no whole number from 0 to 2^53, a value
-///         of the stream that no float holds, a time that is not the text of utc_time_of(), an
-///         unknown key of why the scan ended, or a string, a set or a fact the writer refuses; a
-///         file written before the scan's facts and the set's six keys of 2026-11-16, or before
-///         "refused_properties" of 2026-11-17, among them, which lacks a key.
+///         2^32 - 1, a count of frames, samples or groups that is no whole number from 0 to 2^53,
+///         a value of the stream that no float holds, a time that is not the text of
+///         utc_time_of(), an unknown key of why the scan ended or of gravity's outcome, or a
+///         string, a set or a fact the writer refuses; a file written before the scan's facts and
+///         the set's six keys of 2026-11-16, or before "refused_properties" or "gravity" of
+///         2026-11-17, among them, which lacks a key.
 /// @note Allocates. A failed allocation ends the program (std::terminate): the function is
 ///       noexcept.
 read_result<scan_parameters> read_parameters(const std::filesystem::path &path) noexcept;

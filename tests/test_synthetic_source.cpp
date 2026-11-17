@@ -30,10 +30,14 @@
 ///   stream; the accelerometer reads gravity's specific force, of length g, and at the frame's own
 ///   time the pose's up in the camera frame; the gyroscope's samples of a frame, integrated, give
 ///   the turn from the pose before to the frame's, both against the trajectory; without the
-///   option the frames carry none.
+///   option the frames carry none; with the hand's acceleration, along a lap at 30 frames a
+///   second, the accelerometer at the frame's own time reads the pose's R^T (a + g z), a the second
+///   difference of the positions with the camera at rest before and after, and the frames carry
+///   the samples append_imu_samples() gives, bit for bit.
 
 #include "camera/frame.hpp"
 #include "check.hpp"
+#include "frame_copy.hpp"
 #include "synthetic_source.hpp"
 #include "types/frame_description.hpp"
 #include "types/imu_sample.hpp"
@@ -1356,15 +1360,16 @@ constexpr double imu_turn_tolerance_rad = 1e-5;
 /// 8x6 px, no surface: the samples do not depend on the pictures.
 /// @param trajectory [in] the walk.
 /// @param period_us [in] the IMU's period, in µs; 0 for no IMU.
+/// @param hand_acceleration [in] whether the accelerometer reads the hand's acceleration too.
 /// @return the frames, one for each pose.
 std::vector<gca::frame> imu_frames(const std::vector<Eigen::Isometry3d> &trajectory,
-                                   std::uint64_t period_us)
+                                   std::uint64_t period_us, bool hand_acceleration = false)
 {
     gca_test::synthetic_source_options options;
     options.description = {{8, 6}, test_intrinsics, 0.001f};
     options.scene = {.trajectory = trajectory};
     if (period_us > 0)
-        options.imu = gca_test::synthetic_imu{period_us};
+        options.imu = gca_test::synthetic_imu{period_us, hand_acceleration};
     gca_test::synthetic_source source(options);
     check(source.open(options.description.size).opened, "imu: opened");
     std::vector<gca::frame> frames(trajectory.size());
@@ -1472,6 +1477,60 @@ void check_imu_samples()
         none = none && frame.accel().empty() && frame.gyro().empty();
     check(none, "imu: without the option the frames carry no samples");
 }
+
+/// The hand's acceleration (synthetic_imu::hand_acceleration) along a lap around the box at 30
+/// frames a second: the accelerometer at each frame's own time against R_i^T (a_i + g z), a_i the
+/// second difference of the positions, the camera at rest before the first pose and after the
+/// last; the frames' samples those append_imu_samples() gives.
+void check_hand_acceleration()
+{
+    gca_test::synthetic_walk lap = gca_test::tabletop_walk();
+    lap.pose_count = 600;
+    const std::optional<std::vector<Eigen::Isometry3d>> walk = gca_test::walk_around(lap);
+    check(walk.has_value(), "imu, the hand's acceleration: the lap around the box");
+    if (!walk)
+        return;
+    const std::vector<Eigen::Isometry3d> &trajectory = *walk;
+    const std::vector<gca::frame> frames = imu_frames(trajectory, imu_third_period_us, true);
+    const double period_s = 1e-6 * static_cast<double>(gca_test::synthetic_frame_period_us);
+    const auto position = [&](std::ptrdiff_t k) {
+        const auto last = static_cast<std::ptrdiff_t>(trajectory.size()) - 1;
+        return trajectory[static_cast<std::size_t>(std::clamp<std::ptrdiff_t>(k, 0, last))]
+            .translation();
+    };
+    max_error at_frame;
+    double largest_mps2 = 0.0;
+    bool same = true;
+    for (std::size_t i = 0; i < frames.size(); i++)
+    {
+        const auto k = static_cast<std::ptrdiff_t>(i);
+        const Eigen::Vector3d hand =
+            (position(k + 1) - 2.0 * position(k) + position(k - 1)) / (period_s * period_s);
+        largest_mps2 = std::max(largest_mps2, hand.norm());
+        const Eigen::Vector3d expected =
+            trajectory[i].linear().transpose() *
+            (hand + Eigen::Vector3d(0.0, 0.0, gca_test::standard_gravity_mps2));
+        const std::span<const gca::imu_sample> accel = frames[i].accel();
+        if (accel.empty())
+        {
+            same = false;
+            continue;
+        }
+        const gca::imu_sample &last = accel.back();
+        at_frame.add((Eigen::Vector3d(last.x, last.y, last.z) - expected).norm());
+        std::vector<gca::imu_sample> appended;
+        std::vector<gca::imu_sample> turned;
+        gca_test::append_imu_samples(trajectory, i, {imu_third_period_us, true}, appended, turned);
+        same = same && gca_test::same_samples(accel, appended) &&
+               gca_test::same_samples(frames[i].gyro(), turned);
+    }
+    std::printf("imu, the hand's acceleration: up to %.3f m/s^2 along the lap\n", largest_mps2);
+    check_max_error("imu, the hand's acceleration: the accelerometer at the frame's time against "
+                    "the pose's R^T (a + g z), m/s^2",
+                    at_frame, imu_accel_tolerance_mps2);
+    check(same, "imu, the hand's acceleration: the frames carry append_imu_samples()'s samples, "
+                "bit for bit");
+}
 } // namespace
 
 int main()
@@ -1483,5 +1542,6 @@ int main()
     check_depth_noise();
     check_depth_gap_and_grey();
     check_imu_samples();
+    check_hand_acceleration();
     return gca_test::check_summary("test_synthetic_source");
 }

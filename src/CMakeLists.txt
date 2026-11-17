@@ -11,21 +11,23 @@
 #                           clock; no kernel)
 #   registration, fusion <- refinement (the pose graph, on the host; registration's SE(3)
 #                           exponential; the fusion of a scan's sequence at the full voxel size)
-#   types <- separation (the proposal of the support plane and the box, on the host; Eigen)
+#   types <- separation (gravity's up, the proposal of the support plane and the box, on the
+#                        host; Eigen)
 #   types <- camera <- scan (Eigen, OpenCV's core)
-#   scan, tracking, refinement <- scan_interface (the scan interface with its scan thread, the
-#                                  stages' parameters of an object class's set)
+#   scan, tracking, refinement, separation <- scan_interface (the scan interface with its scan
+#                                  thread, the stages' parameters of an object class's set)
 #   scan_interface <- web (the web layer's routes, WebSocket and messages; cpp-httplib, threads)
 # Every library includes from src/ ("gpu/gpu_pool.hpp"); types carries that directory.
 
 # ---------------------------------------------------------------- types (header only)
 # The plain structs, the camera parameters, a frame's description, the camera's pose, a trajectory's
-# entry and a model's point, the console colors, which camera, orbbec_camera and gpu use, and a
-# number's little-endian bytes, which the sequence (camera) and the live model message (web) use.
-# types carries Eigen because the camera's pose (types/camera_pose.hpp) holds Eigen's vector and
-# quaternion, plain value types that the sequence (camera) and the trajectory (scan) share, and a
-# model's point (types/model_point.hpp) Eigen's vectors, which the model's file (scan) and
-# separation share.
+# entry, an IMU sample with the IMU's rotation, gravity's estimate and a model's point, the console
+# colors, which camera, orbbec_camera and gpu use, and a number's little-endian bytes, which the
+# sequence (camera) and the live model message (web) use. types carries Eigen because the camera's
+# pose (types/camera_pose.hpp) holds Eigen's vector and quaternion, plain value types that the
+# sequence (camera) and the trajectory (scan) share, and a model's point (types/model_point.hpp)
+# Eigen's vectors, which the model's file (scan) and separation share; gravity's estimate, which
+# separation gives and the parameters' file (scan) keeps, holds Eigen's vector.
 add_library(types INTERFACE)
 target_include_directories(types INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(types INTERFACE Eigen3::Eigen)
@@ -174,18 +176,24 @@ add_library(
 target_link_libraries(refinement PUBLIC types fusion Eigen3::Eigen PRIVATE registration)
 
 # ---------------------------------------------------------------- separation
-# Separation (docs/methods/separation.md): today the proposal of the support plane and the box from
-# the full model and its trajectory, and the orthogonal least-squares plane, which
+# Separation (docs/methods/separation.md): gravity's up from the accelerometer's samples and the
+# trajectory, the proposal of the support plane and the box from the full model, its trajectory and
+# gravity, the words both refuse with, and the orthogonal least-squares plane, which
 # distortion_check's measurement shares; on the host in double.
 add_library(
     separation
     STATIC
+    separation/gravity.cpp
+    separation/gravity.hpp
     separation/plane_fit.cpp
     separation/plane_fit.hpp
     separation/proposal.cpp
     separation/proposal.hpp
+    separation/separation_messages.cpp
+    separation/separation_messages.hpp
 )
-# PUBLIC: the headers hold Eigen's types and types' model point and camera pose.
+# PUBLIC: the headers hold Eigen's types and types' model point, camera pose, trajectory entry,
+# IMU sample and gravity estimate.
 target_link_libraries(separation PUBLIC types Eigen3::Eigen)
 
 # ---------------------------------------------------------------- scan
@@ -229,8 +237,9 @@ add_library(
 )
 # PUBLIC: the headers hold scan's object class and parameters, camera's frame source and writer,
 # tracking's, registration's and fusion's parameters; refinement fuses the sequence; the thread
-# library for the scan thread.
-target_link_libraries(scan_interface PUBLIC scan tracking refinement Threads::Threads)
+# library for the scan thread. PRIVATE: separation estimates gravity at refinement.
+target_link_libraries(scan_interface PUBLIC scan tracking refinement Threads::Threads
+                      PRIVATE separation)
 
 # ---------------------------------------------------------------- web
 # The web layer (docs/ROUTES.md): the routes and the WebSocket over the scan interface on

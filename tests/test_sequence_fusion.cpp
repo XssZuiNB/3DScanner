@@ -9,15 +9,18 @@
 /// class's full model (scan/stage_parameters.hpp), in a sparse TSDF of 273 MB. The poses are the
 /// scene's world frame, so the model is in it too.
 /// - The walk: every frame read, those with a pose fused and the walls skipped; the trajectory
-///   as written, bit for bit; the full model's points within measured distances of the known
+///   and the accelerometer's samples of every frame as written, bit for bit; the full model's
+///   points within measured distances of the known
 ///   surfaces, their median, 99th percentile and largest, so that a wall fused shows; each face of
 ///   the box and the plane with points on it, every normal of unit length within the model
 ///   file's 1e-6.
-/// - The walk cut off within a record: done, its early end said, its whole frames read, and the
-///   model the same set of points, bit for bit, as that of a sequence of just those frames.
+/// - The walk cut off within a record: done, its early end said, its whole frames read with their
+///   samples, and the model the same set of points, bit for bit, as that of a sequence of just
+///   those frames.
 /// - A frame marked as tracked by nothing: refused with the reason, which names the frame; no
-///   model and no trajectory.
-/// - A cancel before the sixth frame: cancelled, five frames read, no model and no trajectory.
+///   model, no trajectory and no samples.
+/// - A cancel before the sixth frame: cancelled, five frames read, no model, no trajectory and no
+///   samples.
 /// - A pool used up by walls far apart: failed with the counts, every integration done all the
 ///   same.
 /// - Only frames of tracking loss: done, nothing fused, no point.
@@ -147,9 +150,24 @@ struct walk_case
     std::vector<gca_test::synthetic_surface> surfaces; ///< the plane, then the box's faces
 };
 
+/// Gives a frame two accelerometer samples of its own, 10 ms before its timestamp and at it, or
+/// one at 0 for a frame at 0, each value another [?: a choice: values no other frame carries].
+/// @param frame [in,out] the frame, its accelerometer's list empty.
+void add_samples(gca::frame &frame)
+{
+    const std::uint64_t t_us = frame.timestamp_us();
+    const auto value = [&](float scale) {
+        return scale + 1e-3f * static_cast<float>(frame.index());
+    };
+    if (t_us >= 10000)
+        frame.accel().push_back({t_us - 10000, value(0.5f), value(-9.75f), value(0.25f)});
+    frame.accel().push_back({t_us, value(0.75f), value(-9.5f), value(-0.25f)});
+}
+
 /// Builds the walk: the tabletop box on its plane from walk_poses poses of tabletop_walk(), frame
 /// k with index 2 k and its known pose, and after every wall_every-th a wall with index 2 k + 1,
-/// marked as tracking loss; the timestamps at the synthetic source's 30 fps by index.
+/// marked as tracking loss; the timestamps at the synthetic source's 30 fps by index; each frame
+/// with its accelerometer samples (add_samples()).
 /// @return the walk; fewer frames, with a failed check, when the rendering failed.
 walk_case walk()
 {
@@ -173,6 +191,8 @@ walk_case walk()
                                      (index + 1) * gca_test::synthetic_frame_period_us),
                  gca::tracking_loss{}});
     }
+    for (written_frame &written : made.frames)
+        add_samples(written.frame);
     return made;
 }
 
@@ -193,6 +213,8 @@ void write_sequence(const std::filesystem::path &path, const std::vector<written
     {
         gca::frame copy = gca_test::restamped(frames[k].frame, frames[k].frame.index(),
                                               frames[k].frame.timestamp_us());
+        copy.accel().assign(frames[k].frame.accel().begin(), frames[k].frame.accel().end());
+        copy.gyro().assign(frames[k].frame.gyro().begin(), frames[k].frame.gyro().end());
         // A full queue is waited out: the writer's thread empties it.
         gca::push_result pushed = writer.push(copy, frames[k].tracking);
         while (pushed.status == gca::push_status::full)
@@ -223,6 +245,25 @@ void check_trajectory(const std::string &what, const std::vector<gca::trajectory
     }
     check(same,
           (what + ": the trajectory as written, " + std::to_string(count) + " frames, bit for bit")
+              .c_str());
+}
+
+/// Checks that the accelerometer's samples read back are those of the frames written, in order,
+/// bit for bit.
+/// @param what [in] the case, named in the check line.
+/// @param read [in] the samples read back.
+/// @param frames [in] the frames written.
+/// @param count [in] how many of them were read.
+void check_samples(const std::string &what, const std::vector<gca::imu_sample> &read,
+                   const std::vector<written_frame> &frames, std::size_t count)
+{
+    std::vector<gca::imu_sample> written;
+    for (std::size_t k = 0; k < count && k < frames.size(); k++)
+        written.insert(written.end(), frames[k].frame.accel().begin(),
+                       frames[k].frame.accel().end());
+    check(!written.empty() && gca_test::same_samples(read, written),
+          (what + ": the accelerometer's samples as written, " + std::to_string(written.size()) +
+           ", bit for bit")
               .c_str());
 }
 
@@ -286,6 +327,7 @@ void check_walk(const temporary_directory &directory, const walk_case &w, cudaSt
     check(result.frames_fused == walk_poses && result.frames_skipped == walls,
           "walk: every frame with a pose fused, every wall skipped");
     check_trajectory("walk", result.trajectory, w.frames, w.frames.size());
+    check_samples("walk", result.accelerometer, w.frames, w.frames.size());
 
     const double voxel_mm = 1e3 * tabletop_set.full_voxel_size_m;
     std::vector<double> distances_mm;
@@ -355,6 +397,7 @@ void check_cut(const temporary_directory &directory, const walk_case &w, cudaStr
               result.message.empty(),
           "cut: done, ended early");
     check_trajectory("cut", result.trajectory, w.frames, cut_records);
+    check_samples("cut", result.accelerometer, w.frames, cut_records);
     check(result.frames_fused == first.frames_fused &&
               result.frames_skipped == first.frames_skipped,
           "cut: the first frames' counts");
@@ -385,8 +428,9 @@ void check_not_tracked(const temporary_directory &directory, const walk_case &w,
                             result.end == gca::sequence_fusion_end::failed, result.message,
                             result.message.find(expected) != std::string::npos &&
                                 result.message.find(path.string()) != std::string::npos);
-    check(result.model.empty() && result.trajectory.empty() && result.frames_fused == 2,
-          "not tracked: no model and no trajectory, the two frames before fused");
+    check(result.model.empty() && result.trajectory.empty() && result.accelerometer.empty() &&
+              result.frames_fused == 2,
+          "not tracked: no model, no trajectory and no samples, the two frames before fused");
 }
 
 /// A cancel before the sixth frame: cancelled, five frames read, no model.
@@ -403,9 +447,9 @@ void check_cancel(const temporary_directory &directory, cudaStream_t stream)
     check(result.end == gca::sequence_fusion_end::cancelled && result.message.empty() &&
               asked == cancel_after + 1,
           "cancel: cancelled at the sixth question");
-    check(result.model.empty() && result.trajectory.empty() &&
+    check(result.model.empty() && result.trajectory.empty() && result.accelerometer.empty() &&
               result.frames_fused + result.frames_skipped == cancel_after,
-          "cancel: five frames read, no model and no trajectory");
+          "cancel: five frames read, no model, no trajectory and no samples");
 }
 
 /// A pool used up: four walls at 0.55 m from poses 2 m apart into a budget of 140 MB; failed with

@@ -8,7 +8,8 @@
 /// copy is a snapshot no one changes afterwards. A scan's phases: idle, starting (the GPU's
 /// buffers, the source opened, its first frame), scanning (the per-frame path for each frame the
 /// sequence's writer has room for), refining (the source closed, the live model freed, the
-/// sequence fused at the full voxel size) and idle again. The scan's files go into a directory of
+/// sequence fused at the full voxel size, gravity's up estimated from the samples it read and kept
+/// in the parameters) and idle again. The scan's files go into a directory of
 /// the scans directory named by its start time (docs/SCAN_FILES.md, "A scan's directory"). The
 /// live model is a second value beside the state, published under a lock of its own at most once
 /// a live_model_interval while the scan tracks (scan/live_model.hpp). With the hold of the color
@@ -316,7 +317,8 @@ private:
     void run() noexcept;
 
     /// Runs one scan from its start to idle again: starting and scanning (run_scanning()), then
-    /// the parameters, refining and the files, and the sequence's removal when it is not kept.
+    /// the parameters, refining, gravity written into the parameters, the trajectory and the full
+    /// model, and the sequence's removal when it is not kept.
     /// @param c [in,out] the start's command, answered here.
     /// @param stream [in] the scan thread's CUDA stream, which the scan's GPU work is queued on.
     void run_scan(command &c, cudaStream_t stream) noexcept;

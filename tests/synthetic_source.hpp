@@ -24,6 +24,7 @@
 #include "camera/frame_source.hpp"
 #include "types/camera_param.hpp"
 #include "types/frame_description.hpp"
+#include "types/imu_sample.hpp"
 
 #include <array>
 #include <cstddef>
@@ -281,16 +282,35 @@ inline constexpr double standard_gravity_mps2 = 9.80665;
 /// i the camera turns at the constant rate w_i = log(R_{i-1}^T R_i) / (t_i - t_{i-1}), in the
 /// camera frame, R_i the rotation of the trajectory's pose i, t_i frame i's timestamp, and at a
 /// time t of (t_{i-1}, t_i] its rotation is R_{i-1} exp((t - t_{i-1}) w_i). The gyroscope reads
-/// w_i in rad/s, the accelerometer gravity's specific force R(t)^T (0, 0, standard_gravity_mps2)
-/// in m/s², the world's z up, without an acceleration of the hand. At frame 0's time 0 the camera
-/// rests at pose 0. Frame i carries the samples taken in (t_{i-1}, t_i], frame 0 the one at 0,
-/// each value rounded to float.
+/// w_i in rad/s, the accelerometer the specific force R(t)^T (a_i + (0, 0, standard_gravity_mps2))
+/// in m/s², the world's z up, a_i the hand's acceleration when asked for, else 0. At frame 0's time
+/// 0 the camera rests at pose 0. Frame i carries the samples taken in (t_{i-1}, t_i], frame 0 the
+/// one at 0, each value rounded to float.
 struct synthetic_imu
 {
     /// The time between two samples of each sensor, in µs, > 0: sample k is taken at k period_us,
     /// from 0 on, the accelerometer's and the gyroscope's at the same times.
     std::uint64_t period_us;
+    /// Whether the accelerometer reads the hand's acceleration too: for the samples of frame i,
+    /// a_i = (p_{i+1} - 2 p_i + p_{i-1}) / Δt², the second difference of the trajectory's
+    /// positions p at the frames' period Δt, in the world frame, the camera resting at pose 0
+    /// before frame 0 and at the last pose after the last frame (p_{-1} = p_0, p_N = p_{N-1}), so
+    /// that the scan's accelerations sum to no change of velocity [?: a choice].
+    bool hand_acceleration = false;
 };
+
+/// Appends the IMU's samples that frame index of the synthetic source carries (synthetic_imu), so
+/// that a test takes a trajectory's samples without rendering its frames.
+/// @param trajectory [in] the trajectory, camera frame to world frame, in m; holds pose index.
+/// @param index [in] the frame's index, its timestamp index * synthetic_frame_period_us.
+/// @param imu [in] the IMU, its period > 0.
+/// @param accel [in,out] gains the accelerometer's samples, in m/s² in the camera frame, rising
+///        in time.
+/// @param gyro [in,out] gains the gyroscope's samples, in rad/s in the camera frame, at the same
+///        times.
+void append_imu_samples(const std::vector<Eigen::Isometry3d> &trajectory, std::uint64_t index,
+                        const synthetic_imu &imu, std::vector<gca::imu_sample> &accel,
+                        std::vector<gca::imu_sample> &gyro);
 
 /// How a test builds the synthetic source.
 struct synthetic_source_options

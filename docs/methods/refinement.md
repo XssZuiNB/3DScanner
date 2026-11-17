@@ -258,8 +258,8 @@ fused at the full voxel size into a new sparse TSDF, and the full model is extra
   pool's usage is read once, and a coordinate that found no block, or an insertion the hash
   refused, ends the fusion as failed, with the counts: the full model would lack surface. A
   failed refinement is a value (the spec), and the scan stays unfinished.
-* **Failed or cancelled** gives neither a model nor a trajectory, so that no caller keeps a part of
-  either; the counts of the frames fused and skipped up to the end stay.
+* **Failed or cancelled** gives neither a model nor a trajectory nor samples, so that no caller
+  keeps a part of any; the counts of the frames fused and skipped up to the end stay.
 * **The extraction** (docs/methods/sparse-tsdf.md, "The extraction") runs twice: into a buffer of
   one point, which counts the surface's points, then into a buffer of exactly that count, so that no
   capacity is guessed, with every block and every crossing (`gca::extraction_choice`'s defaults).
@@ -269,6 +269,11 @@ fused at the full voxel size into a new sparse TSDF, and the full model is extra
   order. A sequence of which no frame was fused gives no point, and the fusion is still done.
 * **The trajectory as read**: each frame's index, timestamp and pose, or none for tracking loss,
   bit for bit as the sequence holds them, in its order (`src/types/trajectory_entry.hpp`).
+* **The accelerometer's samples as read**: those of every frame read, tracked or not, bit for bit
+  and in the sequence's order (`src/types/imu_sample.hpp`), from which the scan interface estimates
+  gravity's up for separation before the sequence can be removed (docs/methods/separation.md,
+  "What it reads from a scan"); none for a sequence of a camera without its IMU. 20 bytes each,
+  1.2 MB for five minutes at 200 Hz [S: computed].
 * **Memory**: one sparse TSDF exists at a time (docs/methods/sparse-tsdf.md, "The pool and the
   memory budget"), so the live model's is freed before the full model's is requested; the full
   model's takes the object class's memory budget (the spec: "the budget also has to hold what

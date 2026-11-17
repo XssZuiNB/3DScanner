@@ -324,8 +324,10 @@ which holds the live model, is freed as the function that runs the loop returns,
 cannot outlive the loop, as one sparse TSDF exists at a time; the parameters are written
 (docs/SCAN_FILES.md); refinement fuses the sequence at the full voxel size
 (docs/methods/refinement.md, "The fusion of the sequence"), answering the commands before each
-frame, and the scan answers them once more before it is idle, so that a discard that comes during
-the extraction or the writes still discards it. A discard removes the
+frame; gravity's up is estimated from the accelerometer's samples and the trajectory it read
+(docs/methods/separation.md, "Gravity's up") and the parameters are written again with it, then
+the trajectory and the full model; and the scan answers the commands once more before it is idle,
+so that a discard that comes during the extraction or the writes still discards it. A discard removes the
 scan's directory; the end of the scan interface during a scan or a refinement leaves the scan
 unfinished, without a trajectory or a full model.
 

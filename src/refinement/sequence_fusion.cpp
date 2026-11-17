@@ -24,8 +24,8 @@ namespace gca
 {
 namespace
 {
-/// Ends a fusion other than done: no model and no trajectory, so that a caller cannot keep a
-/// part of either; the counts as they are.
+/// Ends a fusion other than done: no model, no trajectory and no samples, so that a caller cannot
+/// keep a part of any; the counts as they are.
 /// @param result [in,out] the result so far.
 /// @param end [in] failed or cancelled.
 /// @param message [in] why it failed, in plain English, naming the sequence; empty when
@@ -38,6 +38,7 @@ sequence_fusion_result ended_with(sequence_fusion_result &result, sequence_fusio
     result.message = std::move(message);
     result.model.clear();
     result.trajectory.clear();
+    result.accelerometer.clear();
     return std::move(result);
 }
 
@@ -190,6 +191,8 @@ sequence_fusion_result fuse_sequence(const std::filesystem::path &sequence, cons
         result.trajectory.push_back(
             {host.index(), host.timestamp_us(),
              pose != nullptr ? std::optional<camera_pose>(*pose) : std::nullopt});
+        result.accelerometer.insert(result.accelerometer.end(), host.accel().begin(),
+                                    host.accel().end());
         if (pose == nullptr)
         {
             result.frames_skipped++;

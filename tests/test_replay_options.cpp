@@ -228,7 +228,8 @@ void test_set_of(const places &p, const std::filesystem::path &directory)
                                        time,
                                        time,
                                        {10, 8, 2, 0},
-                                       gca::scan_end::source_end};
+                                       gca::scan_end::source_end,
+                                       {}};
     const std::filesystem::path kept_file = directory / "kept.json";
     check(gca::write_parameters(kept_file, kept).written, "set: test setup, the kept parameters");
     const read_result by_file = read({"--sequence", p.sequence.string(), "--parameters",
