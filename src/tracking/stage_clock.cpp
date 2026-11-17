@@ -48,6 +48,8 @@ std::string_view name_of(path_stage stage) noexcept
         return "writer";
     case path_stage::live_model:
         return "live_model";
+    case path_stage::live_view:
+        return "live_view";
     }
     return {};
 }

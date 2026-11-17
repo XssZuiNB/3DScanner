@@ -211,9 +211,10 @@ add_test(NAME live_model COMMAND test_live_model)
 
 # The scan interface in process, the spec's main seam: whole scans on the synthetic source into a
 # temporary scans directory, with a source and a writer in front of the real ones that the test
-# controls.
+# controls; OpenCV decodes the live views.
 add_executable(test_scan_interface test_scan_interface.cpp)
-target_link_libraries(test_scan_interface PRIVATE scan_interface separation synthetic_source)
+target_link_libraries(test_scan_interface PRIVATE scan_interface separation synthetic_source
+                      opencv_core opencv_imgcodecs)
 add_test(NAME scan_interface COMMAND test_scan_interface)
 
 # The replay tool run as a program on a short synthetic sequence the test writes, against the same

@@ -12,7 +12,9 @@
 /// in the parameters) and idle again. The scan's files go into a directory of
 /// the scans directory named by its start time (docs/SCAN_FILES.md, "A scan's directory"). The
 /// live model is a second value beside the state, published under a lock of its own at most once
-/// a live_model_interval while the scan tracks (scan/live_model.hpp). With the hold of the color
+/// a live_model_interval while the scan tracks (scan/live_model.hpp); the live view a third, one
+/// for each tracked frame while its encoder keeps up, published by the encoder's thread under a
+/// lock of its own (scan/live_view.hpp). With the hold of the color
 /// camera's exposure and white balance in front of the source (camera/color_hold.hpp), the state
 /// and the parameters name the properties the camera refused (R13). Unless the sequence is to be
 /// kept, a refined scan's sequence is removed after its full model is written (R18). Also the rule
@@ -26,6 +28,7 @@
 #include "camera/frame_source.hpp"
 #include "camera/sequence_writer.hpp"
 #include "scan/live_model.hpp"
+#include "scan/live_view.hpp"
 #include "scan/object_class.hpp"
 #include "scan/parameters_file.hpp"
 #include "tracking/stage_clock.hpp"
@@ -124,6 +127,9 @@ struct scan_state
     /// Why a live model of the scan in progress or the last one could not be taken, the last
     /// time one could not, in plain English; empty while each was taken. The scan goes on.
     std::string live_model_failure;
+    /// Why a live view of the scan in progress or the last one could not be made, the last time
+    /// one could not, in plain English; empty while each was made or skipped. The scan goes on.
+    std::string live_view_failure;
     /// The reads and writes of the camera's run-time properties the camera refused since the
     /// source of the scan in progress or the last one opened, each as its line
     /// (camera/color_hold.hpp, refusal_line()), in order, joined by "; "; empty while none was,
@@ -168,6 +174,14 @@ struct scan_options
     /// throw, must not wait for a command's answer and must not destroy the scan interface. The
     /// value it is given stays as it is until the call returns. Empty: no call.
     std::function<void(const live_model &)> on_live_model = {};
+    /// Called after each live view is published, with it, outside every lock: on the encoder's
+    /// thread for a frame's view, on the scan thread for the empty one a scan starts with; never
+    /// two calls at once, and the value it is given stays as it is until the call returns. While
+    /// it runs, the encoder is busy: the frames offered meanwhile have no view
+    /// (docs/methods/tracking.md, "The live view"), and the scan's end waits for it, so it must
+    /// return soon. It must not throw, must not wait for a command's answer and must not destroy
+    /// the scan interface; it may read state() and latest_live_view(). Empty: no call.
+    std::function<void(const live_view &)> on_live_view = {};
     /// The report of the hold in front of the source (camera/color_hold.hpp), whose refusals the
     /// state's property_refusals and the parameters' refused_properties name; nullptr, the
     /// default, for a source without the hold: a sequence, the tests' synthetic source. The hold
@@ -196,8 +210,9 @@ public:
     /// @param writer [in,out] the sequence's writer, not open; owned and left to the scan thread
     ///        as the source.
     /// @note Allocates, the room of two live models for live_model_points points with their
-    ///       slots, 32 bytes a point [S: computed], and starts a thread; a failure of either ends
-    ///       the program (std::terminate).
+    ///       slots, 32 bytes a point, and of the newest live view, 3 bytes a pixel of stream_size
+    ///       [S: computed], and starts a thread; a failure of either ends the program
+    ///       (std::terminate).
     scan_interface(const scan_options &options, frame_source &source, sequence_sink &writer);
 
     /// The scan interface stands for one scan thread and its devices.
@@ -258,6 +273,14 @@ public:
     ///       for the lock when it publishes the next live model; any thread may call it, the
     ///       listeners too.
     live_model latest_live_model() const;
+
+    /// Gives the live view.
+    /// @return a copy of the live view last published, a snapshot: empty, without a frame, before
+    ///         the first view of the scan in progress, or before the first scan.
+    /// @note Takes the live view's lock for the copy, which allocates for its JPEG's bytes, while
+    ///       the encoder's thread waits for the lock when it publishes the next view; any thread
+    ///       may call it, the listeners too.
+    live_view latest_live_view() const;
 
 private:
     /// What a command asks.
@@ -324,11 +347,12 @@ private:
     void run_scan(command &c, cudaStream_t stream) noexcept;
 
     /// Starts and scans: the GPU's buffers and the live model, the source opened, the directory
-    /// and the sequence made, then the scan's loop, until its end; the source and the writer
-    /// closed after it. The tracker, which holds the live model's sparse TSDF, is this function's
-    /// own and is freed when it returns, after the last frame's work is waited for, so that the
-    /// live model can never outlive the loop into refinement (one sparse TSDF at a time:
-    /// refinement/sequence_fusion.hpp, fuse_sequence()'s @pre).
+    /// and the sequence made, then the scan's loop, until its end; the source closed, the live
+    /// view's encoder finished with the last fused frame's view, and the writer closed after it.
+    /// The tracker, which holds the live model's sparse TSDF, is this function's own and is freed
+    /// when it returns, after the last frame's work is waited for, so that the live model can never
+    /// outlive the loop into refinement (one sparse TSDF at a time: refinement/sequence_fusion.hpp,
+    /// fuse_sequence()'s @pre).
     /// @param c [in,out] the start's command, answered here.
     /// @param request [in] what the start asks for.
     /// @param requests [in,out] what the commands during the scan asked.
@@ -385,6 +409,20 @@ private:
     void take_live_model(live_model_taker &taker, const sparse_tsdf &model, std::uint64_t frame,
                          const camera_pose &pose, cudaStream_t stream) noexcept;
 
+    /// Offers a fused frame's live view to the scan's encoder (docs/methods/tracking.md, "The live
+    /// view"): queued when the encoder is free, skipped when it is busy; a failure goes into the
+    /// state's live_view_failure, published, and the scan goes on.
+    /// @param encoder [in,out] the scan's encoder.
+    /// @param surface [in] the tracker's surface, cast from the frame's pose after its fusion.
+    /// @param frame [in] the frame's index.
+    /// @param timestamp_us [in] the frame's timestamp, in µs on the source's clock.
+    /// @param stream [in] the scan thread's CUDA stream, which the cast was queued on.
+    /// @note Allocates nothing but a failure's message; waits for nothing
+    ///       (live_view_encoder::offer()).
+    void offer_live_view(live_view_encoder &encoder, const model_surface &surface,
+                         std::uint64_t frame, std::uint64_t timestamp_us,
+                         cudaStream_t stream) noexcept;
+
     /// Refuses a command: the reason recorded and published as the last refusal, then the
     /// answer, so that a caller with the answer reads the state that goes with it.
     /// @param c [in,out] the command, answered here.
@@ -422,6 +460,10 @@ private:
     /// When the scan thread decided to take the last live model published or to try one that
     /// failed; none at a scan's start. The scan thread's alone.
     std::optional<std::chrono::steady_clock::time_point> m_live_last;
+
+    /// The newest live view, with its lock and the listener: the scan thread clears it at a scan's
+    /// start, the scan's encoder publishes into it, a reader copies it.
+    newest_live_view m_views;
 
     /// The place in the hold's report of the refusals noted so far: none until the source of the
     /// scan in progress opened, as the hold's report is the last opening's until then. The scan

@@ -24,32 +24,34 @@
 
 namespace gca
 {
-/// The stages of the per-frame path, in their order (docs/methods/tracking.md, "The path of a
-/// frame" and "The scan's loop"). The enumerators run from 0 without a gap, live_model the last,
-/// and each has its row in stage_clock.cpp's table, a switch that -Wswitch checks.
+/// The stages of the per-frame path, in the order of the time lines' columns
+/// (docs/methods/tracking.md, "The stages' times"; the path runs the ray cast after the fusion and
+/// the live view before the live model). The enumerators run from 0 without a gap, live_view the
+/// last, and each has its row in stage_clock.cpp's table, a switch that -Wswitch checks.
 enum class path_stage
 {
     room,         ///< the writer's room (the scan's loop, step 2)
     too_close,    ///< the "too close" notice (the scan's loop, step 3)
     upload,       ///< the upload (the path, step 1)
     pyramid,      ///< the pyramid (the path, step 2)
-    ray_cast,     ///< the surface, the live model's ray cast (the path, step 3)
+    ray_cast,     ///< the surface, the live model's ray cast after the fusion (the path, step 3)
     registration, ///< the registration (the path, step 4)
     check,        ///< the check and the frame's pose (the path, step 5)
     fusion,       ///< the fusion (the path, step 6)
     writer,       ///< the writer taking the frame (the scan's loop, step 5)
     live_model,   ///< the live model, when the frame takes one (the scan's loop, step 6)
+    live_view,    ///< the live view's shading and copy, when a free encoder takes the frame's
+                  ///< (the scan's loop, step 6)
 };
 
 /// The number of the path's stages.
-inline constexpr std::size_t path_stage_count =
-    static_cast<std::size_t>(path_stage::live_model) + 1;
+inline constexpr std::size_t path_stage_count = static_cast<std::size_t>(path_stage::live_view) + 1;
 
 /// Gives a stage's name, as the replay's time lines print it.
 /// @param stage [in] the stage, one of the enumerators.
 /// @return "room", "too_close", "upload", "pyramid", "ray_cast", "registration", "check",
-///         "fusion", "writer" or "live_model"; a static string; empty for a value that is no
-///         enumerator.
+///         "fusion", "writer", "live_model" or "live_view"; a static string; empty for a value
+///         that is no enumerator.
 std::string_view name_of(path_stage stage) noexcept;
 
 /// One frame's times.
@@ -59,9 +61,9 @@ struct frame_times
     /// What tracking made of it; none for a frame not taken, which found no room.
     std::optional<tracking_state> state;
     /// Each stage's time, in ms, in the order of path_stage; 0 for a stage the frame did not run:
-    /// the ray cast before the first fused frame, the fusion of a frame in tracking loss, the
-    /// stages after the one that failed; the live model's on a frame that takes none is the
-    /// decision's alone, near 0.
+    /// the fusion and the ray cast of a frame in tracking loss, the stages after the one that
+    /// failed; the live model's on a frame that takes none is the decision's alone, near 0, and
+    /// the live view's on a frame whose encoder is busy or that is lost the offer's alone.
     std::array<double, path_stage_count> stage_ms{};
     double total_ms = 0.0; ///< the frame's time from begin() to end(), in ms
 };

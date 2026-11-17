@@ -14,8 +14,8 @@
 ///   taken, in order, naming each stage of the per-frame path in its order, with what tracking
 ///   made of the frame; the stages add up to the frame's time within a measured margin; each
 ///   stage the frame ran holds more than 0 (but room and check, which can print 0.000), the ray
-///   cast 0 for the first frame, before the model holds one, and the live model more than 0 for
-///   it, which takes the scan's first. The rule that the fusion is 0 for a
+///   cast after every fusion, the first frame's too, and the live model more than 0 for the first
+///   frame, which takes the scan's first. The rule that the fusion and the ray cast are 0 for a
 ///   frame in tracking loss is written but not exercised: no frame of the walk is lost. The last
 ///   line names the scan's directory, its end and its counts.
 /// - A kept scan's parameters with the full voxel size changed from 1 mm to 2 mm: the program's
@@ -156,9 +156,9 @@ struct time_line
     double total_ms = 0.0;                  ///< the frame's time, in ms
 };
 
-/// The stages a time line holds: 10, as docs/methods/tracking.md, "The replay tool's lines",
+/// The stages a time line holds: 11, as docs/methods/tracking.md, "The replay tool's lines",
 /// writes it, so that a stage added or left out shows here.
-constexpr std::size_t line_stages = 10;
+constexpr std::size_t line_stages = 11;
 
 /// Reads a time line: "frame <index> <state>", line_stages pairs of a stage's name and its time,
 /// "total" and the frame's time.
@@ -262,9 +262,9 @@ std::filesystem::path test_same_scan(const std::string &program,
     }
     std::printf("time lines: %zu\n", times.size());
     check(times.size() == sequence_frames, "time lines: one for each frame taken");
-    const std::vector<std::string> stages = {"room",     "too_close",    "upload", "pyramid",
-                                             "ray_cast", "registration", "check",  "fusion",
-                                             "writer",   "live_model"};
+    const std::vector<std::string> stages = {"room",     "too_close",    "upload",   "pyramid",
+                                             "ray_cast", "registration", "check",    "fusion",
+                                             "writer",   "live_model",   "live_view"};
     double largest_gap_ms = 0.0;
     std::size_t fused = 0;
     std::size_t lost = 0;
@@ -289,19 +289,22 @@ std::filesystem::path test_same_scan(const std::string &program,
         // which can print 0.000 (docs/methods/tracking.md, "The stages' times").
         for (const char *ran : {"too_close", "upload", "pyramid", "registration", "writer"})
             stage_rules = stage_rules && t.stage_ms.at(ran) > 0.0;
+        // The ray cast follows the fusion (docs/methods/tracking.md, "The path of a frame",
+        // step 3): both on a tracked frame, the first too, neither on a lost one.
         if (t.state == "lost")
-            stage_rules = stage_rules && t.stage_ms.at("fusion") == 0.0;
+            stage_rules =
+                stage_rules && t.stage_ms.at("fusion") == 0.0 && t.stage_ms.at("ray_cast") == 0.0;
         if (t.state == "tracking")
-            stage_rules = stage_rules && t.stage_ms.at("fusion") > 0.0 &&
-                          (k == 0) == (t.stage_ms.at("ray_cast") == 0.0);
+            stage_rules =
+                stage_rules && t.stage_ms.at("fusion") > 0.0 && t.stage_ms.at("ray_cast") > 0.0;
         // The first frame takes the scan's first live model, which extracts.
         if (k == 0)
             stage_rules = stage_rules && t.stage_ms.at("live_model") > 0.0;
     }
     check(in_order, "time lines: the frames in order");
     check(names, "time lines: each stage named, in the path's order");
-    check(stage_rules, "time lines: each stage the frame ran more than 0, but room and check; no "
-                       "ray cast before the model holds a frame, no fusion when lost");
+    check(stage_rules, "time lines: each stage the frame ran more than 0, but room and check; the "
+                       "ray cast after each fusion, neither when lost");
     gca_test::check_within("time lines: the largest difference between a frame's time and its "
                            "stages' sum, in ms",
                            largest_gap_ms, stage_sum_margin_ms);

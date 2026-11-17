@@ -476,7 +476,9 @@ frame's pyramid (docs/methods/registration.md, "Input"): KinectFusion's surface 
 [S: Newcombe et al. 2011, section 3.4] on the hash of blocks [S: Nießner et al. 2013, section 7]
 (`sparse_tsdf::ray_cast()`, into the images of a `gca::model_surface`). It takes a pose, the
 intrinsics K of level 0's picture and a depth range, and gives for each pixel of each level a point
-in the camera frame of the pose with its validity mark, a normal or none, and an intensity.
+in the camera frame of the pose with its validity mark, a normal or none, and an intensity, and for
+each pixel of level 0 a color, which the live view shows (docs/methods/tracking.md, "The live
+view").
 
 * **The ray** of pixel (u, v) is r = ((u - cx) / fx, (v - cy) / fy, 1) in the camera frame, by the
   one pinhole convention, and the point at depth z, along the camera's z, is t + z R r in the
@@ -586,9 +588,19 @@ in the camera frame of the pose with its validity mark, a normal or none, and an
   the model at its own ray, not the pyramid's combining of the finer level. Through the
   registration they do what the frame's pyramid's levels do ("What the ray cast gives"); a
   combining is built only on a measured need.
-* **No color** [?: the user's decision, 2026-11-15]: the cast gives the intensity alone, the registration being its one
-  reader; a reader that needs the cast's colors adds them. The full model's colors come from the
-  extraction.
+* **The color at level 0** (the user's decision of 2026-11-17, brief §7, 46: the live view is the
+  cast in color; it replaces that of 2026-11-15, the intensity alone while the registration was the
+  cast's one reader): each valid pixel of level 0 gets the color whose luma its intensity is, the
+  trilinear interpolation of the crossing's 8 voxels' red, green and blue, each rounded to the
+  nearest integer, a tie to the even one; an invalid pixel 0. The interpolation is the one the
+  intensity already sums, so the cast's other images stay as they were, bit for bit [M 2026-11-17:
+  "The depth interval"'s 1272 casts, all four images of all three levels, 1.07e9 pixels, against
+  the cast of cf8a02a, a digest of each image: none differed]. The coarser levels get none: their
+  one reader, the registration, takes the intensity. The full model's colors come from the
+  extraction. On the scenes of "What the ray cast gives" a color's largest channel lies a median
+  1.97 and 18.7 of 255 from the texture there at 2 mm and 8 mm, the 8 mm voxels blurring the
+  textures' waves; on a wall whose colors change by 4 levels a pixel, a median of 1 [M 2026-11-17:
+  `tests/test_sparse_tsdf_ray_cast.cpp`].
 * **No depth edges** [?: a choice]: the normals do not mark depth edges as the normals stage's do,
   so the registration's gradient fit may take an intensity from across an edge, which was measured
   to lose nothing (docs/methods/registration.md, "The color term").
@@ -677,13 +689,16 @@ depth interval took 23 % to 36 % off the back-to-back medians, and the normal's 
 19.5 % to 27.9 % more [M 2026-11-15: docs/HARDWARE.md, "The ray cast"]. The march's kernel uses 64
 registers a thread and 16 bytes of stack, held at 64 by its launch bounds, 4 thread blocks of 256 a
 multiprocessor (74 registers and no stack without them), the depth interval's 43 registers
-[B 2026-11-15: `cuobjdump -res-usage`]. The normal's voxels read once keep every pixel the six
-interpolations' [M 2026-11-15: the 1272 casts of "The depth interval", 96 of a wall fused at a slant
-at 2^-9 m voxels from poses that pin the column and the row at g = -2^-24, and 108 of the wall fused
-at a slant of "What the ray cast gives" in its three orientations, all four images of all three
-levels against the cast that interpolated the six ends, none differed; 50 of the 1272 casts'
-313,336,357 normals and 39,773 of the slanted walls' took the six interpolations, counted in a
-scratch copy]. Its time stands in docs/HARDWARE.md, "The ray cast".
+[B 2026-11-15: `cuobjdump -res-usage`]; with the color at level 0, 64 registers and 24 bytes of
+stack, the color carried as one 32-bit word of its three channels until it is written, where three
+bytes took 32 bytes of stack and 0.9 % to 1.8 % more time than without a color, the word 0.8 % at
+most [B 2026-11-17: `cuobjdump -res-usage`; M 2026-11-17: docs/HARDWARE.md, "The live view"]. The
+normal's voxels read once keep every pixel the six interpolations' [M 2026-11-15: the 1272 casts of
+"The depth interval", 96 of a wall fused at a slant at 2^-9 m voxels from poses that pin the column
+and the row at g = -2^-24, and 108 of the wall fused at a slant of "What the ray cast gives" in its
+three orientations, all four images of all three levels against the cast that interpolated the six
+ends, none differed; 50 of the 1272 casts' 313,336,357 normals and 39,773 of the slanted walls' took
+the six interpolations, counted in a scratch copy]. Its time stands in docs/HARDWARE.md, "The ray cast".
 
 **Where the time goes, and what was measured and not built** (`ray-cast-faster-by-measurement`;
 back-to-back medians at 640x400 and 1280x800, 2 mm then 8 mm, in the scenes of docs/HARDWARE.md,

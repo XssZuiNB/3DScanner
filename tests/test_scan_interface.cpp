@@ -35,6 +35,12 @@
 ///   the path of the write's part file: the scan unfinished with the reason, no trajectory and no
 ///   full model, the parameters holding gravity not estimated, and gravity's estimate.
 /// - The "too close" rule on built frames, and its notice in the state.
+/// - The live view: the empty one at the start, then, while the encoder keeps up, one for each
+///   fused frame, in order, with its timestamp and size, none at a lost frame, the newest staying
+///   the last fused frame's during the loss; two of them decoded against the scene's shaded picture
+///   within measured tolerances; an encoder held by its listener: the scan fuses on and the frames
+///   offered meanwhile have no view; at the scan's end the newest view is the last fused frame's,
+///   made at the end when its offer found the encoder busy.
 /// - The live model: in the walk, the empty one at the start, then live models taken repeatedly,
 ///   each within the limit, with its frame's pose bit for bit, at least the interval apart by the
 ///   times the scan interface took them, the spacing raised; the last one's points coarsely near
@@ -50,10 +56,12 @@
 #include "check.hpp"
 #include "frame_copy.hpp"
 #include "gpu_test_helpers.hpp"
+#include "scan/live_view.hpp"
 #include "scan/model_file.hpp"
 #include "scan/object_class.hpp"
 #include "scan/parameters_file.hpp"
 #include "scan/scan_interface.hpp"
+#include "scan/stage_parameters.hpp"
 #include "scan/trajectory_file.hpp"
 #include "scan/utc_time.hpp"
 #include "scan_comparison.hpp"
@@ -75,6 +83,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -91,6 +100,9 @@
 #include <vector>
 
 #include <Eigen/Geometry>
+
+#include <opencv2/core/mat.hpp>
+#include <opencv2/imgcodecs.hpp>
 
 namespace
 {
@@ -1342,6 +1354,401 @@ void check_too_close(const temporary_directory &directory)
 }
 } // namespace
 
+// ------------------------------------------------------------------------------- the live view
+
+/// How long a case waits for a live view, in s: 10 s [?: a choice, far above a view's encoding of
+/// a few ms, within the 60 s of a scan-level test].
+constexpr double view_wait_s = 10.0;
+
+/// The tolerances of a decoded live view against the scene's shaded picture where it shows a
+/// surface, a pixel's largest channel's error in levels of 0 to 255: the median and the 90th
+/// percentile, about 1.4 times the largest of the two views this test decodes, 3.512 and 8.492
+/// (99th percentile 82.15, at the box's edges and the range's far limit) [M 2026-11-17: this
+/// test]. They hold the JPEG's error, the cast's colors' (docs/methods/sparse-tsdf.md, "The ray
+/// cast") and the tracked pose's.
+constexpr double view_median_tolerance = 5.0;
+constexpr double view_p90_tolerance = 12.0;
+
+/// The tolerance of the background's pixels' error, the 90th percentile, in levels of 0 to 255:
+/// 2 [?: a choice], above the 0 measured, the JPEG's error on a flat grey [M 2026-11-17: this
+/// test].
+constexpr double view_background_tolerance = 2.0;
+
+/// The frames the held encoder's case lets the scan fuse while its listener holds the encoder: 10
+/// [?: a choice].
+constexpr std::uint64_t held_frames = 10;
+
+/// The frames of the held encoder's case: the walk's first 40 [?: a choice].
+constexpr std::size_t held_poses = 40;
+
+/// How long the case whose encoder keeps up lets the encoder become free after a view's listener
+/// has run, before the scan goes on: 20 ms [?: a choice]. The encoder is free within microseconds
+/// of its listener's return, and the scan renders and tracks the next frame, milliseconds, before
+/// it offers its view; the wait keeps a slow scheduling from skipping a view.
+constexpr std::chrono::milliseconds listener_margin{20};
+
+/// The live views a case's listener got, in order: it runs on the encoder's thread.
+struct view_log
+{
+    std::mutex mutex;                  ///< guards the rest
+    std::condition_variable published; ///< notified with each view
+    std::vector<gca::live_view> views; ///< each view published, as the listener got it
+};
+
+/// Counts the views with a frame a log holds.
+/// @param log [in] the log; its lock held by the caller.
+/// @return the views with a frame.
+std::size_t framed_views(const view_log &log)
+{
+    return static_cast<std::size_t>(std::count_if(log.views.begin(), log.views.end(),
+                                                  [](const gca::live_view &v) { return v.frame; }));
+}
+
+/// Shades the scene's picture as the live view shows it (docs/methods/tracking.md, "The live
+/// view"), in double: at a pixel whose ray first meets a surface within the depth range, its
+/// texture's color times live_view_ambient + (1 - live_view_ambient) cos, the cosine between the
+/// surface's normal toward the camera and the ray back to it; blue, green and red, as OpenCV
+/// decodes the JPEG.
+/// @param pose [in] the camera's pose, camera frame to the world frame.
+/// @param surfaces [in] the scene's known surfaces.
+/// @param range [in] the depth range of the cast, in m.
+/// @param u [in] the pixel's column.
+/// @param v [in] its row.
+/// @return blue, green and red, 0 to 255, unrounded; nothing where the ray meets no surface within
+///         the range, where the view shows the background.
+std::optional<std::array<double, 3>> shaded_scene(
+    const Eigen::Isometry3d &pose, const std::vector<gca_test::synthetic_surface> &surfaces,
+    const gca::organized_points_parameters &range, std::uint32_t u, std::uint32_t v)
+{
+    const Eigen::Vector3d ray =
+        pose.linear() * gca_test::pixel_ray(small_description.intrinsics, u, v);
+    const std::optional<gca_test::synthetic_hit> hit =
+        gca_test::first_hit(surfaces, std::nullopt, pose.translation(), ray);
+    if (!hit || hit->s < range.near_m || hit->s > range.far_m || hit->surface >= surfaces.size())
+        return std::nullopt;
+    const gca_test::synthetic_surface &met = surfaces[hit->surface];
+    Eigen::Vector3d normal = met.axis_u.cross(met.axis_v);
+    if (normal.dot(ray) > 0.0)
+        normal = -normal;
+    const double facing = -normal.dot(ray.normalized());
+    const double light =
+        gca::live_view_ambient + (1.0 - gca::live_view_ambient) * std::max(facing, 0.0);
+    const std::array<double, 3> rgb =
+        gca_test::texture_color(hit->texture, pose.translation() + hit->s * ray);
+    return std::array<double, 3>{rgb[2] * light, rgb[1] * light, rgb[0] * light};
+}
+
+/// A decoded live view against the scene's shaded picture.
+struct view_comparison
+{
+    bool decoded = false;           ///< whether the JPEG decoded to a picture of the view's size
+    std::vector<double> surface;    ///< each pixel's largest channel's |error| where the scene's
+                                    ///< picture shows a surface, in levels of 0 to 255
+    std::vector<double> background; ///< the same where it shows the background
+};
+
+/// Decodes a live view and compares it with the scene's shaded picture from the pose its frame was
+/// tracked at, pixel by pixel.
+/// @param view [in] the view, with a frame.
+/// @param pose [in] the pose tracking gave its frame, camera frame to the world frame.
+/// @param surfaces [in] the scene's known surfaces.
+/// @param range [in] the depth range of the cast, in m.
+/// @return the comparison; not decoded, with no errors, when the JPEG could not be decoded or is
+///         not of the view's size.
+view_comparison compare_view(const gca::live_view &view, const Eigen::Isometry3d &pose,
+                             const std::vector<gca_test::synthetic_surface> &surfaces,
+                             const gca::organized_points_parameters &range)
+{
+    view_comparison c;
+    const cv::Mat file(1, static_cast<int>(view.jpeg.size()), CV_8UC1,
+                       const_cast<std::uint8_t *>(view.jpeg.data()));
+    const cv::Mat picture = cv::imdecode(file, cv::IMREAD_COLOR);
+    if (picture.empty() || picture.cols != static_cast<int>(view.size.width) ||
+        picture.rows != static_cast<int>(view.size.height) || picture.type() != CV_8UC3)
+        return c;
+    c.decoded = true;
+    const double grey = gca::live_view_background;
+    for (int v = 0; v < picture.rows; v++)
+        for (int u = 0; u < picture.cols; u++)
+        {
+            const cv::Vec3b got = picture.at<cv::Vec3b>(v, u);
+            const std::optional<std::array<double, 3>> known =
+                shaded_scene(pose, surfaces, range, static_cast<std::uint32_t>(u),
+                             static_cast<std::uint32_t>(v));
+            const std::array<double, 3> expected = known.value_or(std::array{grey, grey, grey});
+            (known ? c.surface : c.background)
+                .push_back(std::max({std::abs(got[0] - expected[0]), std::abs(got[1] - expected[1]),
+                                     std::abs(got[2] - expected[2])}));
+        }
+    return c;
+}
+
+/// The live view while its encoder keeps up, and during tracking loss (docs/methods/tracking.md,
+/// "The live view"): the walk's first 30 frames, frames 10 to 14 without depth; the state's
+/// listener waits after each fused frame until that frame's view is published, and
+/// listener_margin more, so that the encoder is free for the next. The empty view at the start,
+/// then one view for each fused frame, in order, their versions rising by one, each with its
+/// frame's timestamp and the frames' size; none at a lost frame, where the newest view stays the
+/// last fused frame's; views of the frame before the loss and of the last frame decoded, against
+/// the scene's shaded picture from the poses tracking gave their frames, within measured
+/// tolerances; no failure.
+/// @param directory [in] the test's directory.
+void check_live_views(const temporary_directory &directory)
+{
+    gca_test::synthetic_source_options options = walk_options(loss_poses);
+    options.depth_gap = loss_gap;
+    short_case c("live views", directory, std::move(options));
+    view_log log;
+    bool each_waited = true;
+    bool loss_kept = true;
+    std::size_t lost_seen = 0;
+    std::optional<gca::live_view> before_loss;
+    c.begin(
+        [&c, &log, &each_waited, &loss_kept, &lost_seen, &before_loss](const gca::scan_state &s) {
+            if (s.phase != gca::scan_phase::scanning || !s.tracking)
+                return;
+            if (*s.tracking == gca::tracking_state::lost)
+            {
+                lost_seen++;
+                const gca::live_view now = c.scanner->latest_live_view();
+                loss_kept = loss_kept && before_loss && now.version == before_loss->version &&
+                            now.frame == before_loss->frame;
+                return;
+            }
+            // The encoder keeps up: this frame's view, its listener's return, then the next frame.
+            std::unique_lock<std::mutex> lock(log.mutex);
+            each_waited = log.published.wait_for(
+                              lock, std::chrono::duration<double>(view_wait_s),
+                              [&log, &s] { return framed_views(log) >= s.frames.fused; }) &&
+                          each_waited;
+            lock.unlock();
+            std::this_thread::sleep_for(listener_margin);
+            before_loss = c.scanner->latest_live_view();
+        },
+        false,
+        [&log](gca::scan_options &o) {
+            o.on_live_view = [&log](const gca::live_view &v) {
+                {
+                    const std::lock_guard<std::mutex> lock(log.mutex);
+                    log.views.push_back(v);
+                }
+                log.published.notify_all();
+            };
+        });
+    gca::command_reply started;
+    const gca::scan_state end = c.run(test_set(), started);
+    check(started.accepted && end.frames.lost >= loss_gap.frame_count &&
+              lost_seen == end.frames.lost,
+          "live views: the gap's frames lost, each seen");
+    check(each_waited, "live views: each fused frame's view published while the scan waited");
+    check(loss_kept, "live views: at each lost frame the newest view the last fused frame's");
+    check(end.live_view_failure.empty(),
+          ("live views: no failure; " + end.live_view_failure).c_str());
+
+    const std::filesystem::path scan = c.scans / end.scan;
+    const gca::read_result<std::vector<gca::trajectory_entry>> trajectory =
+        gca::read_trajectory(scan / "trajectory.txt");
+    check(trajectory.value.has_value(),
+          ("live views: the trajectory read; " + trajectory.reason).c_str());
+    if (!trajectory.value)
+        return;
+    const std::vector<gca::trajectory_entry> &entries = *trajectory.value;
+    const std::lock_guard<std::mutex> lock(log.mutex);
+    check(!log.views.empty() && !log.views.front().frame && log.views.front().jpeg.empty(),
+          "live views: the empty view first, at the scan's start");
+    bool versions = true;
+    bool fused_frames = true;
+    bool in_order = true;
+    bool described = true;
+    std::optional<std::uint64_t> last_frame;
+    std::size_t bytes = 0;
+    for (std::size_t k = 1; k < log.views.size(); k++)
+    {
+        const gca::live_view &v = log.views[k];
+        versions = versions && v.version == log.views[k - 1].version + 1;
+        if (!v.frame)
+        {
+            in_order = false;
+            continue;
+        }
+        const std::uint64_t f = *v.frame;
+        fused_frames = fused_frames && f < entries.size() && entries[f].pose.has_value();
+        in_order = in_order && (!last_frame || f > *last_frame);
+        described = described && f < entries.size() && v.timestamp_us == entries[f].timestamp_us &&
+                    v.size == small_description.size && !v.jpeg.empty();
+        last_frame = f;
+        bytes += v.jpeg.size();
+    }
+    const std::size_t framed = framed_views(log);
+    std::printf("live views: %zu views of %llu fused frames, %.1f KB a view\n", framed,
+                static_cast<unsigned long long>(end.frames.fused),
+                framed == 0 ? 0.0
+                            : 1e-3 * static_cast<double>(bytes) / static_cast<double>(framed));
+    check(versions, "live views: their versions rising by one");
+    check(framed == end.frames.fused, "live views: one view for each fused frame");
+    check(fused_frames, "live views: each view's frame fused, none lost");
+    check(in_order, "live views: the frames in order, each view with a frame after the first");
+    check(described,
+          "live views: each view with its frame's timestamp, the frames' size and a JPEG");
+
+    // The views of the frame before the loss and of the last frame, decoded.
+    const gca::organized_points_parameters range =
+        gca::tracking_parameters_of(test_set()).pyramid.range;
+    const std::vector<Eigen::Isometry3d> known = walk_poses_of();
+    for (const std::uint64_t f :
+         {std::uint64_t{loss_gap.first_frame - 1}, std::uint64_t{loss_poses - 1}})
+    {
+        const auto shown = std::find_if(log.views.begin(), log.views.end(),
+                                        [f](const gca::live_view &v) { return v.frame == f; });
+        if (shown == log.views.end() || f >= entries.size() || !entries[f].pose)
+        {
+            check(false, ("live views: the view of frame " + std::to_string(f)).c_str());
+            continue;
+        }
+        Eigen::Isometry3d tracked = Eigen::Isometry3d::Identity();
+        tracked.linear() = entries[f].pose->orientation.toRotationMatrix();
+        tracked.translation() = entries[f].pose->position_m;
+        const view_comparison cmp =
+            compare_view(*shown, known[0] * tracked, c.source.surfaces(), range);
+        const std::string what = "live views: frame " + std::to_string(f) + "'s view";
+        check(cmp.decoded && !cmp.surface.empty() && !cmp.background.empty(),
+              (what + " decoded, showing the scene and the background").c_str());
+        if (!cmp.decoded || cmp.surface.empty() || cmp.background.empty())
+            continue;
+        std::printf("%s, %zu bytes: the scene's %zu pixels against its shaded picture: median "
+                    "%.4g, 90th percentile %.4g, 99th percentile %.4g; the background's %zu: "
+                    "median %.4g, 90th percentile %.4g\n",
+                    what.c_str(), shown->jpeg.size(), cmp.surface.size(),
+                    gca_test::quantile(cmp.surface, 0.5), gca_test::quantile(cmp.surface, 0.9),
+                    gca_test::quantile(cmp.surface, 0.99), cmp.background.size(),
+                    gca_test::quantile(cmp.background, 0.5),
+                    gca_test::quantile(cmp.background, 0.9));
+        check_within((what + ": the scene's pixels' error, median").c_str(),
+                     gca_test::quantile(cmp.surface, 0.5), view_median_tolerance);
+        check_within((what + ": the scene's pixels' error, 90th percentile").c_str(),
+                     gca_test::quantile(cmp.surface, 0.9), view_p90_tolerance);
+        check_within((what + ": the background's pixels' error, 90th percentile").c_str(),
+                     gca_test::quantile(cmp.background, 0.9), view_background_tolerance);
+    }
+}
+
+/// A live view's encoder held (docs/methods/tracking.md, "The live view"): the listener of the
+/// scan's first view holds the encoder until the scan has fused held_frames more frames, or
+/// view_wait_s has passed. The scan fuses them meanwhile, so the frame path does not wait for the
+/// encoder; the frames offered while it is held have no view, not even the first of them, so the
+/// next view is of a frame at least held_frames later; after it, views come again, in order; no
+/// failure.
+/// @param directory [in] the test's directory.
+void check_live_view_held(const temporary_directory &directory)
+{
+    short_case c("live view held", directory, walk_options(held_poses));
+    std::mutex mutex;
+    std::condition_variable fused_more;
+    std::uint64_t fused = 0;
+    bool holding = false;
+    bool went_on = false;
+    std::uint64_t fused_while_held = 0;
+    std::vector<std::uint64_t> shown;
+    c.begin(
+        [&mutex, &fused_more, &fused](const gca::scan_state &s) {
+            {
+                const std::lock_guard<std::mutex> lock(mutex);
+                fused = s.frames.fused;
+            }
+            fused_more.notify_all();
+        },
+        false,
+        [&](gca::scan_options &o) {
+            o.on_live_view = [&](const gca::live_view &v) {
+                if (!v.frame)
+                    return;
+                std::unique_lock<std::mutex> lock(mutex);
+                shown.push_back(*v.frame);
+                if (shown.size() != 1)
+                    return;
+                holding = true;
+                const std::uint64_t at_hold = fused;
+                went_on = fused_more.wait_for(lock, std::chrono::duration<double>(view_wait_s),
+                                              [&] { return fused >= at_hold + held_frames; });
+                fused_while_held = fused - at_hold;
+            };
+        });
+    gca::command_reply started;
+    const gca::scan_state end = c.run(test_set(), started);
+    const std::lock_guard<std::mutex> lock(mutex);
+    std::printf("live view held: %llu frames fused while the listener held the encoder, %zu views "
+                "of %llu fused frames\n",
+                static_cast<unsigned long long>(fused_while_held), shown.size(),
+                static_cast<unsigned long long>(end.frames.fused));
+    check(started.accepted && holding,
+          "live view held: the first view's listener held the encoder");
+    check(went_on, "live view held: the scan fused frames while the encoder was held");
+    std::uint64_t largest_step = 0;
+    bool in_order = true;
+    for (std::size_t k = 1; k < shown.size(); k++)
+    {
+        in_order = in_order && shown[k] > shown[k - 1];
+        largest_step = std::max(largest_step, shown[k] - shown[k - 1]);
+    }
+    check(in_order && shown.size() >= 3, "live view held: views again after it, in order");
+    // Newest only: the frames offered while the listener held the encoder have no view, so the
+    // next view is of a frame offered after it returned.
+    check(shown.size() >= 2 && shown[1] >= shown[0] + held_frames && largest_step >= held_frames,
+          "live view held: the frames offered while the encoder was held without a view");
+    check(end.live_view_failure.empty(),
+          ("live view held: no failure; " + end.live_view_failure).c_str());
+}
+
+/// The live view at a scan's end (docs/methods/tracking.md, "The live view"): the walk's first 20
+/// frames; the listener of the first view, frame 0's, holds the encoder until the scan has fused
+/// every frame, so that the offers of frames 1 to 19 find it busy. At the end the encoder makes the
+/// last fused frame's view, handed over with the end: the views are frame 0's and frame 19's, and
+/// after the scan the newest is frame 19's; no failure.
+/// @param directory [in] the test's directory.
+void check_live_view_at_end(const temporary_directory &directory)
+{
+    short_case c("live view at the end", directory, walk_options(short_poses));
+    std::mutex mutex;
+    std::condition_variable fused_more;
+    std::uint64_t fused = 0;
+    bool went_on = false;
+    std::vector<std::uint64_t> shown;
+    c.begin(
+        [&mutex, &fused_more, &fused](const gca::scan_state &s) {
+            {
+                const std::lock_guard<std::mutex> lock(mutex);
+                fused = s.frames.fused;
+            }
+            fused_more.notify_all();
+        },
+        false,
+        [&](gca::scan_options &o) {
+            o.on_live_view = [&](const gca::live_view &v) {
+                if (!v.frame)
+                    return;
+                std::unique_lock<std::mutex> lock(mutex);
+                shown.push_back(*v.frame);
+                if (shown.size() == 1)
+                    went_on = fused_more.wait_for(lock, std::chrono::duration<double>(view_wait_s),
+                                                  [&] { return fused >= short_poses; });
+            };
+        });
+    gca::command_reply started;
+    const gca::scan_state end = c.run(test_set(), started);
+    const gca::live_view newest = c.scanner->latest_live_view();
+    const std::lock_guard<std::mutex> lock(mutex);
+    std::printf("live view at the end: %zu views, the newest of frame %lld\n", shown.size(),
+                newest.frame ? static_cast<long long>(*newest.frame) : -1LL);
+    check(started.accepted && went_on && end.frames.fused == short_poses,
+          "live view at the end: every frame fused while the first view's listener held");
+    check(shown == std::vector<std::uint64_t>{0, short_poses - 1},
+          "live view at the end: frame 0's view, then the last frame's, made at the end");
+    check(newest.frame == short_poses - 1 && !newest.jpeg.empty(),
+          "live view at the end: the newest view the last fused frame's");
+    check(end.live_view_failure.empty(),
+          ("live view at the end: no failure; " + end.live_view_failure).c_str());
+}
+
 /// The live model during tracking loss (docs/methods/tracking.md, "The live model"): the walk's
 /// first 30 frames, frames 10 to 14 without depth, a live model after every fused frame (an
 /// interval of 0): at each lost frame the live model is the one of the last fused frame, its
@@ -1419,6 +1826,9 @@ int main()
     check_written_after_refinement(directory);
     check_too_close(directory);
     check_live_model_loss(directory);
+    check_live_views(directory);
+    check_live_view_held(directory);
+    check_live_view_at_end(directory);
     gca_test::check_no_cuda_error("scan interface");
     std::printf("test_scan_interface: %.1f s\n",
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());

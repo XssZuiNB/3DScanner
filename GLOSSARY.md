@@ -48,6 +48,11 @@ The coarse model the scanner builds while a scan runs and shows to the operator,
 missed surfaces are seen before the scan stops.
 _Avoid_: preview cloud, draft
 
+**Live view**:
+The picture of the live model's surface, in its colors, as the camera sees it from where it is,
+which the operator watches while a scan runs: one for each tracked frame, the newest only.
+_Avoid_: preview, render, video
+
 **Refinement**:
 The work on a scan after the operator's stop that turns its frames into the full model.
 _Avoid_: post-processing, offline pass

@@ -79,12 +79,12 @@ public:
 
     /// The scan interface's listener (scan/scan_interface.hpp, on_state): logs each change of the
     /// phase, "a scan starts", "the start failed: <reason>", "scan <scan>: scanning", "scan
-    /// <scan>: refining, ..." and "scan <scan>: <outcome>, ...", and a live model that could not
-    /// be taken.
+    /// <scan>: refining, ..." and "scan <scan>: <outcome>, ...", a live model that could not be
+    /// taken and a live view that could not be made.
     /// @param state [in] the state published.
     /// @note On the scan thread alone. Allocates only for a line; compares the phase and the live
-    ///       model's failure with the last ones otherwise. A failed allocation ends the program
-    ///       (std::terminate): the function is noexcept.
+    ///       model's and the live view's failures with the last ones otherwise. A failed allocation
+    ///       ends the program (std::terminate): the function is noexcept.
     void on_state(const scan_state &state) noexcept;
 
 private:
@@ -92,6 +92,7 @@ private:
     std::function<void(const std::string &)> m_sink; ///< where the lines go
     scan_phase m_phase = scan_phase::idle; ///< the last phase seen; the scan thread's alone
     std::string m_live_failure; ///< the last live model's failure seen; the scan thread's alone
+    std::string m_view_failure; ///< the last live view's failure seen; the scan thread's alone
 };
 
 /// What the service runs with, beside the camera.

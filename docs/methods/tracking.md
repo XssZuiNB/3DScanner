@@ -16,10 +16,10 @@ copied for it (docs/adr/0002-own-reconstruction-code.md).
 
 Built: the tracker and the check (`src/tracking/tracker.*`; the test `tests/test_tracking.cpp`),
 and the scan's loop around them, with the path's steps 7 and 8, the sequence's writer, the
-published state, the "too close" notice (R36) and the live model ("The scan's loop", "The live
-model"; `src/scan/scan_interface.*`, `src/scan/live_model.*`; the tests
-`tests/test_scan_interface.cpp`, `tests/test_live_model.cpp`). Left to
-`relocalize-from-keyframes`: keyframes and the candidates they add for a lost frame. Left to
+published state, the "too close" notice (R36), the live model and the live view ("The scan's
+loop", "The live model", "The live view"; `src/scan/scan_interface.*`, `src/scan/live_model.*`,
+`src/scan/live_view.*`; the tests `tests/test_scan_interface.cpp`, `tests/test_live_model.cpp`).
+Left to `relocalize-from-keyframes`: keyframes and the candidates they add for a lost frame. Left to
 `tracking-thresholds-from-real-sequences`: the thresholds' values and ε, measured on real
 sequences.
 
@@ -58,7 +58,8 @@ A value for every frame (`gca::tracking_result`), one of:
 * **Failed**, with the reason: a frame or a state the tracker refuses, a registration refused or
   failed, or CUDA's error, which is cleared (`src/gpu/gpu_messages.hpp`). No pose. Nothing was
   fused, unless the failure is the fusion's own, which leaves what `sparse_tsdf::integrate()` says
-  it leaves. A scan ends on it.
+  it leaves, or the cast's after the fusion, which leaves the frame fused at its pose, the last
+  tracked one, and the surface unspecified. A scan ends on it.
 
 With each, the evidence the check judged: the registration's result (its end, transform, fitness,
 inlier RMSE, iterations, eigenvalues, and its last step's turn and shift, the values the
@@ -75,9 +76,17 @@ For each frame, on the caller's stream, in this order:
 2. **The pyramid** (`frame_pyramid::build()`): three levels of organized points, normals and
    intensity, within the object class's depth range.
 3. **The surface**: the ray cast of the live model from the last tracked pose P_L
-   (`sparse_tsdf::ray_cast()`), at the frame's intrinsics and the same depth range, every level
-   of the pyramid (docs/methods/sparse-tsdf.md, "The ray cast"). Before the first fused frame there
-   is no model: see "The first frame".
+   (`sparse_tsdf::ray_cast()`), at the frames' intrinsics and the same depth range, every level
+   of the pyramid, with the colors at level 0 the live view shows (docs/methods/sparse-tsdf.md,
+   "The ray cast"; "The live view"). It is cast right after the fusion that made P_L the last
+   tracked pose (step 6), not when the next frame comes: the model and P_L change only there, so
+   it is the cast the next frame would make and the images the registration reads are the same bit
+   for bit, only the time of the cast moves [M 2026-11-17: the replay's trajectory of a synthetic
+   walk of 479 frames and of the user's first scan, byte for byte cf8a02a's, docs/HARDWARE.md,
+   "The live view"]; it is the view of the frame just fused from its own pose, and its GPU work
+   runs while the scan waits for the next frame. A lost frame casts nothing: it leaves P_L and the
+   model as they were, and the surface with them. Before the first fused frame there is no model:
+   see "The first frame".
 4. **The registration** of the frame's pyramid against the surface's levels, from the identity
    (`registration::align()`; docs/methods/registration.md, "Input": tracking passes the identity
    when the surface is ray cast from the last pose). Its transform T carries the frame's camera
@@ -88,16 +97,18 @@ For each frame, on the caller's stream, in this order:
 6. **The fusion**, only when the check passes: `sparse_tsdf::integrate()` of the GPU frame with
    the pyramid's level 0 points at P, which allocates the blocks near the frame's surface and
    updates their voxels. P becomes the last tracked pose, the frame's timestamp the last tracked
-   time.
+   time, and the surface is cast from it (step 3).
 
-On tracking loss P_L and the last tracked time stay as they were, and the model is not touched.
+On tracking loss P_L and the last tracked time stay as they were, and the model and its surface are
+not touched.
 
 **The buffers** of every step are requested from the pool (`src/gpu/gpu_pool.hpp`) by one request
 before the first frame, for one frame size, and the pool is closed then; `track()` allocates
 nothing (R29). Besides the live model's sparse TSDF, whose device memory is the memory budget,
-they take 25.1 MB of device memory and 1.28 MB of pinned memory at 640x400, 100.4 MB and 5.12 MB at
+they take 25.9 MB of device memory and 1.28 MB of pinned memory at 640x400, 103.5 MB and 5.12 MB at
 1280x800 [S: computed: the GPU frame 5 bytes a pixel and its staging buffer as much, the pyramid
-and the surface 29 bytes a pixel of each level, the surface's tiles 0.125 bytes a pixel of level 0,
+and the surface 29 bytes a pixel of each level, the surface's colors 3 bytes a pixel of level 0 and
+its tiles 0.125,
 the registration 12 bytes a pixel of each level and 280 bytes a block of 32 x 8 pixels; the levels
 hold 1 + 1/4 + 1/16 of the pixels]. The live model is requested first, so that a closed pool checks
 every parameter without device memory (`sparse_tsdf::request()`).
@@ -105,10 +116,10 @@ every parameter without device memory (`sparse_tsdf::request()`).
 **The waits**: the upload's wait on its own staging buffer, which returns at once when the frame
 before was waited for (`src/gpu/gpu_frame.hpp`), and the registration's one written wait per
 iteration, which also waits for the stream's earlier work, the previous frame's fusion included.
-Nothing else waits: the fusion is queued and the call returns; the next frame's registration, or
-the caller's own wait, finds it done. A replay's measurement alone adds a wait after each stage
-("The stages' times"). What comes back to the host is the registration's 280 bytes
-per iteration (docs/methods/registration.md, "On the GPU") and nothing more.
+Nothing else waits: the fusion and the cast after it are queued and the call returns; the next
+frame's registration, or the caller's own wait, finds them done. A replay's measurement alone adds
+a wait after each stage ("The stages' times"). What comes back to the host is the registration's
+280 bytes per iteration (docs/methods/registration.md, "On the GPU") and nothing more.
 
 ## The models' frame and the first frame
 
@@ -189,9 +200,10 @@ speed times Δt, the time from the last tracked frame's timestamp to this frame'
 ## Tracking loss: what a lost frame is tried against
 
 A lost frame changes nothing of the tracker's state: the last tracked pose, its time and the model
-stay. Each following frame goes through the same path: it is registered against the model's
-surface ray cast from the last tracked pose, from the identity, under the same check, Δt counted
-from the last tracked frame. The first that passes is fused and tracking goes on from it.
+stay, and with them the surface cast from that pose after its fusion. Each following frame goes
+through the same path: it is registered against that surface, from the identity, under the same
+check, Δt counted from the last tracked frame. The first that passes is fused and tracking goes on
+from it.
 `relocalize-from-keyframes` adds the keyframes as further candidates, after the last tracked pose
 (the spec).
 
@@ -306,11 +318,14 @@ this order:
    0.335 ms at 1280x800 [M 2026-11-16: docs/HARDWARE.md, "The per-frame path's stages"].
 4. **Tracking** (`tracker::track()`, steps 1 to 6 above). The frame counts as taken, and as fused
    or lost. A frame tracking fails on ends the scan (`end` `tracking_failed`): it counts as taken,
-   neither fused nor lost, and goes neither into the sequence nor into the trajectory.
+   neither fused nor lost, and goes neither into the sequence nor into the trajectory. When the
+   failure is the ray cast's after the fusion, the frame is in the live model, which only the live
+   view and the live model show; the scan's files hold nothing of it.
 5. **The writer** takes the frame with its pose or the mark of tracking loss (step 7); a failure
    ends the scan (`writer_failed`).
-6. **The live model**, after a fused frame, when its interval has passed ("The live model"); never
-   after a lost frame.
+6. **The live view and the live model**, after a fused frame: the live view is offered to its
+   encoder, which takes it when free and skips it when busy ("The live view"); then the live model,
+   when its interval has passed ("The live model"). Neither after a lost frame.
 7. **The state** is published for the frame (step 8): the counts, the tracking state with the
    condition that failed when lost, and the notice; no lock is held while the listener runs.
 8. **The commands** queued meanwhile are answered: a second start is refused, a stop or a discard
@@ -318,8 +333,9 @@ this order:
    answered here, after the first frame. Then the next frame is asked for; a timeout, a failure or
    the end of the source ends the scan with its reason.
 
-After the loop the source is closed and the writer closed, so that the sequence holds every frame
-taken but the one tracking failed on; the last frame's GPU work is waited for and the tracker,
+After the loop the source is closed, the live view's encoder finished with the last fused frame's
+view ("The live view") and the writer closed, so that the sequence holds every frame taken but the
+one tracking failed on; the last frame's GPU work is waited for and the tracker,
 which holds the live model, is freed as the function that runs the loop returns, so that it
 cannot outlive the loop, as one sparse TSDF exists at a time; the parameters are written
 (docs/SCAN_FILES.md); refinement fuses the sequence at the full voxel size
@@ -396,6 +412,94 @@ tracking gave the frame they were taken at, at most `live_model_points` of them,
   and 8): a block's time is its own work's latency, not its edges' [?: inferred, not measured
   apart].
 
+## The live view
+
+The scan interface publishes the live view beside the state (`src/scan/live_view.hpp`; the user's
+decision of 2026-11-17, brief §7, 46): the picture of the live model's surface as the camera sees
+it from the pose tracking gave a frame, after that frame's fusion, in the model's colors lit
+lightly by the surface's normal, as a JPEG file with the frame's index, its timestamp and the
+picture's size; one for each tracked frame while its encoder keeps up. It is the fused surface
+from the camera's view, as commercial scanners show while they scan, in place of the live model's
+points, which come two times a second and thin as the model grows (the user's first scans with the
+service: "画面一跳一跳的没法使用"); `page-shows-the-live-view` puts it on the page and takes the
+live model out.
+
+* **Which cast.** The surface the path casts for the next frame's registration ("The path of a
+  frame", step 3), right after the frame's fusion: the model with the frame in it, from the frame's
+  pose, at its intrinsics and the object class's depth range. No second cast: one from the new pose
+  after the fusion, beside the one at the next frame's start, would add a cast to every frame,
+  5.989 ms of the 11.068 ms a frame took at 640x400 (the replay's medians) and 14.310 ms paced at
+  the governor's 306 MHz [M 2026-11-15, 2026-11-16: docs/HARDWARE.md, "The ray cast", "The replay's
+  frame time"]; and the cast at the next frame's start, from the last tracked pose, would show the
+  model without that frame from the pose before it, one frame behind. Cast after the fusion, the one
+  cast is both the next frame's surface and the frame's view: the replay's frame time 9.93 to
+  10.06 ms against cf8a02a's 10.08 ms, its trajectory byte for byte cf8a02a's [M 2026-11-17:
+  docs/HARDWARE.md, "The live view"].
+* **The colors**: the cast's at level 0 (docs/methods/sparse-tsdf.md, "The ray cast"), the
+  trilinear interpolation of the 8 voxels' colors at the crossing, each voxel holding the running
+  average of the colors of the frames that observed it.
+* **The shading**, the model's color lit lightly by the normal (the user's choice of 2026-11-17,
+  "模型颜色加轻度光照", brief §7, 49): a pixel with a normal n, a unit vector toward the camera,
+  and its point p in the camera frame shows its color c as c (a + (1 - a) max(0, n · (-p / |p|))),
+  each channel rounded to the nearest integer, a = 0.6 and 1 - a = 0.4 [?: initial]: Lambert's
+  cosine law [S: J. H. Lambert, Photometria, 1760] with the light at the camera [?: a choice, a
+  headlight], so that a surface facing the camera shows its color and one seen at a slant darkens
+  toward 0.6 of it, which shows the shape where the color shows none. A valid pixel without a
+  normal shows its color unlit; a pixel whose ray met no surface shows the background,
+  (48, 48, 48) [?: initial: a dark grey, so that a black object stands out from it]. A kernel of
+  one thread a pixel, in the stages' block of 32 x 8, reads the surface's level 0 and writes the
+  picture in OpenCV's order, blue, green, red, so that the encoder takes it without a conversion.
+* **To the host.** After a fused frame has gone to the writer, the scan thread offers its view:
+  when the encoder is free, it queues on the scan's stream the shading into a picture on the GPU,
+  the picture's copy into pinned memory and an event after them, then hands the frame's index,
+  timestamp and size to the encoder's thread and goes on; when the encoder is busy, the frame has
+  no view: skipped, never queued. One view is in flight at a time, the newest a free encoder took,
+  and the scan thread never waits for the encoder: a view costs the frame the shading and the copy
+  on the GPU and the offer on the host.
+* **The encoder**: a thread of the scan's own, started with the scan's buffers and ended with
+  them, which finishes the view it was handed first. It waits for the event (cudaEventSynchronize
+  on an event made with cudaEventBlockingSync, so that the thread sleeps rather than spins
+  [S: cuda_runtime_api.h, CUDA 12.6]), encodes the pinned picture with OpenCV's `imencode` as a
+  JPEG of quality 85 [?: a choice; its bytes and time below], publishes it, calls the live view's
+  listener, and is free when the listener has returned. So the frames offered while the listener
+  runs have no view, and a view published is never older than its frame's offer by more than one
+  view's making: newest only, not a queue of one. JPEG on the CPU is the first choice (the user's
+  answer, the ticket's Comments); the board's JPEG engine is not tried unless the CPU's time asks
+  for it [?].
+* **At the scan's end** the newest view shows the last fused frame: the scan thread waits until
+  the encoder is free (the end may wait), and when that frame's view was skipped it queues it, the
+  surface unchanged since (a lost frame casts nothing), and hands it over together with the end,
+  in one step of the encoder's lock, so that the thread makes it before it ends
+  (`live_view_encoder::finish()`). Not after a frame tracking failed on, whose failed cast may
+  leave the surface unspecified.
+* **Its publication**: under a lock of its own, neither the state's nor the live model's: the
+  encoder's thread swaps the new view in, a reader copies the newest
+  (`scan_interface::latest_live_view()`). A scan's start publishes an empty view, without a frame.
+  A lost frame offers nothing: the newest view stays as it is, and the state says loss.
+* **A failure**: CUDA refusing the shading's launch, the copy or the event's record on the scan
+  thread, or failing in the event's wait on the encoder's, and `imencode` refusing the picture:
+  no view is published, the reason goes into the state's `live_view_failure`, which the service
+  logs (docs/SERVICE.md), and the scan goes on. A failure on the scan thread is its offer's, and
+  the next tracked frame offers its view; the encoder's reaches the state through the next offer,
+  which reports it and queues nothing, one value for one outcome [?: a choice], so the offer after
+  it is the next to queue a view. No test reaches it: it takes a CUDA failure in the view's work
+  alone, as the live model's does.
+* **Its memory**, requested with the tracker's buffers before the pool closes: the picture on the
+  GPU and its pinned copy, 3 bytes a pixel of level 0 each, 0.77 MB at 640x400 and 3.07 MB at
+  1280x800 [S: computed], beside the surface's colors (the buffers of "The path of a frame"); one
+  event; on the host the bytes of the JPEG the encoder fills, reserved for 3 bytes a pixel with
+  its request, which it swaps with the newest view's, reserved as much when the scan interface is
+  built. The encoder's thread allocates for the JPEG (`imencode` and libjpeg), off the scan
+  thread.
+* **Its cost** at 640x400 [M 2026-11-17: docs/HARDWARE.md, "The live view"]: the colors add 0.8 %
+  at most to the cast back to back and 0.5 % paced; the shading and the copy take 0.29 ms on the
+  GPU back to back and 0.91 ms paced, the offer 0.02 to 0.06 ms on the scan thread; the encoder
+  publishes a view 2.3 ms after the offer back to back and 5.5 ms paced, `imencode` taking 1.9 ms
+  and 4.6 ms of it; a view of the synthetic scenes takes 26 to 31 KB. The replay's `live_view`
+  column, the shading and the copy with the measurement's wait, is a median 0.182 ms on the
+  synthetic walk and 0.204 ms on the user's first scan with the service, every tracked frame of
+  both with a view.
+
 ## The stages' times
 
 For a measurement, the replay tool hands the scan interface a stage clock
@@ -413,19 +517,22 @@ The stages, each by the name the time lines print:
 | `too_close` | the scan's loop, step 3: the "too close" notice | no |
 | `upload` | the path, step 1: the upload | yes |
 | `pyramid` | the path, step 2: the pyramid | yes |
-| `ray_cast` | the path, step 3: the surface, the live model's ray cast | yes |
+| `ray_cast` | the path, step 3: the surface, the live model's ray cast after the fusion | yes |
 | `registration` | the path, step 4: the registration | yes, already idle |
 | `check` | the path, step 5: the check | no |
 | `fusion` | the path, step 6: the fusion | yes |
 | `writer` | the scan's loop, step 5: the writer takes the frame | no |
 | `live_model` | the scan's loop, step 6: the live model, when the frame takes one | its own waits |
+| `live_view` | the scan's loop, step 6: the live view's shading and copy, when a free encoder takes the frame's | yes |
 
-A stage a frame does not run takes 0: the ray cast before the first fused frame, the fusion of a
-frame in tracking loss, the stages after the one that failed. Every other stage takes more than 0
-but `room` and `check`, host steps that can take less than the lines' 0.0005 ms and print 0.000
+The columns stand in the table's order; the stages run in the path's, the ray cast after the fusion
+and the live view before the live model. A stage a frame does not run takes 0: the ray cast and the
+fusion of a frame in tracking loss, the stages after the one that failed. Every other stage takes
+more than 0 but `room` and `check`, host steps that can take less than the lines' 0.0005 ms and print 0.000
 (`room` did in 2 of 1440 frames [M 2026-11-16: docs/HARDWARE.md, "The replay's frame time"]), and
 `live_model`, which on a frame that takes none is the pacing's decision alone and prints 0.000 or
-nearly; the scan's first frame takes one, and its `live_model` holds the extraction's time.
+nearly; the scan's first frame takes one, and its `live_model` holds the extraction's time; and
+`live_view`, which on a lost frame and on one whose encoder is busy is the offer's test alone.
 The waits serialize the host and the GPU, which overlap without them (the fusion runs while the
 next frame's "too close" pass and upload run on the host), so a frame takes longer with the clock
 than without it (docs/HARDWARE.md, "The replay's frame time"). A live scan has no clock: each use
@@ -438,14 +545,14 @@ measurement tickets read them, and ctest `replay` parses them as written here.
 
 - With `--times`, one time line on stdout for each frame the loop handles, as the frame ends:
 
-      frame <index> <state> room <t> too_close <t> upload <t> pyramid <t> ray_cast <t> registration <t> check <t> fusion <t> writer <t> live_model <t> total <t>
+      frame <index> <state> room <t> too_close <t> upload <t> pyramid <t> ray_cast <t> registration <t> check <t> fusion <t> writer <t> live_model <t> live_view <t> total <t>
 
   `<index>` is the frame's index, `<state>` `tracking`, `lost`, `failed` or `not_taken` (a frame
   the writer had no room for, which a replay does not have), each `<t>` a time in ms with three
   decimals, the stages in the table's order and `total` the frame's time. The stages add up to
   `total` within 0.1 ms, the margin ctest `replay` checks: 0.027 ms at most in replays of 1440
   frames at 640x400 and 720 at 1280x800, 0.004 ms in 6 runs of the test's 30 frames
-  [M 2026-11-16: docs/HARDWARE.md, "The replay's frame time"], the rounding of ten times to
+  [M 2026-11-16: docs/HARDWARE.md, "The replay's frame time"], the rounding of eleven times to
   0.001 ms among it.
 - Last, when the scan was refined, on stdout:
 

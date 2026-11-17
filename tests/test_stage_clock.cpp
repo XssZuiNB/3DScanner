@@ -32,14 +32,14 @@ using gca_test::check;
 
 /// The names the time lines print, in the path's order (docs/methods/tracking.md, "The stages'
 /// times").
-const std::vector<std::string> expected_names = {"room",     "too_close",    "upload", "pyramid",
-                                                 "ray_cast", "registration", "check",  "fusion",
-                                                 "writer",   "live_model"};
+const std::vector<std::string> expected_names = {"room",     "too_close",    "upload",   "pyramid",
+                                                 "ray_cast", "registration", "check",    "fusion",
+                                                 "writer",   "live_model",   "live_view"};
 
 /// Each stage's name, in the order of the enumerators.
 void test_names()
 {
-    check(gca::path_stage_count == expected_names.size(), "names: ten stages");
+    check(gca::path_stage_count == expected_names.size(), "names: eleven stages");
     for (std::size_t k = 0; k < gca::path_stage_count; k++)
         check(gca::name_of(static_cast<gca::path_stage>(k)) == expected_names[k],
               ("names: stage " + std::to_string(k) + " is " + expected_names[k]).c_str());
@@ -142,7 +142,8 @@ void test_host_stages()
     check(first.index == 3 && first.state == gca::tracking_state::lost,
           "host stages: the first frame's index and state");
     check(room >= 20.0 && checked >= 10.0, "host stages: each stage's time since the mark before");
-    check(zeros == 8, "host stages: the stages not marked are 0");
+    check(zeros == static_cast<int>(gca::path_stage_count) - 2,
+          "host stages: the stages not marked are 0");
     check(sum <= first.total_ms && first.total_ms - sum < host_sum_margin_ms,
           "host stages: the stages add up to the frame's time");
     const gca::frame_times &second = seen[1];

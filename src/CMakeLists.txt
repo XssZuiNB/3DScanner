@@ -15,7 +15,8 @@
 #                        host; Eigen)
 #   types <- camera <- scan (Eigen, OpenCV's core)
 #   scan, tracking, refinement, separation <- scan_interface (the scan interface with its scan
-#                                  thread, the stages' parameters of an object class's set)
+#                                  thread, the stages' parameters of an object class's set, the
+#                                  live view's shading and encoder; OpenCV's imgcodecs)
 #   scan_interface <- web (the web layer's routes, WebSocket and messages; cpp-httplib, threads)
 # Every library includes from src/ ("gpu/gpu_pool.hpp"); types carries that directory.
 
@@ -107,6 +108,7 @@ target_link_libraries(gpu PUBLIC types camera CUDA::cudart)
 add_library(
     geometry
     STATIC
+    geometry/color_channel.cuh
     geometry/float3_eigen.cuh
     geometry/float3_ops.cuh
     geometry/frame_pyramid.cu
@@ -223,13 +225,16 @@ target_link_libraries(scan PUBLIC types camera Eigen3::Eigen PRIVATE opencv_core
 # ---------------------------------------------------------------- scan_interface
 # The scan interface's library, beside the host-only scan: the scan interface with its scan thread
 # (scan/scan_interface.hpp), which runs tracking and refinement, the taking of its live models
-# (scan/live_model.hpp), and the stages' parameters of an object class's set
+# (scan/live_model.hpp), its live views with their shading kernel and their encoder's thread
+# (scan/live_view.hpp), and the stages' parameters of an object class's set
 # (scan/stage_parameters.hpp), the one copy of each conversion.
 add_library(
     scan_interface
     STATIC
     scan/live_model.cpp
     scan/live_model.hpp
+    scan/live_view.cu
+    scan/live_view.hpp
     scan/scan_interface.cpp
     scan/scan_interface.hpp
     scan/stage_parameters.cpp
@@ -237,9 +242,10 @@ add_library(
 )
 # PUBLIC: the headers hold scan's object class and parameters, camera's frame source and writer,
 # tracking's, registration's and fusion's parameters; refinement fuses the sequence; the thread
-# library for the scan thread. PRIVATE: separation estimates gravity at refinement.
+# library for the scan thread and the live view's encoder. PRIVATE: separation estimates gravity at
+# refinement; OpenCV encodes the live view as a JPEG.
 target_link_libraries(scan_interface PUBLIC scan tracking refinement Threads::Threads
-                      PRIVATE separation)
+                      PRIVATE separation opencv_core opencv_imgcodecs)
 
 # ---------------------------------------------------------------- web
 # The web layer (docs/ROUTES.md): the routes and the WebSocket over the scan interface on

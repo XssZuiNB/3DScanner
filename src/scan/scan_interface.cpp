@@ -134,6 +134,7 @@ scan_interface::scan_interface(const scan_options &options, frame_source &source
     : m_options(options)
     , m_source(source)
     , m_writer(writer)
+    , m_views(options.stream_size, options.on_live_view)
 {
     for (held_live_model *held : {&m_live, &m_live_working})
     {
@@ -179,6 +180,11 @@ live_model scan_interface::latest_live_model() const
 {
     const std::lock_guard<std::mutex> lock(m_live_mutex);
     return m_live.value;
+}
+
+live_view scan_interface::latest_live_view() const
+{
+    return m_views.latest();
 }
 
 std::future<command_reply> scan_interface::post(command c)
@@ -361,6 +367,17 @@ void scan_interface::take_live_model(live_model_taker &taker, const sparse_tsdf 
         m_options.on_live_model(m_live.value);
 }
 
+void scan_interface::offer_live_view(live_view_encoder &encoder, const model_surface &surface,
+                                     std::uint64_t frame, std::uint64_t timestamp_us,
+                                     cudaStream_t stream) noexcept
+{
+    const live_view_offer offered = encoder.offer(surface, frame, timestamp_us, stream);
+    if (offered.status != live_view_offer_status::failed)
+        return;
+    m_working.live_view_failure = offered.message;
+    publish();
+}
+
 void scan_interface::finish(const std::filesystem::path &directory, scan_requests &requests,
                             scan_outcome outcome, std::string message) noexcept
 {
@@ -421,9 +438,16 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
         pool, m_options.live_model_points, requested.granted.live_model().layout());
     if (requested_taker.status != request_status::granted)
         return start_failed("the GPU's buffers: the live model's: " + requested_taker.message);
+    // The encoder's views read the tracker's surface on the GPU, on the scan's stream, whose work
+    // is waited for at the loop's end, before the tracker is freed.
+    request_result<live_view_encoder> requested_encoder =
+        live_view_encoder::request(pool, m_options.stream_size, m_views);
+    if (requested_encoder.status != request_status::granted)
+        return start_failed("the GPU's buffers: the live view's: " + requested_encoder.message);
     pool.close();
     tracker live = std::move(requested.granted);
     live_model_taker taker = std::move(requested_taker.granted);
+    live_view_encoder encoder = std::move(requested_encoder.granted);
 
     const open_result opened = m_source.open(m_options.stream_size);
     if (!opened.opened)
@@ -489,6 +513,9 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
     // times"); a live scan has no clock, and each use below is skipped.
     stage_clock *const clock = m_options.stage_times;
     std::optional<std::uint64_t> last_index;
+    // The last fused frame, whose view the encoder makes at the end when it skipped it.
+    std::optional<std::uint64_t> last_fused;
+    std::uint64_t last_fused_timestamp_us = 0;
     while (true)
     {
         if (last_index && current.index() > *last_index + 1)
@@ -499,8 +526,10 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
         // What tracking made of the frame; none while it is not taken.
         std::optional<tracking_state> fate;
         // Room first, then the stages, then the push, so that no frame is fused that is not
-        // written (camera/sequence_writer.hpp, has_room()); a frame fused and then refused by a
-        // failing writer is the one exception (docs/SCAN_FILES.md, "Parameters").
+        // written (camera/sequence_writer.hpp, has_room()). The two exceptions end the scan: a
+        // frame fused and then refused by a failing writer (docs/SCAN_FILES.md, "Parameters"), and
+        // a frame whose ray cast after its fusion failed, which tracking reports as failed: it is
+        // in the live model, not in the sequence (docs/methods/tracking.md, "The scan's loop").
         const bool room = m_writer.has_room();
         if (clock != nullptr)
             clock->mark(path_stage::room);
@@ -530,8 +559,9 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
             m_working.tracking = tracked.state;
             m_working.lost_cause = tracked.outcome;
             // The push swaps the frame's buffers for a free slot's (camera/sequence_writer.hpp), so
-            // the frame's index is kept before it.
+            // the frame's index and timestamp are kept before it.
             const std::uint64_t index = current.index();
+            const std::uint64_t timestamp_us = current.timestamp_us();
             const push_result pushed = m_writer.push(
                 current, fused ? frame_tracking{*tracked.pose} : frame_tracking{tracking_loss{}});
             if (clock != nullptr)
@@ -545,7 +575,23 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
                     clock->end(fate);
                 break;
             }
-            // The live model, after the frame's fusion and its push, never on a lost frame.
+            // The live view, then the live model, after the frame's fusion and its push, never on
+            // a lost frame (docs/methods/tracking.md, "The scan's loop", step 6).
+            if (fused)
+            {
+                last_fused = index;
+                last_fused_timestamp_us = timestamp_us;
+                offer_live_view(encoder, live.surface(), index, timestamp_us, stream);
+            }
+            if (clock != nullptr)
+            {
+                const step_result waited = clock->mark_after(path_stage::live_view, stream);
+                if (!waited.done)
+                {
+                    m_working.live_view_failure = waited.message;
+                    publish();
+                }
+            }
             if (fused)
                 take_live_model(taker, live.live_model(), index, *tracked.pose, stream);
             if (clock != nullptr)
@@ -574,6 +620,15 @@ scan_interface::scanned scan_interface::run_scanning(command &c, const start_req
     made.stop = now_utc();
     m_source.close();
     note_property_refusals();
+    // The newest view shows the last fused frame (docs/methods/tracking.md, "The live view"); not
+    // after a frame tracking failed on, which may leave the surface unspecified.
+    if (last_fused && made.end != scan_end::tracking_failed)
+    {
+        const step_result finished =
+            encoder.finish(live.surface(), *last_fused, last_fused_timestamp_us, stream);
+        if (!finished.done)
+            m_working.live_view_failure = finished.message;
+    }
     const write_result closed = m_writer.close();
     if (!closed.written && made.end != scan_end::writer_failed)
     {
@@ -602,10 +657,12 @@ void scan_interface::run_scan(command &c, cudaStream_t stream) noexcept
     m_working.outcome = scan_outcome::none;
     m_working.outcome_message.clear();
     m_working.live_model_failure.clear();
+    m_working.live_view_failure.clear();
     m_working.property_refusals.clear();
     m_refusals_noted.reset();
     m_refused = {};
     clear_live_model();
+    m_views.clear();
     publish();
 
     scan_requests requests;

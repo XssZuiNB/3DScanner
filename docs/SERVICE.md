@@ -106,6 +106,7 @@ as not taken. Every line starts with
 | `Color at the start: ...`, `Color before the hold: ...`, `Color while held: ...`, `Color after: ...` | the hold's readings of the five properties (`src/camera/color_hold.hpp`, `reading_line()`), as `orbbec_viewer --hold-color` prints them (AGENTS.md §3) |
 | `Color: the camera refused to <read\|switch> <property> (<number>) ...` | a read or write the camera refused (`refusal_line()`) |
 | `a live model could not be taken: <reason>` | the state's `live_model_failure` changed to it |
+| `a live view could not be made: <reason>` | the state's `live_view_failure` changed to it (docs/methods/tracking.md, "The live view"; not in the state's message, docs/ROUTES.md) |
 | `stopping on <SIGINT\|SIGTERM\|SIGHUP>` | a stop signal came; the parts end |
 | `stopped` | the parts ended, the last line |
 | `<what>` | an exception ended the service (`main`): exit 1 |

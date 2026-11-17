@@ -24,6 +24,9 @@
 ///   scan_in_progress cannot tell (exit 3).
 /// - Run C: SIGHUP while idle ends the service.
 /// - scan_in_progress refuses an unknown argument with its usage (exit 2).
+/// - The log's lines of a live model that could not be taken and a live view that could not be
+///   made, from states given to the log's listener: each once when its failure changes to a reason,
+///   none when it stays or is cleared.
 /// The test prints its time; ctest ends it after 120 s [?: a choice, twice a scan-level test's 60 s
 /// (the stage brief)], so that a stop that never ends fails it.
 
@@ -513,10 +516,38 @@ void check_switches(const stand_in_camera &camera, std::size_t from, const std::
     check(camera.table.at(2000).value == 1 && camera.table.at(2003).value == 1,
           (what + ": both switches on, as before the scan").c_str());
 }
+
+/// The log's lines of the live model's and the live view's failures (docs/SERVICE.md, "Log lines"),
+/// from states given to the log's listener as the scan thread gives them: a line when a failure
+/// changes to a reason, none when it stays as it was or is cleared.
+void check_failure_lines()
+{
+    std::vector<std::string> lines;
+    gca::service_log log([&lines](const std::string &line) { lines.push_back(line); });
+    gca::scan_state state;
+    state.live_model_failure = "the extraction failed";
+    log.on_state(state);
+    log.on_state(state);
+    state.live_view_failure = "the copy was refused";
+    log.on_state(state);
+    log.on_state(state);
+    state.live_model_failure.clear();
+    state.live_view_failure.clear();
+    log.on_state(state);
+    state.live_view_failure = "the encoding failed";
+    log.on_state(state);
+    const std::vector<std::string> expected = {
+        "scanner_service: a live model could not be taken: the extraction failed",
+        "scanner_service: a live view could not be made: the copy was refused",
+        "scanner_service: a live view could not be made: the encoding failed"};
+    for (const std::string &line : lines)
+        std::printf("failure lines: %s\n", line.c_str());
+    check(lines == expected, "failure lines: one for each failure that changed to a reason");
+}
 } // namespace
 
-/// Makes the stop signals the stop first, before any thread starts, then runs the service's three
-/// runs and the refused command line.
+/// Makes the stop signals the stop first, before any thread starts, then checks the failures' log
+/// lines and runs the service's three runs and the refused command line.
 /// @param argc [in] the argument count.
 /// @param argv [in] argv[1]: the path of scan_in_progress.
 /// @return 0 when every check passed, 1 otherwise.
@@ -529,6 +560,7 @@ int main(int argc, char *argv[])
     }
     gca::install_stop_signals();
     const auto begin = std::chrono::steady_clock::now();
+    check_failure_lines();
     const gca_test::temporary_directory directory("test_scanner_service");
     const std::filesystem::path scans = directory / "scans";
     const std::filesystem::path page = directory / "page";

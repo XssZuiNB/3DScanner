@@ -426,6 +426,68 @@ guard, the kernel log empty after each run.
   printed 0.002 ms at most; a frame's stages added up to its total within 0.032 ms. The replay
   without `--times` took 12.283 ms a frame [M 2026-11-17, 00:00:28 to 00:00:37].
 
+**The live view** (docs/methods/tracking.md, "The live view"): MAXN_SUPER by `nvpmodel -q`, under
+the build lock and the memory guard, nothing else running; the kernel log showed only a keyboard
+plugged in and out at 11:02, benign ("Kernel log") [M 2026-11-17, 10:25 to 11:06].
+
+* **The colors in the cast**: the timing program of "The ray cast" on its scenes and its sparse
+  TSDF of 273 MB, 10 s per case after 3 s, the cast of cf8a02a against the cast with the colors at
+  level 0 (`sparse_tsdf::ray_cast()`), back to back with cf8a02a's run before and after, then paced:
+
+  | size | voxel | pace | cf8a02a, median | with the colors | change |
+  |---|---|---|---|---|---|
+  | 640x400 | 2 mm | back to back, 1020 MHz | 4.533, 4.551 ms | 4.579 ms | +0.8 % |
+  | 1280x800 | 2 mm | back to back, 1020 MHz | 13.071, 13.130 ms | 13.191 ms | +0.7 % |
+  | 640x400 | 8 mm | back to back, 1020 MHz | 6.116, 6.117 ms | 6.125 ms | +0.1 % |
+  | 1280x800 | 8 mm | back to back, 1020 MHz | 17.231, 17.232 ms | 17.180 ms | -0.3 % |
+  | 640x400 | 2 mm | 30 fps, 306 MHz | 14.311 ms | 14.389 ms | +0.5 % |
+  | 1280x800 | 2 mm | 30 fps, 612 MHz | 21.365 ms | 21.458 ms | +0.4 % |
+  | 640x400 | 8 mm | 30 fps, 306 MHz | 19.387 ms | 19.399 ms | +0.1 % |
+  | 1280x800 | 8 mm | 30 fps, 816 MHz | 21.484 ms | 21.517 ms | +0.2 % |
+
+  The color carried through the march as one 32-bit word: 64 registers a thread and 24 bytes of
+  stack against cf8a02a's 16 [B 2026-11-17: `cuobjdump -res-usage`]. Carried as three bytes it
+  took 32 bytes of stack and 4.622, 13.320, 6.173 and 17.398 ms back to back, 0.9 % to 1.8 % above
+  cf8a02a, so the word is kept.
+* **The shading, the copy and the encoding**: a scratch program on the tabletop sphere's scene of
+  "The ray cast" cast from its walk's first pose at 640x400 (2 mm, 273 MB), offering a view to the
+  encoder (`live_view_encoder::offer()`) as soon as the last was published, 10 s after 3 s, back to
+  back and paced at 30 fps, the GPU at 306 MHz in both:
+
+  | pace | shading and copy on the GPU, median / p95 | the offer's host call | offer to publication, median / p95 | `imencode` alone | bytes |
+  |---|---|---|---|---|---|
+  | back to back | 0.294 / 0.305 ms | 0.021 ms | 2.278 / 2.301 ms | 1.910 ms | 31222 |
+  | 30 fps | 0.908 / 0.939 ms | 0.061 ms | 5.471 / 5.681 ms | 4.594 ms | 31222 |
+
+  The shading and the copy by CUDA events around the offer on the stream; the offer to its
+  publication from the offer's return to the listener's call, the encoder's wait for the copy,
+  `imencode` at quality 85 and the swap; `imencode` alone on the decoded view on the program's own
+  thread, the same seconds after. Paced, the CPU's clock falls between the frames (cpu0 sampled at
+  729 to 1420 MHz) and the encoding takes 2.4 times as long [S: computed]: still a sixth of a
+  frame's 33.3 ms, so the encoder keeps up with the camera. The test's walk around the tabletop
+  box gave 26.2 KB a view [M 2026-11-17: `tests/test_scan_interface.cpp`].
+* **The replay's columns**: `build/apps/replay` on the walk of `tests/test_scan_interface.cpp`
+  forth and back, 479 frames at 640x400 written as a sequence by a scratch program, the tabletop
+  object class's set with a budget of 600 MB from a copy of a kept scan's parameters, every frame
+  tracked and fused, at cf8a02a (the main tree's build) and at the change. With `--times`: the
+  `live_view` column a median 0.182 ms, 0.153 to 1.456 ms, so every frame's view was taken; the
+  `ray_cast` column, the cast after the fusion, 5.769 ms against 5.716 ms at cf8a02a, the cast
+  before the registration; a frame's total 10.627 ms against 10.332 ms. Without `--times`, three
+  rounds alternating: 10.086, 10.078 and 10.076 ms a frame at cf8a02a, 10.060, 9.956 and 9.934 ms
+  with the change. The trajectory was the same file, byte for byte (SHA-256), in all ten runs
+  [M 2026-11-17, 11:03 to 11:05].
+* **On the user's kept sequence** (`~/3dscanner-scans/20261117T084909.343073Z`, the first scan
+  with the service, 1900 frames at 640x400 of the tabletop object class), replayed with `--times`
+  at the change and at cf8a02a with a copy of its parameters at a budget of 1.0 GB, as the 2.0 GB
+  did not fit above the memory guard's floor [S: computed, 3.2 GB available less 2.0 GB is below
+  its 1.2 GB]: both 1874 frames tracked, 26 lost, the same
+  trajectory byte for byte; the `live_view` column a median 0.204 ms (0.170 to 3.100 ms), every
+  tracked frame's view taken, at most 0.005 ms on a lost frame; the `ray_cast` column 12.765 ms
+  against 12.728 ms and 0 on every lost frame; a frame's total 24.733 ms against 24.431 ms; 28.057
+  and 28.015 ms a frame by the last line, the 2.4 GB sequence read from the disk [M 2026-11-17,
+  11:06 to 11:08]. The ray cast and the registration take 12.7 ms and 9.2 ms there against 5.8 ms
+  and 2.0 ms on the synthetic walk, which is `per-stage-times-from-replay`'s to explain.
+
 **The ray cast** (docs/methods/sparse-tsdf.md, "The ray cast"): `sparse_tsdf::ray_cast()`, the
 clearing of its tiles and its two kernels timed together by CUDA events, and the host's call, over
 20 s per case after 5 s, the same cast again and again from the first pose of the walk, into a

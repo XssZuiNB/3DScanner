@@ -185,8 +185,8 @@ public:
     ///         size is 0 or parameters_refusal() refuses the parameters; else the first of the
     ///         requests that was refused, with its status and message: the sparse TSDF's checks of
     ///         its parameters among them, and closed for a closed pool.
-    /// @note Allocates device memory (cudaMalloc, the sparse TSDF's budget and 25.1 MB at 640x400,
-    ///       100.4 MB at 1280x800) and pinned host memory (cudaMallocHost, 1.28 MB and 5.12 MB)
+    /// @note Allocates device memory (cudaMalloc, the sparse TSDF's budget and 25.9 MB at 640x400,
+    ///       103.5 MB at 1280x800) and pinned host memory (cudaMallocHost, 1.28 MB and 5.12 MB)
     ///       [S: computed, docs/methods/tracking.md, "The path of a frame"], so it is called before
     ///       the pool is closed; whether CUDA's allocators wait for the GPU is not stated by CUDA
     ///       [?]. Allocates for the message when refused; a failed allocation ends the program
@@ -221,14 +221,15 @@ public:
     ~tracker() = default;
 
     /// Tracks a frame (docs/methods/tracking.md, "The path of a frame"): uploads it, builds its
-    /// pyramid, ray casts the live model from the last tracked pose P_L at the frame's intrinsics
-    /// and the pyramid's depth range, registers the pyramid against the surface from the identity
-    /// and checks the result, Δt counted from the last tracked frame; while the model is empty,
-    /// registers the pyramid against itself and checks the result without a step. When the check
-    /// passes, fuses the frame at P = P_L T (the identity while the model is empty), composed in
-    /// double with its rotation kept as a unit quaternion, and P becomes the last tracked pose, the
-    /// frame's timestamp the last tracked time. When it fails, nothing is fused and the last
-    /// tracked pose and time stay.
+    /// pyramid, registers the pyramid from the identity against the surface, the live model as the
+    /// last tracked pose P_L sees it, cast after the last fusion, and checks the result, Δt counted
+    /// from the last tracked frame; while the model is empty, registers the pyramid against itself
+    /// and checks the result without a step. When the check passes, fuses the frame at P = P_L T
+    /// (the identity while the model is empty), composed in double with its rotation kept as a
+    /// unit quaternion; P becomes the last tracked pose, the frame's timestamp the last tracked
+    /// time, and the live model is ray cast from P at the frame's intrinsics and the pyramid's
+    /// depth range into the surface, for the next frame and the live view (surface()). When it
+    /// fails, nothing is fused or cast and the last tracked pose and time stay.
     /// @param frame [in] the frame, in host memory, of the tracker's size, its timestamp later
     ///        than that of the frame before, as a frame source delivers them
     ///        (camera/frame_source.hpp); owned by the caller and read only during the call.
@@ -241,20 +242,22 @@ public:
     ///         registration's result, the step and Δt. Failed, with the reason and nothing fused or
     ///         changed, when the tracker is empty, the frame's size is not the tracker's, or its
     ///         timestamp is not later than that of the frame before it; failed with the step's
-    ///         reason when the upload, the pyramid, the ray cast or the registration is refused or
-    ///         fails, CUDA's error then cleared, with nothing fused; failed with the fusion's
-    ///         reason when the fusion is refused or fails, which leaves what
-    ///         sparse_tsdf::integrate() says, and the last tracked pose as it was. A frame that
-    ///         passes the timestamp's check counts as the frame before for the next call,
-    ///         whatever follows.
-    /// @note Queues the upload's copies, the pyramid's seven kernels, the ray cast's clearing and
-    ///       two kernels once the model holds a frame, the registration's kernels and copies, and
-    ///       the fusion's memset and two kernels, on stream. Waits where the upload waits for its
+    ///         reason when the upload, the pyramid or the registration is refused or fails, CUDA's
+    ///         error then cleared, with nothing fused; failed with the fusion's reason when the
+    ///         fusion is refused or fails, which leaves what sparse_tsdf::integrate() says, and the
+    ///         last tracked pose as it was; failed with the ray cast's reason when the cast after
+    ///         the fusion is refused or fails, which leaves the frame fused, P the last tracked
+    ///         pose and the surface unspecified. A frame that passes the timestamp's check
+    ///         counts as the frame before for the next call, whatever follows.
+    /// @note Queues the upload's copies, the pyramid's seven kernels, the registration's kernels
+    ///       and copies, and when the check passes the fusion's memset and two kernels and the ray
+    ///       cast's clearing and two kernels, on stream. Waits where the upload waits for its
     ///       staging buffer and where the registration waits once per iteration
     ///       (cudaStreamSynchronize, which also waits for the stream's earlier work, the frame
-    ///       before's fusion included); the fusion is queued and not waited for. With a stage
-    ///       clock it also waits for the stream after the upload, the pyramid, the ray cast, the
-    ///       registration and the fusion (stage_clock::mark_after()), the measurement's waits,
+    ///       before's fusion and cast included); the fusion and the cast are queued and not waited
+    ///       for. With a stage clock it also waits for the stream after the upload, the pyramid,
+    ///       the registration, the fusion and the ray cast (stage_clock::mark_after()), the
+    ///       measurement's waits,
     ///       which a live scan must not have; a failed wait fails the frame with CUDA's error,
     ///       naming the stage. Reads back only the registration's 280 bytes per iteration.
     ///       Allocates nothing when tracking or lost; allocates for the message when failed, and a
@@ -267,6 +270,16 @@ public:
     /// @return the sparse TSDF the frames are fused into; empty when the tracker is. Valid as
     ///         long as the tracker holds it.
     const sparse_tsdf &live_model() const noexcept;
+
+    /// Gives the live model's surface as the last tracked pose sees it, cast after the last
+    /// fusion: the next frame's surface, and the live view's picture with its colors at level 0
+    /// (docs/methods/tracking.md, "The live view").
+    /// @return the surface; its images are unspecified until the first frame is fused, and after
+    ///         a frame whose cast failed. Valid as long as the tracker holds it; the next track()
+    ///         writes it when it fuses.
+    /// @note Its images are written by work queued on track()'s stream: work that reads them is
+    ///       queued on that stream, or one ordered after it.
+    const model_surface &surface() const noexcept;
 
 private:
     tracking_parameters m_parameters{}; ///< the parameters from the request

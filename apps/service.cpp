@@ -314,6 +314,12 @@ void service_log::on_state(const scan_state &state) noexcept
         if (!m_live_failure.empty())
             line("a live model could not be taken: " + m_live_failure);
     }
+    if (state.live_view_failure != m_view_failure)
+    {
+        m_view_failure = state.live_view_failure;
+        if (!m_view_failure.empty())
+            line("a live view could not be made: " + m_view_failure);
+    }
 }
 
 int serve(const service_settings &settings, frame_source &camera, camera_properties &properties,

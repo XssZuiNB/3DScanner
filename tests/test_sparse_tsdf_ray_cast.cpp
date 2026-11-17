@@ -8,9 +8,12 @@
 /// apart from the module's code.
 /// - A wall facing the camera at a whole millimetre, fused once at the tabletop object's live voxel
 ///   size, where its truncation is the least, mu_min: cast from its pose, every pixel inside the
-///   picture's border holds the wall at its depth within float's rounding, its normal along -z and
-///   its intensity; seen from behind, a back face, every pixel is invalid; a view that meets no
-///   block, every pixel is invalid.
+///   picture's border holds the wall at its depth within float's rounding, its normal along -z, its
+///   intensity and its color; seen from behind, a back face, every pixel is invalid; a view that
+///   meets no block, every pixel is invalid.
+/// - The colors at level 0: a wall whose color changes along its rows and columns, cast from its
+///   pose and from two others, every pixel that sees it holds its color where the point lies,
+///   within measured tolerances.
 /// - The depth interval, which lets a ray step past the blocks before and after the depths its
 ///   tile's held blocks span (docs/methods/sparse-tsdf.md, "The ray cast"): the wall cast from
 ///   poses turned and shifted from its own, at both stream sizes, every pixel whose ray meets the
@@ -29,13 +32,13 @@
 /// - A sphere resting on a plane, fused from a walk of 12 known poses, at the live voxel sizes of
 ///   both object classes: cast from a pose of the walk, from one between two of its poses and from
 ///   one a hand's step away from it, at both stream sizes, every valid point lies within measured
-///   tolerances of the analytic surface, its normal within an angle and its intensity within a
-///   tolerance of the texture's luma there; a stated share of the pixels whose ray meets the scene
-///   within the depth range is valid; a pixel whose ray meets nothing is invalid; a view of space
-///   never seen is invalid everywhere.
+///   tolerances of the analytic surface, its normal within an angle, its intensity within a
+///   tolerance of the texture's luma there and its color of the texture's; a stated share of the
+///   pixels whose ray meets the scene within the depth range is valid; a pixel whose ray meets
+///   nothing is invalid; a view of space never seen is invalid everywhere.
 /// - Every cast: each coarser level's pixel is level 0's at twice or four times its index, bit for
-///   bit, with the intrinsics halved; an invalid pixel is all 0; a valid point projects onto its
-///   own pixel.
+///   bit, with the intrinsics halved; an invalid pixel is all 0, its color too; a valid point
+///   projects onto its own pixel.
 /// - Through the registration: a frame seen a hand's step from the last fused pose is registered
 ///   against the cast from that pose by the full method and recovers its known motion within a
 ///   measured tolerance, for the tabletop object, the large object and the large box turned by 1.5
@@ -161,7 +164,9 @@ struct cast_tolerances
     double normal_p99_deg;     ///< the 99th percentile of that angle
     double intensity_median;   ///< the median of |intensity - the texture's luma|, of [0, 1]
     double intensity_p99;      ///< the 99th percentile of that
-    double least_seen_valid;   ///< the least share of the pixels that see the scene that are valid
+    double color_median; ///< the median of a color's largest channel's |error| from the texture's
+    double color_p99;    ///< the 99th percentile of that, in 0 to 255
+    double least_seen_valid; ///< the least share of the pixels that see the scene that are valid
     double unseen_distance_max_mm; ///< the largest distance from the surface of a valid pixel
                                    ///< whose ray meets nothing
 };
@@ -176,15 +181,19 @@ struct cast_tolerances
 /// "The extraction"). The valid pixels that see nothing lie at the plane's border, where a voxel
 /// past the edge takes its nearest pixel's depth: 0 to 14 of a cast at 2 mm, 73 to 312 at 8 mm.
 /// The tabletop scene, 2 mm voxels: distances 0.0570 / 0.864 / 1.83 mm; angles 2.04 / 8.36 / 32.4
-/// degrees; intensity errors 0.00280 / 0.0198 / 0.185; at least 0.99688 of the pixels that see the
+/// degrees; intensity errors 0.00280 / 0.0198 / 0.185; a color's largest channel's errors 1.971 /
+/// 9.915 / 62.61 of 255 [M 2026-11-17: this test]; at least 0.99688 of the pixels that see the
 /// scene valid; a valid pixel that sees nothing within 1.14 mm, 0.57 voxels, of the plane.
-constexpr cast_tolerances tabletop_tolerances = {0.08, 2.5, 3.0, 12.0, 0.004, 0.03, 0.995, 1.7};
+constexpr cast_tolerances tabletop_tolerances = {0.08, 2.5, 3.0,  12.0,  0.004,
+                                                 0.03, 3.0, 15.0, 0.995, 1.7};
 
 /// The large scene, 8 mm voxels: distances 0.243 / 4.71 / 10.8 mm; angles 2.14 / 14.0 / 75.2
-/// degrees; intensity errors 0.0277 / 0.104 / 0.481, the 8 mm voxels blurring the textures' waves
+/// degrees; intensity errors 0.0277 / 0.104 / 0.481 and a color's largest channel's errors 18.73 /
+/// 50.23 / 164.7 of 255 [M 2026-11-17: this test], the 8 mm voxels blurring the textures' waves
 /// of 45 mm to 100 mm; at least 0.99599 of the pixels that see the scene valid; a valid pixel that
 /// sees nothing within 7.27 mm, 0.91 voxels, of the plane.
-constexpr cast_tolerances large_tolerances = {0.35, 15.0, 3.0, 20.0, 0.04, 0.15, 0.994, 11.0};
+constexpr cast_tolerances large_tolerances = {0.35, 15.0, 3.0,  20.0,  0.04,
+                                              0.15, 28.0, 75.0, 0.994, 11.0};
 
 /// How far a transform recovered through the cast may lie from the known motion, about twice the
 /// largest errors of the full method and of the levels it was run with [M 2026-11-15: this test]:
@@ -206,6 +215,7 @@ struct cast_picture
     std::vector<std::uint8_t> valid; ///< its marks
     std::vector<float3> normals;     ///< its normals, in the cast's camera frame
     std::vector<float> intensity;    ///< its intensities
+    std::vector<uchar3> colors;      ///< its colors, red, green and blue; level 0's alone
 };
 
 /// The levels of a ray cast, downloaded.
@@ -231,6 +241,7 @@ cast_pictures download_surface(const gca::model_surface &surface, cudaStream_t s
                  download_image(surface.normals(l), p.normals, stream) &&
                  download_image(surface.intensity(l), p.intensity, stream) && copied;
     }
+    copied = download_image(surface.colors(), pictures[0].colors, stream) && copied;
     check(copied, (what + ": the surface downloaded").c_str());
     return pictures;
 }
@@ -263,9 +274,10 @@ bool same_bits(const float3 &a, const float3 &b)
 }
 
 /// Checks what every cast keeps: each coarser level's pixel (u, v) is level 0's at (2^l u, 2^l v)
-/// bit for bit, its intrinsics level 0's halved l times; an invalid pixel is all 0; a valid pixel's
-/// point lies in front of the camera within the depth range and projects onto its own pixel, its
-/// normal is of unit length or (0, 0, 0) and its intensity lies in [0, 1].
+/// bit for bit, its intrinsics level 0's halved l times; an invalid pixel is all 0, at level 0 its
+/// color too; level 0's colors are of its size; a valid pixel's point lies in front of the camera
+/// within the depth range and projects onto its own pixel, its normal is of unit length or
+/// (0, 0, 0) and its intensity lies in [0, 1].
 /// @param what [in] the case, named in the check lines.
 /// @param pictures [in] the cast's levels.
 /// @param k [in] level 0's intrinsics the cast was made with.
@@ -289,6 +301,8 @@ void check_levels(const std::string &what, const cast_pictures &pictures, const 
                             p.k.cy != static_cast<float>(k.cy * scale);
         const gca::frame_size expected = gca::frame_pyramid::level_size(pictures[0].size, l);
         wrong_intrinsics += p.size != expected;
+        if (l == 0)
+            wrong_intrinsics += p.colors.size() != p.points.size();
         if (p.points.size() != static_cast<std::size_t>(p.size.width) * p.size.height)
             continue;
         for (std::uint32_t v = 0; v < p.size.height; v++)
@@ -305,6 +319,9 @@ void check_levels(const std::string &what, const cast_pictures &pictures, const 
                 {
                     unclean_invalid += !gca_test::is_zero(p.points[i]) ||
                                        !gca_test::is_zero(p.normals[i]) || p.intensity[i] != 0.0f;
+                    if (l == 0 && i < p.colors.size())
+                        unclean_invalid +=
+                            p.colors[i].x != 0 || p.colors[i].y != 0 || p.colors[i].z != 0;
                     continue;
                 }
                 const Eigen::Vector3d q = to_double(p.points[i]);
@@ -318,8 +335,9 @@ void check_levels(const std::string &what, const cast_pictures &pictures, const 
     }
     check_within((what + ": coarser pixels not level 0's at their centre").c_str(), odd_pixels,
                  0.0);
-    check_within((what + ": levels of the wrong size or intrinsics").c_str(), wrong_intrinsics,
-                 0.0);
+    check_within(
+        (what + ": levels or colors of the wrong size, or levels' intrinsics wrong").c_str(),
+        wrong_intrinsics, 0.0);
     check_within((what + ": invalid pixels not all 0").c_str(), unclean_invalid, 0.0);
     check_within((what + ": valid pixels out of the range or of [0, 1]").c_str(), out_of_range,
                  0.0);
@@ -343,6 +361,17 @@ std::size_t valid_count(const cast_picture &picture)
 double luma_of(const std::array<double, 3> &color)
 {
     return (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]) / 255.0;
+}
+
+/// Gives a cast's color's largest error from a known color.
+/// @param got [in] the cast's color, red, green and blue.
+/// @param known [in] the known color, red, green and blue, 0 to 255.
+/// @return the largest of the three channels' |got - known|, in levels of 0 to 255.
+double largest_channel_error(const uchar3 &got, const std::array<double, 3> &known)
+{
+    return std::max({std::abs(static_cast<double>(got.x) - known[0]),
+                     std::abs(static_cast<double>(got.y) - known[1]),
+                     std::abs(static_cast<double>(got.z) - known[2])});
 }
 
 /// The tabletop object's live model fused from frames at one pose, the walls' cases' model: its
@@ -414,6 +443,7 @@ void check_wall(cudaStream_t stream)
         luma_of({double{wall_color[0]}, double{wall_color[1]}, double{wall_color[2]}});
     int missed = 0;
     int without_normal = 0;
+    int other_color = 0;
     max_error depth;
     max_error normal;
     max_error intensity;
@@ -430,6 +460,8 @@ void check_wall(cudaStream_t stream)
             without_normal += gca_test::is_zero(p.normals[i]);
             normal.add(angle_deg(to_double(p.normals[i]), Eigen::Vector3d(0.0, 0.0, -1.0)));
             intensity.add(std::abs(double{p.intensity[i]} - expected_intensity));
+            other_color += i >= p.colors.size() || p.colors[i].x != wall_color[0] ||
+                           p.colors[i].y != wall_color[1] || p.colors[i].z != wall_color[2];
         }
     std::printf("%s: %zu valid pixels of %zu\n", front.c_str(), valid_count(p), p.valid.size());
     check_within((front + ": pixels inside the border without the wall").c_str(), missed, 0.0);
@@ -439,6 +471,9 @@ void check_wall(cudaStream_t stream)
     gca_test::check_max_error(front + ": normal's angle from -z, deg", normal,
                               wall_normal_tolerance_deg);
     gca_test::check_max_error(front + ": intensity's error", intensity, intensity_float_tolerance);
+    // Every voxel holds the wall's color, so every interpolation of 8 rounds back to it.
+    check_within((front + ": pixels inside the border not of the wall's color").c_str(),
+                 other_color, 0.0);
 
     const std::string behind = "a wall, from behind";
     const Eigen::Isometry3d back =
@@ -639,6 +674,123 @@ void check_wall_comparison(const std::string &what, const wall_comparison &c,
                  0.0);
     gca_test::check_max_error(what + ": depth's error, m", c.depth, depth_tolerance_m);
     gca_test::check_max_error(what + ": normal's angle, deg", c.normal, normal_tolerance_deg);
+}
+
+/// The colored wall's depth: 330 mm, where a voxel of the tabletop object's live 2 mm spans 1.86 px
+/// of the frame [S: computed, 306.18 px x 2 mm / 330 mm], so that a cell's two sides along a row or
+/// a column differ by about 7 of its colors' levels; inside the tests' range, 0.30 m to 1.0 m
+/// (stage_frames.hpp, measured_range_of()), its near limit 30 mm away [?: a choice].
+constexpr std::uint16_t colored_wall_mm = 330;
+
+/// The colored wall's slope: 4 levels a px of the frame [?: a choice, steep enough that a color
+/// read from the cell's other side errs by several levels].
+constexpr double colored_slope_per_px = 4.0;
+
+/// Gives the colored wall's color where the frame it was fused from sees it: red a triangle wave
+/// along the column and green along the row, from 28 to 228 at colored_slope_per_px, a period of
+/// 100 px, and blue 128; whole numbers at whole pixels.
+/// @param u [in] the column, in px of the fused frame, any real value.
+/// @param v [in] the row, in px.
+/// @return red, green and blue, 28 to 228.
+std::array<double, 3> colored_wall_color(double u, double v)
+{
+    const auto wave = [](double x) {
+        const double t = std::fmod(colored_slope_per_px * x, 400.0);
+        return 28.0 + std::abs((t < 0.0 ? t + 400.0 : t) - 200.0);
+    };
+    return {wave(u), wave(v), 128.0};
+}
+
+/// The colored wall's tolerances of a color's largest channel's error from the wall's color where
+/// the cast's point lies, in levels of 0 to 255: the median and the 90th percentile, 1.5 and 1.45
+/// times the largest of the three casts, 1 and 1.721 (99th percentile 3.303, largest 4.385, where
+/// a triangle wave turns) [M 2026-11-17: this test]. The voxels' colors are those of the pixels
+/// their centres project to, up to half a pixel away, 2 levels at the slope [S: computed].
+constexpr double colored_median_tolerance = 1.5;
+constexpr double colored_p90_tolerance = 2.5;
+
+/// The colors of a wall whose color changes along its rows and columns (colored_wall_color()),
+/// fused once from the identity at the tabletop object's live voxel size: cast from its pose and
+/// from two poses turned from it, at 640x400, every valid pixel whose ray meets the part of the
+/// wall the frame saw, away from its border, holds the wall's color where its point lies within
+/// measured tolerances. The voxels hold the colors of the pixels their centres project to, and the
+/// cast interpolates the 8 around its point (docs/methods/sparse-tsdf.md, "The ray cast"); a color
+/// read from another side of the cell errs by up to the cell's change of color.
+/// @param stream [in] the stream.
+void check_colored_wall(cudaStream_t stream)
+{
+    const gca::frame wall = gca_test::built_frame(
+        small_description, [](std::uint32_t, std::uint32_t) { return colored_wall_mm; },
+        [](std::uint32_t u, std::uint32_t v) {
+            const std::array<double, 3> c = colored_wall_color(u, v);
+            return std::array<std::uint8_t, 3>{static_cast<std::uint8_t>(c[0]),
+                                               static_cast<std::uint8_t>(c[1]),
+                                               static_cast<std::uint8_t>(c[2])};
+        });
+    fused_wall w("colored wall", {&wall}, stream);
+    const model_case &m = w.m;
+    const gca::intrinsics &fused = small_description.intrinsics;
+    const std::array<std::pair<std::string, Eigen::Isometry3d>, 3> poses = {
+        std::pair{std::string("from its pose"), Eigen::Isometry3d::Identity()},
+        std::pair{std::string("turned 20 deg about x"),
+                  make_transform(Eigen::Vector3d::UnitX(), -20.0, Eigen::Vector3d::Zero())},
+        std::pair{std::string("shifted and turned 20 deg about (2, -1, 0)"),
+                  make_transform(Eigen::Vector3d(2.0, -1.0, 0.0), 20.0,
+                                 Eigen::Vector3d(0.03, -0.02, -0.02))}};
+    for (const auto &[pose_name, pose] : poses)
+    {
+        const std::string what = m.name + ", " + pose_name;
+        const cast_pictures pictures =
+            cast(w.tsdf, pose, fused, m.range, w.surfaces[0], stream, what);
+        check_levels(what, pictures, fused, m.range);
+        const cast_picture &p = pictures[0];
+        std::vector<double> errors;
+        std::size_t missed = 0;
+        for (std::uint32_t v = 0; v < p.size.height && !p.colors.empty(); v++)
+            for (std::uint32_t u = 0; u < p.size.width; u++)
+            {
+                // Where the pixel's ray meets the wall's plane, and where the fused frame saw it.
+                const Eigen::Vector3d ray = pose.linear() * gca_test::pixel_ray(p.k, u, v);
+                const double s = (1e-3 * colored_wall_mm - pose.translation().z()) / ray.z();
+                if (!(s >= m.range.near_m + range_margin_m && s <= m.range.far_m - range_margin_m))
+                    continue;
+                const Eigen::Vector3d hit = pose.translation() + s * ray;
+                const double fu = fused.fx * hit.x() / hit.z() + fused.cx;
+                const double fv = fused.fy * hit.y() / hit.z() + fused.cy;
+                const double border = wall_border_px;
+                if (!(fu >= border && fu <= p.size.width - 1.0 - border && fv >= border &&
+                      fv <= p.size.height - 1.0 - border))
+                    continue;
+                const std::size_t i = gca_test::index_of(p.size, u, v);
+                if (p.valid[i] == 0)
+                {
+                    missed++;
+                    continue;
+                }
+                // The color where the cast's own point lies, as the fused frame saw it there.
+                const Eigen::Vector3d point = pose * to_double(p.points[i]);
+                const std::array<double, 3> known =
+                    colored_wall_color(fused.fx * point.x() / point.z() + fused.cx,
+                                       fused.fy * point.y() / point.z() + fused.cy);
+                errors.push_back(largest_channel_error(p.colors[i], known));
+            }
+        std::printf("%s: %zu pixels see the fused wall, %zu of them invalid\n", what.c_str(),
+                    errors.size() + missed, missed);
+        check(errors.size() > p.colors.size() / 4, (what + ": enough pixels see the wall").c_str());
+        check_within((what + ": pixels that see the wall invalid").c_str(),
+                     static_cast<double>(missed), 0.0);
+        if (errors.empty())
+            continue;
+        std::printf("%s: color's largest channel's error: median %.4g, 90th percentile %.4g, 99th "
+                    "percentile %.4g, largest %.4g\n",
+                    what.c_str(), quantile(errors, 0.5), quantile(errors, 0.9),
+                    quantile(errors, 0.99), quantile(errors, 1.0));
+        check_within((what + ": color's error, median").c_str(), quantile(errors, 0.5),
+                     colored_median_tolerance);
+        check_within((what + ": color's error, 90th percentile").c_str(), quantile(errors, 0.9),
+                     colored_p90_tolerance);
+    }
+    check(w.pool.refused_while_closed() == 0, "colored wall: the closed pool asked for nothing");
 }
 
 /// The wall fused once from the identity, cast from poses turned and shifted from it, at both
@@ -1043,9 +1195,10 @@ void check_spread(const std::string &what, const std::vector<double> &values,
 /// A scene's cast compared with the analytic scene, pixel by pixel at level 0.
 struct cast_comparison
 {
-    std::vector<double> distance_mm;  ///< each valid point's distance from the nearest surface
-    std::vector<double> angle_deg;    ///< each normal's angle from that surface's normal
-    std::vector<double> intensity;    ///< each |intensity - the texture's luma| there
+    std::vector<double> distance_mm; ///< each valid point's distance from the nearest surface
+    std::vector<double> angle_deg;   ///< each normal's angle from that surface's normal
+    std::vector<double> intensity;   ///< each |intensity - the texture's luma| there
+    std::vector<double> color; ///< each color's largest |channel - the texture's| there, 0 to 255
     std::vector<double> along_ray_mm; ///< |depth - the analytic hit's|, where a ray sees the scene
     std::size_t seen = 0;             ///< the pixels whose ray meets the scene within the range
     std::size_t seen_valid = 0;       ///< of these, the valid ones
@@ -1090,6 +1243,10 @@ cast_comparison compare_with_scene(const gca_test::synthetic_scene &scene,
             if (!sees)
                 c.unseen_distance_mm.add(1e3 * e.distance_m);
             c.intensity.push_back(std::abs(double{picture.intensity[i]} - luma_of(e.color)));
+            if (i < picture.colors.size())
+            {
+                c.color.push_back(largest_channel_error(picture.colors[i], e.color));
+            }
             if (gca_test::is_zero(picture.normals[i]))
                 c.without_normal++;
             else
@@ -1192,6 +1349,8 @@ void check_scene(const scene_case &c, cudaStream_t stream)
                          t.normal_p99_deg);
             check_spread(what + ": intensity's error", cmp.intensity, t.intensity_median, 0.99,
                          t.intensity_p99);
+            check_spread(what + ": color's largest channel's error", cmp.color, t.color_median,
+                         0.99, t.color_p99);
             check(share >= t.least_seen_valid,
                   (what + ": the share of the pixels that see the scene valid").c_str());
             gca_test::check_max_error(what + ": a valid pixel's that sees nothing, its distance "
@@ -1348,7 +1507,9 @@ bool same_surface(const cast_pictures &a, const cast_pictures &b)
             std::memcmp(x.normals.data(), y.normals.data(), x.normals.size() * sizeof(float3)) !=
                 0 ||
             std::memcmp(x.intensity.data(), y.intensity.data(),
-                        x.intensity.size() * sizeof(float)) != 0)
+                        x.intensity.size() * sizeof(float)) != 0 ||
+            x.colors.size() != y.colors.size() ||
+            std::memcmp(x.colors.data(), y.colors.data(), x.colors.size() * sizeof(uchar3)) != 0)
             return false;
     }
     return true;
@@ -1428,6 +1589,7 @@ int main()
     if (!create_stream(stream))
         return gca_test::check_summary("test_sparse_tsdf_ray_cast");
     check_wall(stream);
+    check_colored_wall(stream);
     check_half_wall(stream);
     check_wall_turned(stream);
     check_slanted_wall(stream);

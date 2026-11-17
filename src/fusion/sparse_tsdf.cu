@@ -10,6 +10,7 @@
 #include "fusion/sparse_tsdf.hpp"
 
 #include "fusion/block_hash.cuh"
+#include "geometry/color_channel.cuh"
 #include "geometry/float3_ops.cuh"
 #include "gpu/gpu_messages.hpp"
 #include "gpu/kernel_launch.cuh"
@@ -569,7 +570,7 @@ struct observed_frame
 };
 
 /// Rounds a weighted mean of a color's channel: (w held + seen) / next, to the nearest integer,
-/// a tie to the even one.
+/// a tie to the even one (rounded_channel()).
 /// @param held [in] the voxel's channel, 0 to 255.
 /// @param seen [in] the observation's channel, 0 to 255.
 /// @param w [in] the voxel's weight W, >= 0.
@@ -579,8 +580,7 @@ struct observed_frame
 __device__ inline std::uint8_t mean_channel(std::uint8_t held, unsigned char seen, float w,
                                             float next)
 {
-    return static_cast<std::uint8_t>(
-        __float2uint_rn((w * static_cast<float>(held) + static_cast<float>(seen)) / next));
+    return rounded_channel((w * static_cast<float>(held) + static_cast<float>(seen)) / next);
 }
 
 /// Joins one observation to a voxel's running averages with the weight 1
@@ -771,7 +771,7 @@ __device__ inline bool gradient_at(const voxel_lookup &tsdf, const int3 &g, cons
 }
 
 /// Interpolates a color's channel between two voxels and rounds it: (1 - s) a + s b, to the nearest
-/// integer, a tie to the even one.
+/// integer, a tie to the even one (rounded_channel()).
 /// @param a [in] the first voxel's channel, 0 to 255.
 /// @param b [in] the second voxel's channel, 0 to 255.
 /// @param s [in] the fraction of the way from the first to the second, in [0, 1].
@@ -779,8 +779,7 @@ __device__ inline bool gradient_at(const voxel_lookup &tsdf, const int3 &g, cons
 /// @note Device code; allocates nothing.
 __device__ inline unsigned char between_channels(std::uint8_t a, std::uint8_t b, float s)
 {
-    return static_cast<unsigned char>(
-        __float2uint_rn((1.0f - s) * static_cast<float>(a) + s * static_cast<float>(b)));
+    return rounded_channel((1.0f - s) * static_cast<float>(a) + s * static_cast<float>(b));
 }
 
 /// Where an extraction writes, on the GPU: its points with their blocks' slots, and its list of
@@ -1284,9 +1283,11 @@ __device__ inline bool crossing_gradient(const voxel_lookup &tsdf, const float3 
 /// What a ray found where it meets the surface.
 struct ray_hit
 {
-    float depth_m;   ///< the surface's depth along the camera's z, in m
-    float3 normal;   ///< the unit normal, in the camera frame; (0, 0, 0) for none
-    float intensity; ///< the Rec. 709 luma of the interpolated color, in [0, 1]
+    float depth_m;       ///< the surface's depth along the camera's z, in m
+    float3 normal;       ///< the unit normal, in the camera frame; (0, 0, 0) for none
+    float intensity;     ///< the Rec. 709 luma of the interpolated color, in [0, 1]
+    std::uint32_t color; ///< the interpolated color, each channel rounded to the nearest
+                         ///< integer: red in bits 0 to 7, green 8 to 15, blue 16 to 23
 };
 
 /// The ray cast's march along one ray (docs/methods/sparse-tsdf.md, "The ray cast"), in the frame
@@ -1346,7 +1347,7 @@ __device__ inline float3 on_voxel_grid(const ray_march &march, float z)
 }
 
 /// Gives the surface where two consecutive samples hold it: the depth where their linear
-/// interpolation is 0, its normal and its intensity.
+/// interpolation is 0, its normal, its intensity and its color.
 /// @param tsdf [in] the hash and the voxels.
 /// @param pose [in] the camera's pose, for the normal's turn into the camera frame.
 /// @param march [in] the ray.
@@ -1374,6 +1375,9 @@ __device__ inline bool surface_between(const voxel_lookup &tsdf, const float_pos
         return false;
     hit.depth_m = depth;
     hit.intensity = frame_pyramid::intensity_of(color.x, color.y, color.z);
+    hit.color = std::uint32_t{rounded_channel(color.x)} |
+                (std::uint32_t{rounded_channel(color.y)} << 8) |
+                (std::uint32_t{rounded_channel(color.z)} << 16);
     hit.normal = make_float3(0.0f, 0.0f, 0.0f);
     float3 gradient;
     if (crossing_gradient(tsdf, g, own, cache, gradient))
@@ -1506,6 +1510,7 @@ struct cast_level
 struct cast_images
 {
     cast_level levels[frame_pyramid::level_count]; ///< element l: level l
+    uchar3 *colors;                                ///< level 0's colors, rows dense
 };
 
 /// The tiles of the depth interval ("The depth interval"), by value as the kernels' argument.
@@ -1731,7 +1736,8 @@ constexpr int ray_cast_blocks_per_multiprocessor = 4;
 /// Ray casts the model's surface, one thread for each pixel of level 0
 /// (docs/methods/sparse-tsdf.md, "The ray cast"; march_to_surface()). A pixel whose ray meets the
 /// surface gets the point at the surface's depth on its ray, in the camera frame, its mark 1, the
-/// normal or (0, 0, 0) and the intensity; any other pixel all 0. Pixel (u, v) of level l is the
+/// normal or (0, 0, 0) and the intensity, and at level 0 the color; any other pixel all 0. Pixel
+/// (u, v) of level l is the
 /// cast at K / 2^l, whose ray is level 0's at (2^l u, 2^l v) [S: (u - cx / 2^l) / (fx / 2^l) =
 /// (2^l u - cx) / fx]: that pixel's thread writes it too.
 /// @param tsdf [in] the hash and the voxels; device memory owned by the sparse TSDF, which holds
@@ -1765,7 +1771,7 @@ __global__ void __launch_bounds__(picture_block_width *picture_block_height,
     const float3 ray = make_float3((static_cast<float>(u) - k.cx) / k.fx,
                                    (static_cast<float>(v) - k.cy) / k.fy, 1.0f);
     const uint2 tile = tile_at(tiles, u / depth_tile_px, v / depth_tile_px);
-    ray_hit hit{0.0f, make_float3(0.0f, 0.0f, 0.0f), 0.0f};
+    ray_hit hit{0.0f, make_float3(0.0f, 0.0f, 0.0f), 0.0f, 0u};
     bool found = false;
     // A tile that no held block's projection covers has no block on any of its rays to march.
     if (!holds_no_block(tile))
@@ -1782,6 +1788,9 @@ __global__ void __launch_bounds__(picture_block_width *picture_block_height,
         found = march_to_surface(tsdf, pose, march, hit);
     }
     const float3 point = found ? hit.depth_m * ray : make_float3(0.0f, 0.0f, 0.0f);
+    out.colors[static_cast<std::size_t>(v) * size.width + u] = make_uchar3(
+        static_cast<unsigned char>(hit.color), static_cast<unsigned char>(hit.color >> 8),
+        static_cast<unsigned char>(hit.color >> 16));
     for (std::uint32_t level = 0; level < frame_pyramid::level_count; level++)
     {
         const std::uint32_t stride = 1u << level;
@@ -1959,6 +1968,10 @@ request_result<model_surface> model_surface::request(gpu_pool &pool,
         granted.normals = std::move(normals.granted);
         granted.intensity = std::move(intensity.granted);
     }
+    request_result<gpu_image<uchar3>> colors = pool.request<uchar3>(size);
+    if (colors.status != request_status::granted)
+        return refused_as<model_surface>(colors);
+    result.granted.m_colors = std::move(colors.granted);
     // A tile for each depth_tile_px x depth_tile_px pixels of level 0, the last ones in a row and
     // a column partly outside the picture (blocks_for()).
     request_result<gpu_image<uint2>> tiles = pool.request<uint2>(
@@ -1993,6 +2006,11 @@ const gpu_image<float3> &model_surface::normals(std::size_t level) const noexcep
 const gpu_image<float> &model_surface::intensity(std::size_t level) const noexcept
 {
     return m_levels.at(level).intensity;
+}
+
+const gpu_image<uchar3> &model_surface::colors() const noexcept
+{
+    return m_colors;
 }
 
 gca::intrinsics model_surface::level_intrinsics(std::size_t level) const noexcept
@@ -2256,6 +2274,7 @@ step_result sparse_tsdf::ray_cast(const camera_pose &pose, const gca::intrinsics
         images.levels[level] = {l.points.data(), l.valid.data(), l.normals.data(),
                                 l.intensity.data(), l.points.size()};
     }
+    images.colors = out.m_colors.data();
     // Nothing is queued after an earlier error, so that a refusal leaves the surface as it was;
     // launch_kernel() asks again before each launch.
     const cudaError_t earlier = cudaPeekAtLastError();

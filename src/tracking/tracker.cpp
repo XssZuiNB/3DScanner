@@ -227,17 +227,9 @@ tracking_result tracker::track(const frame &frame, cudaStream_t stream, stage_cl
         made = timed(path_stage::pyramid);
     if (!made.done)
         return fail("the pyramid: " + made.message);
-    if (m_model_holds_frame)
-    {
-        made = m_model.ray_cast(m_last_pose, m_frame.description().intrinsics,
-                                m_parameters.pyramid.range, m_surface, stream);
-        if (made.done)
-            made = timed(path_stage::ray_cast);
-        if (!made.done)
-            return fail("the ray cast: " + made.message);
-    }
-    // While the model is empty, the frame against its own pyramid (docs/methods/tracking.md, "The
-    // models' frame and the first frame").
+    // The surface as P_L sees it was cast after the last fusion; while the model is empty, the
+    // frame against its own pyramid (docs/methods/tracking.md, "The models' frame and the first
+    // frame").
     const surface_levels surface =
         m_model_holds_frame ? surface_of(m_surface) : surface_of(m_pyramid);
     result.registration = m_registration.align(m_pyramid, surface, Eigen::Isometry3d::Identity(),
@@ -274,6 +266,15 @@ tracking_result tracker::track(const frame &frame, cudaStream_t stream, stage_cl
     m_model_holds_frame = true;
     m_last_pose = pose;
     m_last_tracked_us = time_us;
+    // The surface for the next frame, cast now that the model and P_L have changed: the cast that
+    // frame would make, and the live view of this one (docs/methods/tracking.md, "The path of a
+    // frame", step 3).
+    made = m_model.ray_cast(m_last_pose, m_frame.description().intrinsics,
+                            m_parameters.pyramid.range, m_surface, stream);
+    if (made.done)
+        made = timed(path_stage::ray_cast);
+    if (!made.done)
+        return fail("the ray cast: " + made.message);
     result.state = tracking_state::tracking;
     result.pose = pose;
     return result;
@@ -282,5 +283,10 @@ tracking_result tracker::track(const frame &frame, cudaStream_t stream, stage_cl
 const sparse_tsdf &tracker::live_model() const noexcept
 {
     return m_model;
+}
+
+const model_surface &tracker::surface() const noexcept
+{
+    return m_surface;
 }
 } // namespace gca

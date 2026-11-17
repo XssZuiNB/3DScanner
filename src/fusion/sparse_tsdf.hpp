@@ -419,10 +419,11 @@ struct extraction_choice
 /// in [0, 1]; at an invalid pixel the point, the normal and the intensity are 0 and the mark is 0.
 /// Each level comes with its intrinsics, the cast's divided by 2^l. These are the images the
 /// registration takes as the surface at each level (registration/registration.hpp,
-/// organized_surface), so that the cast hands over all of the pyramid's levels; it gives no RGB
-/// color, the registration being its one reader [?: the user's decision, 2026-11-15; a reader that
-/// needs the cast's colors adds them]. Besides, for the cast's own use, an image of the depths each
-/// tile of depth_tile_px x depth_tile_px pixels of level 0 sees the held blocks at
+/// organized_surface), so that the cast hands over all of the pyramid's levels. Level 0 also has
+/// the model's color at each pixel, which the live view shows (docs/methods/tracking.md, "The live
+/// view"; the user's decision of 2026-11-17); the coarser levels have none, their one reader being
+/// the registration. Besides, for the cast's own use, an image of the depths each tile of
+/// depth_tile_px x depth_tile_px pixels of level 0 sees the held blocks at
 /// (docs/methods/sparse-tsdf.md, "The ray cast", "The depth interval"). The images' memory comes
 /// from the pool that closes. Move-only. Not synchronized: one thread at a time uses one.
 class model_surface
@@ -432,7 +433,7 @@ public:
     model_surface() noexcept = default;
 
     /// Requests every level's images from the pool: the points, the marks, the normals and the
-    /// intensity; and the image of the tiles' depth intervals.
+    /// intensity; level 0's colors; and the image of the tiles' depth intervals.
     /// @param pool [in,out] the pool; open, else the request is refused as closed.
     /// @param size [in] level 0's size, the picture the ray cast fills, in px, each > 0.
     /// @return granted, with a surface whose images and intrinsics are not set until the first ray
@@ -440,7 +441,8 @@ public:
     ///         (gpu_pool::request()), a size of 0 among them.
     /// @note Allocates device memory (cudaMalloc, four times per level: 29 bytes per pixel of the
     ///       level [S: 12 for a point, 1 for a mark, 12 for a normal, 4 for an intensity]; once
-    ///       more for the tiles: 8 bytes per tile of level 0, 0.125 bytes per pixel [S]), so it is
+    ///       for level 0's colors, 3 bytes per pixel [S]; once more for the tiles: 8 bytes per
+    ///       tile of level 0, 0.125 bytes per pixel [S]), so it is
     ///       called before the pool is closed; whether cudaMalloc waits for the GPU is not
     ///       stated by CUDA [?]. Allocates for the message when refused; a failed allocation ends
     ///       the program (std::terminate): the function is noexcept. Two threads may not request
@@ -508,6 +510,13 @@ public:
     /// @pre level < frame_pyramid::level_count, as for size().
     const gpu_image<float> &intensity(std::size_t level) const noexcept;
 
+    /// Gives level 0's colors for the GPU to read.
+    /// @return the image of the colors, red, green and blue, 0 to 255, the trilinear interpolation
+    ///         of the voxels' colors at the surface rounded to the nearest integer, at a valid
+    ///         pixel, and (0, 0, 0) at an invalid one; of level 0's size; empty when the surface
+    ///         is. Valid as long as the surface holds it.
+    const gpu_image<uchar3> &colors() const noexcept;
+
     /// Gives a level's intrinsics: those of the last ray cast, each divided by 2^level
     /// (frame_pyramid::intrinsics_at_level()).
     /// @param level [in] the level.
@@ -530,6 +539,7 @@ private:
     };
 
     std::array<level_images, frame_pyramid::level_count> m_levels;
+    gpu_image<uchar3> m_colors;     ///< level 0's colors
     gpu_image<uint2> m_depth_tiles; ///< each tile's depth interval, written and read by each cast
 };
 
@@ -779,7 +789,8 @@ public:
     /// interpolation is 0: the pixel's point lies there on its ray, in the camera frame; its normal
     /// is the distance's gradient by central differences of one voxel, turned into the camera frame
     /// and normalized, or none when a voxel it needs is unobserved or missing or the gradient is 0;
-    /// its intensity the Rec. 709 luma of the voxels' colors interpolated there. A change from < 0
+    /// its intensity the Rec. 709 luma of the voxels' colors interpolated there, and at level 0
+    /// its color those colors rounded to the nearest integer. A change from < 0
     /// to >= 0 first (a back face), no change, a crossing beyond the far limit, or a crossing whose
     /// own 8 voxels are not all observed leaves the pixel invalid. Each coarser level is the cast
     /// at K / 2^l, whose ray at pixel (u, v) is level 0's at (2^l u, 2^l v): the thread of that
@@ -800,9 +811,9 @@ public:
     ///        and its check (organized_points::range_refusal()), so that the range the frame's
     ///        pyramid is built with (frame_pyramid_parameters::range) is passed as it is and
     ///        refused by the same rule.
-    /// @param out [in,out] the surface written: every pixel of every level, the levels'
-    ///        intrinsics and the tiles' depth intervals; owned by the caller, which holds it until
-    ///        the work queued here has run.
+    /// @param out [in,out] the surface written: every pixel of every level, level 0's colors, the
+    ///        levels' intrinsics and the tiles' depth intervals; owned by the caller, which holds
+    ///        it until the work queued here has run.
     /// @param stream [in] the CUDA stream of the current device the work is queued on, ordered
     ///        after the integrations it is to see; owned by the caller. Work queued on it later
     ///        sees the surface.
