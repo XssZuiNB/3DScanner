@@ -2,7 +2,8 @@
 /// @file web_server.cpp
 /// The web layer's routes on cpp-httplib (see web_server.hpp; docs/ROUTES.md): the state, the
 /// three commands and the page's static files, and the check that keeps the static route inside
-/// the page's directory.
+/// the page's directory; the WebSocket's loop with the newest messages it sends, and the counts of
+/// the scan interface's news.
 
 #include "web/web_server.hpp"
 
@@ -10,6 +11,7 @@
 #include "web/messages.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <optional>
 #include <string_view>
@@ -30,6 +32,18 @@ constexpr const char *json_type = "application/json";
 /// runs, so that a request cannot fill the board's memory, which the scan's sparse TSDF needs; its
 /// own limit is 100 MB [S: httplib.h, CPPHTTPLIB_PAYLOAD_MAX_LENGTH].
 constexpr std::size_t largest_body = 1024;
+
+/// The longest a WebSocket's loop waits for its browser's frames before it looks for newer
+/// messages: 20 ms [?: a choice, below a frame's 33 ms at 30 fps]; so a state or a live model
+/// reaches a browser at most that long after a reader could have it, and the loop sees the web
+/// layer's end within it.
+constexpr std::chrono::milliseconds websocket_poll{20};
+
+/// The pings a browser may leave unanswered before its WebSocket is closed: 2 [?: a choice], at the
+/// library's interval of 30 s [S: httplib.h, CPPHTTPLIB_WEBSOCKET_PING_INTERVAL_SECOND], so that a
+/// browser gone from the network without a word (a phone out of range) frees its worker within
+/// about 90 s [S: computed, 3 × 30 s].
+constexpr int websocket_missed_pongs = 2;
 
 /// Gives a page's file's media type by its extension (docs/ROUTES.md, "The page's files").
 /// @param file [in] the file's path.
@@ -106,8 +120,29 @@ void answer(httplib::Response &res, const command_reply &reply)
 }
 } // namespace
 
-web_server::web_server(scan_interface &scanner, web_options options)
+void scan_news::state_published() noexcept
+{
+    m_states.fetch_add(1, std::memory_order_release);
+}
+
+void scan_news::live_model_published() noexcept
+{
+    m_live_models.fetch_add(1, std::memory_order_release);
+}
+
+std::uint64_t scan_news::states() const noexcept
+{
+    return m_states.load(std::memory_order_acquire);
+}
+
+std::uint64_t scan_news::live_models() const noexcept
+{
+    return m_live_models.load(std::memory_order_acquire);
+}
+
+web_server::web_server(scan_interface &scanner, const scan_news &news, web_options options)
     : m_scanner(scanner)
+    , m_news(news)
     , m_options(std::move(options))
     , m_server(std::make_unique<httplib::Server>())
 {
@@ -167,6 +202,12 @@ web_server::web_server(scan_interface &scanner, web_options options)
     m_server->Post("/api/discard", [this](const httplib::Request &, httplib::Response &res) {
         answer(res, m_scanner.discard().get());
     });
+    // The WebSocket: a request that asks to upgrade is matched against it before the routes; each
+    // browser's loop runs on the worker that took its request, for as long as the browser stays
+    // (docs/ROUTES.md, "Threads").
+    m_server->set_websocket_max_missed_pongs(websocket_missed_pongs);
+    m_server->WebSocket(
+        "/api/live", [this](const httplib::Request &, httplib::ws::WebSocket &ws) { serve(ws); });
     // The page's files: every other GET; the routes above match first, in the order they were
     // added.
     m_server->Get("/.*", [this](const httplib::Request &req, httplib::Response &res) {
@@ -185,8 +226,11 @@ web_server::web_server(scan_interface &scanner, web_options options)
 
 web_server::~web_server()
 {
-    // stop() closes the listening socket whether or not the thread accepts yet; the thread's
-    // listen then ends, after the library's workers have finished their requests.
+    // The WebSockets' loops end first, as they would hold their workers: the flag is the one thing
+    // that ends a loop whose browser stays, as stop() closes only the listening socket. stop()
+    // closes it whether or not the thread accepts yet; the thread's listen then ends, after the
+    // library's workers have finished their requests and loops.
+    m_ending.store(true);
     m_server->stop();
     if (m_thread.joinable())
         m_thread.join();
@@ -221,5 +265,62 @@ web_start_result web_server::start() noexcept
     // Once it returns, the thread accepts; a connection made before waits in the socket's backlog.
     m_server->wait_until_ready();
     return {true, static_cast<std::uint16_t>(port), {}};
+}
+
+template <typename Value>
+std::shared_ptr<const std::string> web_server::newest(newest_message &kind,
+                                                      std::uint64_t (scan_news::*count)()
+                                                          const noexcept,
+                                                      Value (scan_interface::*read)() const,
+                                                      std::string (*lay_out)(const Value &))
+{
+    const std::lock_guard<std::mutex> lock(m_newest_mutex);
+    // The count is read before the value, so that the value copied is at least as new as the count
+    // says, and a value published meanwhile raises the count past the one recorded.
+    const std::uint64_t counted = (m_news.*count)();
+    if (kind.message && counted == kind.counted)
+        return kind.message;
+    const Value value = (m_scanner.*read)();
+    if (!kind.message || value.version != kind.version)
+        kind.message = std::make_shared<const std::string>(lay_out(value));
+    kind.counted = counted;
+    kind.version = value.version;
+    return kind.message;
+}
+
+void web_server::serve(httplib::ws::WebSocket &socket) noexcept
+{
+    // A read that times out at a frame's boundary leaves the connection as it was; one that times
+    // out after a frame's first byte fails it, and the connection closes [S: httplib.h,
+    // read_exact()]. The browser's frames are small, a ping's answer 6 bytes and a close at most
+    // 131 [S: RFC 6455, 5.2 and 5.5], and the page reconnects (docs/ROUTES.md, "The WebSocket").
+    socket.set_read_timeout(websocket_poll);
+    std::shared_ptr<const std::string> sent_state;
+    std::shared_ptr<const std::string> sent_live;
+    while (!m_ending.load())
+    {
+        // Each pointer is copied under the messages' lock and sent outside it, so that a send
+        // that waits for a slow browser holds no lock any other loop or the scan thread needs.
+        const std::shared_ptr<const std::string> state =
+            newest(m_state, &scan_news::states, &scan_interface::state, &state_message);
+        if (state != sent_state)
+        {
+            if (!socket.send(*state))
+                return;
+            sent_state = state;
+        }
+        const std::shared_ptr<const std::string> live =
+            newest(m_live, &scan_news::live_models, &scan_interface::latest_live_model,
+                   &live_model_message);
+        if (live != sent_live)
+        {
+            if (!socket.send(live->data(), live->size()))
+                return;
+            sent_live = live;
+        }
+        std::string dropped;
+        if (socket.read(dropped) == httplib::ws::Fail)
+            return;
+    }
 }
 } // namespace gca

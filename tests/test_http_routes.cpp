@@ -8,7 +8,8 @@
 /// first 120 poses, which a source in front of the synthetic one delivers at the camera's rate,
 /// 30 frames a second, so that a scan scans long enough for the requests; the set is the
 /// tabletop object class's own in a sparse TSDF of 273 MB (gca_test::case_budget, 272891920 bytes
-/// [S: computed, sparse_tsdf_scenes.hpp]).
+/// [S: computed, sparse_tsdf_scenes.hpp]); these and the state's reader are the web tests' shared
+/// ones (tests/web_test_helpers.hpp). The WebSocket has its own test, test_websocket.cpp.
 /// - Idle: the state with each key of the document in its order; a stop and a discard refused by
 ///   the scan interface with its reason, which the state's last refusal repeats; a start without
 ///   its object class or with an unknown one refused by the web layer with its reason; a body
@@ -27,21 +28,17 @@
 ///   at their start with the reason. Once the web layer is gone, nothing answers on its port.
 /// The test prints its time; a scan-level test ends within 60 s on the board (the stage brief).
 
-#include "camera/frame.hpp"
-#include "camera/frame_source.hpp"
 #include "camera/sequence_writer.hpp"
 #include "check.hpp"
 #include "scan/object_class.hpp"
 #include "scan/parameters_file.hpp"
 #include "scan/scan_interface.hpp"
 #include "scan_comparison.hpp"
-#include "sparse_tsdf_scenes.hpp"
 #include "stage_frames.hpp"
-#include "synthetic_source.hpp"
 #include "test_files.hpp"
 #include "web/web_server.hpp"
+#include "web_test_helpers.hpp"
 
-#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -53,21 +50,24 @@
 #include <optional>
 #include <string>
 #include <thread>
-#include <utility>
 #include <vector>
 
-#include <Eigen/Geometry>
 #include <httplib.h>
 #include <opencv2/core.hpp>
 
 namespace
 {
 using gca_test::check;
+using gca_test::frames_keys;
+using gca_test::keys_of;
 using gca_test::names_in;
+using gca_test::paced_source;
+using gca_test::read_state;
+using gca_test::state_fields;
+using gca_test::state_keys;
 using gca_test::temporary_directory;
-
-/// The walk's poses, 240 of tabletop_walk(), 1.5 degrees apart, as test_scan_interface.cpp's.
-constexpr std::size_t walk_poses = 240;
+using gca_test::test_set;
+using gca_test::walk_options;
 
 /// The poses a scan of the test may see: the walk's first 120 [?: a choice], 4 s at the camera's
 /// rate, so that a scan stopped after 30 frames, about 1 s, has 3 s left for the stop to arrive
@@ -91,98 +91,6 @@ constexpr std::chrono::seconds hold_limit{5};
 
 /// The content of the file outside the page's directory, which no request may get.
 const std::string secret = "outside the page";
-
-/// The keys of the state message, in the document's order (docs/ROUTES.md, "The state").
-const std::vector<std::string> state_keys = {"version",
-                                             "phase",
-                                             "scan",
-                                             "tracking",
-                                             "lost_cause",
-                                             "too_close",
-                                             "frames",
-                                             "end",
-                                             "end_message",
-                                             "outcome",
-                                             "outcome_message",
-                                             "refusal",
-                                             "live_model_failure"};
-
-/// The keys of the state's frames, in the document's order.
-const std::vector<std::string> frames_keys = {"taken", "fused", "lost", "not_taken"};
-
-/// The set the scans run with: the tabletop object class's, in a sparse TSDF of 273 MB
-/// (gca_test::case_budget), as test_scan_interface.cpp's.
-/// @param kind [in] the object class asked for.
-/// @return its set with the case's budget.
-gca::object_class_parameters test_set(gca::object_class kind)
-{
-    gca::object_class_parameters set = gca::parameters_of(kind);
-    set.memory_budget_bytes = gca_test::case_budget;
-    return set;
-}
-
-/// Gives the synthetic source's options: the tabletop box along the walk's first poses.
-/// @param count [in] the poses, from the walk's first.
-/// @return the options; the source reports its end after them.
-gca_test::synthetic_source_options walk_options(std::size_t count)
-{
-    gca_test::synthetic_walk walk = gca_test::tabletop_walk();
-    walk.pose_count = walk_poses;
-    std::vector<Eigen::Isometry3d> poses = gca_test::poses_of(walk);
-    poses.resize(std::min(count, poses.size()));
-    return {.description = gca_test::small_description,
-            .scene = {.plane = gca_test::tabletop_plane,
-                      .box = gca_test::tabletop_box,
-                      .trajectory = poses},
-            .ending = gca_test::synthetic_ending::end,
-            .ending_message = "the walk's end",
-            .open_refusal = {},
-            .imu = std::nullopt};
-}
-
-/// A frame source in front of the synthetic source that delivers frame i of an opening no
-/// earlier than i frame periods (gca_test::synthetic_frame_period_us) after the opening, as the
-/// camera does at 30 frames a second; the scan thread alone calls it.
-class paced_source final : public gca::frame_source
-{
-public:
-    /// Builds the source in front of a synthetic source.
-    /// @param options [in] the synthetic source's options; taken over.
-    explicit paced_source(gca_test::synthetic_source_options options)
-        : m_inner(std::move(options))
-    {
-    }
-
-    gca::open_result open(const gca::frame_size &size) noexcept override
-    {
-        m_opened = std::chrono::steady_clock::now();
-        m_next = 0;
-        return m_inner.open(size);
-    }
-
-    gca::next_result next(gca::frame &out) noexcept override
-    {
-        std::this_thread::sleep_until(
-            m_opened + std::chrono::microseconds(m_next * gca_test::synthetic_frame_period_us));
-        m_next++;
-        return m_inner.next(out);
-    }
-
-    void close() noexcept override
-    {
-        m_inner.close();
-    }
-
-    gca::source_description describe() const noexcept override
-    {
-        return m_inner.describe();
-    }
-
-private:
-    gca_test::synthetic_source m_inner;
-    std::chrono::steady_clock::time_point m_opened; ///< when the source was last opened
-    std::uint64_t m_next = 0;                       ///< the next frame's number in the opening
-};
 
 /// The hold of the refining state: the scan interface's listener holds the scan thread when it is
 /// given the first refining state, until the test's client has seen that state over HTTP or the
@@ -222,83 +130,6 @@ struct refining_hold
         wake.notify_all();
     }
 };
-
-/// A state message as the test reads it back.
-struct state_fields
-{
-    std::vector<std::string> keys;        ///< the top level's keys, in order
-    std::vector<std::string> frames_keys; ///< the frames' keys, in order
-    int version = 0;
-    std::string phase;
-    std::string scan;
-    std::string tracking;
-    std::string lost_cause;
-    int too_close = -1; ///< 1 for true, 0 for false, as OpenCV reads them; -1 when no integer
-    gca::scan_frame_counts frames{};
-    std::string end;
-    std::string end_message;
-    std::string outcome;
-    std::string outcome_message;
-    std::string refusal;
-    std::string live_model_failure;
-};
-
-/// Gives a map's keys in their order.
-/// @param map [in] the map.
-/// @return the keys.
-std::vector<std::string> keys_of(const cv::FileNode &map)
-{
-    std::vector<std::string> keys;
-    for (const cv::FileNode &child : map)
-        keys.push_back(child.name());
-    return keys;
-}
-
-/// Reads a state message with OpenCV's JSON reader, which reads true as 1 and false as 0 and a
-/// whole number as a 32-bit int [M 2026-11-14: OpenCV 4.8.0, parameters_file.cpp].
-/// @param json [in] the message.
-/// @return its fields; nothing when the reader refuses it.
-std::optional<state_fields> read_state(const std::string &json)
-{
-    try
-    {
-        const cv::FileStorage storage(json, cv::FileStorage::READ | cv::FileStorage::MEMORY |
-                                                cv::FileStorage::FORMAT_JSON);
-        const cv::FileNode root = storage.root();
-        const auto number = [](const cv::FileNode &n) {
-            return n.isInt() ? static_cast<int>(n) : -1;
-        };
-        const auto text = [](const cv::FileNode &n) {
-            return n.isString() ? static_cast<std::string>(n) : std::string("<no string>");
-        };
-        state_fields read;
-        read.keys = keys_of(root);
-        read.version = number(root["version"]);
-        read.phase = text(root["phase"]);
-        read.scan = text(root["scan"]);
-        read.tracking = text(root["tracking"]);
-        read.lost_cause = text(root["lost_cause"]);
-        read.too_close = number(root["too_close"]);
-        const cv::FileNode frames = root["frames"];
-        read.frames_keys = keys_of(frames);
-        read.frames = {static_cast<std::uint64_t>(number(frames["taken"])),
-                       static_cast<std::uint64_t>(number(frames["fused"])),
-                       static_cast<std::uint64_t>(number(frames["lost"])),
-                       static_cast<std::uint64_t>(number(frames["not_taken"]))};
-        read.end = text(root["end"]);
-        read.end_message = text(root["end_message"]);
-        read.outcome = text(root["outcome"]);
-        read.outcome_message = text(root["outcome_message"]);
-        read.refusal = text(root["refusal"]);
-        read.live_model_failure = text(root["live_model_failure"]);
-        return read;
-    }
-    catch (const cv::Exception &e)
-    {
-        std::printf("the state message refused by OpenCV: %s\n", e.what());
-        return std::nullopt;
-    }
-}
 
 /// A command's answer as the test reads it back.
 struct reply_fields
@@ -651,25 +482,28 @@ void check_same_as_in_process(const scan_made &made, const std::filesystem::path
 
 /// The refusals of a web layer's start: a port in use, and a page directory that does not exist.
 /// @param scanner [in,out] the scan interface the other web layers are built over.
+/// @param news [in] its news, which the other web layers are given too.
 /// @param port [in] the port the test's web layer listens on.
 /// @param directory [in] the test's directory.
-void check_start_refusals(gca::scan_interface &scanner, std::uint16_t port,
-                          const std::filesystem::path &directory)
+void check_start_refusals(gca::scan_interface &scanner, const gca::scan_news &news,
+                          std::uint16_t port, const std::filesystem::path &directory)
 {
-    gca::web_server same_port(scanner, {.address = "127.0.0.1",
-                                        .port = port,
-                                        .page_directory = directory / "page",
-                                        .set_of = test_set});
+    gca::web_server same_port(scanner, news,
+                              {.address = "127.0.0.1",
+                               .port = port,
+                               .page_directory = directory / "page",
+                               .set_of = test_set});
     const gca::web_start_result taken = same_port.start();
     gca_test::check_refusal("a second web layer on the same port", !taken.started, taken.reason,
                             taken.reason == "cannot listen on 127.0.0.1 port " +
                                                 std::to_string(port) +
                                                 ": the port is in use or not allowed, or the "
                                                 "address is not the board's");
-    gca::web_server no_page(scanner, {.address = "127.0.0.1",
-                                      .port = 0,
-                                      .page_directory = directory / "no_page",
-                                      .set_of = test_set});
+    gca::web_server no_page(scanner, news,
+                            {.address = "127.0.0.1",
+                             .port = 0,
+                             .page_directory = directory / "no_page",
+                             .set_of = test_set});
     const gca::web_start_result missing = no_page.start();
     gca_test::check_refusal(
         "a web layer without its page directory", !missing.started, missing.reason,
@@ -687,20 +521,28 @@ scan_made run_routes(const std::filesystem::path &directory)
     paced_source source(walk_options(scan_poses));
     gca::sequence_writer writer(gca::queue_full::wait);
     refining_hold hold;
+    // The news first, as the service builds it, so that it outlives the scan interface.
+    gca::scan_news news;
     const gca::scan_options options = {
         .scans_directory = scans,
         .stream_size = gca_test::small_description.size,
         .commit = gca_test::in_process_commit,
-        .on_state = [&hold](const gca::scan_state &s) { hold.on_state(s); },
-        .stage_times = nullptr};
+        .on_state =
+            [&hold, &news](const gca::scan_state &s) {
+                news.state_published();
+                hold.on_state(s);
+            },
+        .stage_times = nullptr,
+        .on_live_model = [&news](const gca::live_model &) { news.live_model_published(); }};
     gca::scan_interface scanner(options, source, writer);
     std::uint16_t port = 0;
     scan_made made;
     {
-        gca::web_server server(scanner, {.address = "127.0.0.1",
-                                         .port = 0,
-                                         .page_directory = directory / "page",
-                                         .set_of = test_set});
+        gca::web_server server(scanner, news,
+                               {.address = "127.0.0.1",
+                                .port = 0,
+                                .page_directory = directory / "page",
+                                .set_of = test_set});
         const gca::web_start_result started = server.start();
         check(started.started && started.port != 0,
               ("the web layer listens on a free port; " + started.reason).c_str());
@@ -719,7 +561,7 @@ scan_made run_routes(const std::filesystem::path &directory)
         check_idle_refusals(c);
         made = check_whole_scan(c, hold, scans);
         check_discarded_scan(c, scans, made.directory);
-        check_start_refusals(scanner, port, directory);
+        check_start_refusals(scanner, news, port, directory);
     }
     client after(port);
     const httplib::Result r = after.get("/api/state");

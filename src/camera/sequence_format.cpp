@@ -6,10 +6,11 @@
 
 #include "camera/sequence_format.hpp"
 
+#include "types/little_endian.hpp"
+
 #include <algorithm>
 #include <limits>
 #include <string_view>
-#include <type_traits>
 
 namespace gca
 {
@@ -41,62 +42,6 @@ static_assert(magic_and_version_bytes + 2 * 4 + 5 * 4 == sequence_header_bytes);
 static_assert(1 + index_and_timestamp_bytes + pose_bytes + counts_bytes == frame_lead_max_bytes);
 static_assert(8 + 3 * 4 == imu_sample_bytes);
 static_assert(imu_samples_per_record_max == std::numeric_limits<std::uint16_t>::max());
-
-/// Writes an unsigned number's bytes, the least significant first.
-/// @tparam T std::uint16_t, std::uint32_t or std::uint64_t.
-/// @param at [out] where its sizeof(T) bytes go; owned by the caller.
-/// @param value [in] the number.
-template <typename T> void put_little_endian(std::uint8_t *at, T value)
-{
-    static_assert(std::is_unsigned_v<T>);
-    for (std::size_t k = 0; k < sizeof(T); k++)
-        at[k] = static_cast<std::uint8_t>(value >> (8 * k));
-}
-
-/// Reads an unsigned number whose least significant byte comes first.
-/// @tparam T std::uint16_t, std::uint32_t or std::uint64_t.
-/// @param at [in] its sizeof(T) bytes; owned by the caller.
-/// @return the number.
-template <typename T> T get_little_endian(const std::uint8_t *at)
-{
-    static_assert(std::is_unsigned_v<T>);
-    T value = 0;
-    for (std::size_t k = 0; k < sizeof(T); k++)
-        value = static_cast<T>(value | static_cast<T>(at[k]) << (8 * k));
-    return value;
-}
-
-/// Writes a float's IEEE 754 binary32 bits, the least significant byte first.
-/// @param at [out] where its 4 bytes go; owned by the caller.
-/// @param value [in] the float; every bit is kept, NaN's payload and -0 among them.
-void put_float(std::uint8_t *at, float value)
-{
-    put_little_endian(at, std::bit_cast<std::uint32_t>(value));
-}
-
-/// Reads a float written by put_float().
-/// @param at [in] its 4 bytes; owned by the caller.
-/// @return the float, bit for bit.
-float get_float(const std::uint8_t *at)
-{
-    return std::bit_cast<float>(get_little_endian<std::uint32_t>(at));
-}
-
-/// Writes a double's IEEE 754 binary64 bits, the least significant byte first.
-/// @param at [out] where its 8 bytes go; owned by the caller.
-/// @param value [in] the double; every bit is kept.
-void put_double(std::uint8_t *at, double value)
-{
-    put_little_endian(at, std::bit_cast<std::uint64_t>(value));
-}
-
-/// Reads a double written by put_double().
-/// @param at [in] its 8 bytes; owned by the caller.
-/// @return the double, bit for bit.
-double get_double(const std::uint8_t *at)
-{
-    return std::bit_cast<double>(get_little_endian<std::uint64_t>(at));
-}
 
 /// Checks a frame's samples of one IMU sensor (imu_sample_order::refusal()).
 /// @param sensor [in] the sensor's name for the reason: "accelerometer" or "gyroscope".

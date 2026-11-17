@@ -15,15 +15,17 @@
 #   types <- camera <- scan (Eigen, OpenCV's core)
 #   scan, tracking, refinement <- scan_interface (the scan interface with its scan thread, the
 #                                  stages' parameters of an object class's set)
-#   scan_interface <- web (the web layer's routes and messages; cpp-httplib, threads)
+#   scan_interface <- web (the web layer's routes, WebSocket and messages; cpp-httplib, threads)
 # Every library includes from src/ ("gpu/gpu_pool.hpp"); types carries that directory.
 
 # ---------------------------------------------------------------- types (header only)
 # The plain structs, the camera parameters, a frame's description, the camera's pose, a trajectory's
-# entry and a model's point, and the console colors, which camera, orbbec_camera and gpu use. types carries Eigen
-# because the camera's pose (types/camera_pose.hpp) holds Eigen's vector and quaternion, plain value
-# types that the sequence (camera) and the trajectory (scan) share, and a model's point
-# (types/model_point.hpp) Eigen's vectors, which the model's file (scan) and separation share.
+# entry and a model's point, the console colors, which camera, orbbec_camera and gpu use, and a
+# number's little-endian bytes, which the sequence (camera) and the live model message (web) use.
+# types carries Eigen because the camera's pose (types/camera_pose.hpp) holds Eigen's vector and
+# quaternion, plain value types that the sequence (camera) and the trajectory (scan) share, and a
+# model's point (types/model_point.hpp) Eigen's vectors, which the model's file (scan) and
+# separation share.
 add_library(types INTERFACE)
 target_include_directories(types INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(types INTERFACE Eigen3::Eigen)
@@ -231,10 +233,11 @@ add_library(
 target_link_libraries(scan_interface PUBLIC scan tracking refinement Threads::Threads)
 
 # ---------------------------------------------------------------- web
-# The web layer (docs/ROUTES.md): the routes over the scan interface on cpp-httplib's server
-# (web/web_server.hpp), which keeps the library out of its header, and the messages they answer
-# with (web/messages.hpp). PUBLIC: the header holds the scan interface and an object class's set;
-# PRIVATE: the library's header and the thread library of its accepting thread and its workers.
+# The web layer (docs/ROUTES.md): the routes and the WebSocket over the scan interface on
+# cpp-httplib's server (web/web_server.hpp), which keeps the library out of its header, and the
+# messages they answer and push (web/messages.hpp). PUBLIC: the header holds the scan interface and
+# an object class's set; PRIVATE: the library's header and the thread library of its accepting
+# thread and its workers.
 add_library(
     web
     STATIC

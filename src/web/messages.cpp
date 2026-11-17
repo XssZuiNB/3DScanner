@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: 0BSD
 /// @file messages.cpp
-/// The web layer's messages as JSON text (see messages.hpp; docs/ROUTES.md, "Messages").
+/// The web layer's messages: the state and a command's answer as JSON text, the live model as
+/// bytes (see messages.hpp; docs/ROUTES.md, "Messages").
 
 #include "web/messages.hpp"
 
 #include "scan/file_io.hpp"
 #include "scan/parameters_file.hpp"
 #include "tracking/tracker.hpp"
+#include "types/little_endian.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -15,6 +18,14 @@ namespace gca
 {
 namespace
 {
+/// The bytes of the live model message's header, before its points: 80 (docs/ROUTES.md, "The live
+/// model").
+constexpr std::size_t live_model_header_bytes = 80;
+
+/// The bytes the live model message takes for each point: its position, three floats, and its
+/// color, three bytes: 15 (docs/ROUTES.md, "The live model").
+constexpr std::size_t live_model_point_bytes = 15;
+
 /// Appends a text as a JSON string (RFC 8259, section 7): in quotes, with the quote and the
 /// backslash escaped, the five control characters JSON names (\b, \f, \n, \r, \t) by their
 /// letter, every other control character below 0x20 as \u00XX. Every other byte is copied as it
@@ -143,5 +154,40 @@ std::string reply_message(const command_reply &reply)
     append_field(json, "refusal", reply.refusal);
     json += '}';
     return json;
+}
+
+std::string live_model_message(const live_model &model)
+{
+    // The header: version at 0, frame at 8, has_frame at 16, n at 20, the pose's seven doubles at
+    // 24; the positions at 80, three floats a point; the colors after them, three bytes a point.
+    static_assert(24 + 7 * 8 == live_model_header_bytes);
+    static_assert(3 * 4 + 3 == live_model_point_bytes);
+    const std::size_t n = model.points.size();
+    std::string message(live_model_header_bytes + live_model_point_bytes * n, '\0');
+    // A char's bytes may be written through an unsigned char's pointer [S: C++20, [basic.lval]].
+    auto *const bytes = reinterpret_cast<std::uint8_t *>(message.data());
+    put_little_endian(bytes, model.version);
+    put_little_endian(bytes + 8, model.frame.value_or(0));
+    put_little_endian(bytes + 16, std::uint32_t{model.frame ? 1u : 0u});
+    put_little_endian(bytes + 20, static_cast<std::uint32_t>(n));
+    const Eigen::Vector3d &t = model.pose.position_m;
+    const Eigen::Quaterniond &q = model.pose.orientation;
+    const double pose[7] = {t.x(), t.y(), t.z(), q.x(), q.y(), q.z(), q.w()};
+    for (std::size_t k = 0; k < 7; k++)
+        put_double(bytes + 24 + 8 * k, pose[k]);
+    std::uint8_t *position = bytes + live_model_header_bytes;
+    std::uint8_t *color = position + 12 * n;
+    for (const model_point &p : model.points)
+    {
+        put_float(position, p.position_m.x());
+        put_float(position + 4, p.position_m.y());
+        put_float(position + 8, p.position_m.z());
+        position += 12;
+        color[0] = p.color[0];
+        color[1] = p.color[1];
+        color[2] = p.color[2];
+        color += 3;
+    }
+    return message;
 }
 } // namespace gca
