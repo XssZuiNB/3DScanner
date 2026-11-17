@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: 0BSD
 #
 # CMakeLists.txt - the tree's build: the C++20 dialect for C++ and CUDA, the build type and
-# CUDA architecture, the warning set, the dependencies (CUDA, Eigen, OrbbecSDK, OpenCV), then
-# the libraries (src/), the programs (apps/) and the tests (tests/).
+# CUDA architecture, the warning set, the dependencies (CUDA, Eigen, cpp-httplib, OpenCV,
+# OrbbecSDK), then the libraries (src/), the programs (apps/) and the tests (tests/).
 
 # 3.25.2 is the first CMake that knows the CUDA dialect C++20 with nvcc 12 (CODING_STANDARDS.md,
 # "What the guides leave to this tree", C++20).
@@ -88,6 +88,21 @@ endif()
 # stops the compile, for an installed Eigen and the bundled one alike (CODING_STANDARDS.md,
 # "What the guides leave to this tree", Eigen).
 set_property(TARGET Eigen3::Eigen APPEND PROPERTY INTERFACE_COMPILE_DEFINITIONS EIGEN_MPL2_ONLY)
+
+# ---------------------------------------------------------------- cpp-httplib (header only)
+# The web layer's HTTP server (src/web/) and the HTTP test's client: cpp-httplib v0.66.0, the
+# user's choice (README.md, "License"), one header from tools/fetch_deps.sh. An IMPORTED target, as
+# Eigen's, so that its directory is a system one and the warning rule of tools/verify.sh holds the
+# tree's own code: the header compiled without a warning under the tree's flags as a plain -I
+# directory [M 2026-11-14: g++ 11.4, choose-web-libraries' probe], and a later version's warnings
+# do not fail the build. Its TLS, zlib and brotli stay off: none of their macros is defined.
+set(GCA_HTTPLIB_DIR "${GCA_DEPS_DIR}/cpp-httplib-0.66.0" CACHE PATH "cpp-httplib source dir")
+if(NOT EXISTS "${GCA_HTTPLIB_DIR}/httplib.h")
+    message(FATAL_ERROR "cpp-httplib 0.66.0 not found in ${GCA_HTTPLIB_DIR}. Run "
+        "tools/fetch_deps.sh or set GCA_HTTPLIB_DIR.")
+endif()
+add_library(httplib::httplib INTERFACE IMPORTED)
+set_target_properties(httplib::httplib PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${GCA_HTTPLIB_DIR}")
 
 # ---------------------------------------------------------------- OpenCV
 # The Orbbec camera library (orbbec_camera) and the viewer decode, save and show images with it;

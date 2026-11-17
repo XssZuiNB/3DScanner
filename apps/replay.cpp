@@ -48,22 +48,14 @@ std::optional<gca::frame_size> stream_size_of(const gca::replay_options &options
 
 /// Names what tracking made of a frame, as a time line prints it.
 /// @param state [in] the frame's state; none for a frame not taken.
-/// @return "tracking", "lost", "failed" or "not_taken"; "unknown" for a value that is no
-///     enumerator.
-const char *state_name(const std::optional<gca::tracking_state> &state)
+/// @return name_of() the state (tracking/tracker.hpp): "tracking", "lost" or "failed"; "not_taken"
+///     for none; "unknown" for a value that is no enumerator.
+std::string_view state_name(const std::optional<gca::tracking_state> &state)
 {
     if (!state)
         return "not_taken";
-    switch (*state)
-    {
-    case gca::tracking_state::tracking:
-        return "tracking";
-    case gca::tracking_state::lost:
-        return "lost";
-    case gca::tracking_state::failed:
-        return "failed";
-    }
-    return "unknown";
+    const std::string_view name = gca::name_of(*state);
+    return name.empty() ? std::string_view("unknown") : name;
 }
 
 /// Prints a frame's time line on stdout: "frame <index> <state>", then each stage's name and time
@@ -72,8 +64,9 @@ const char *state_name(const std::optional<gca::tracking_state> &state)
 /// @param times [in] the frame's times.
 void print_time_line(const gca::frame_times &times)
 {
-    std::printf("frame %llu %s", static_cast<unsigned long long>(times.index),
-                state_name(times.state));
+    const std::string_view state = state_name(times.state);
+    std::printf("frame %llu %.*s", static_cast<unsigned long long>(times.index),
+                static_cast<int>(state.size()), state.data());
     for (std::size_t k = 0; k < gca::path_stage_count; k++)
     {
         const std::string_view name = gca::name_of(static_cast<gca::path_stage>(k));

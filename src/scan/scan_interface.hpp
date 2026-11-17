@@ -38,6 +38,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 
 namespace gca
@@ -72,6 +73,18 @@ enum class scan_outcome
                 ///< the message says why
     discarded,  ///< discarded: nothing of it stays on disk
 };
+
+/// Gives a phase's name, as a refusal and the web layer's state print it.
+/// @param phase [in] the phase, one of the enumerators.
+/// @return "idle", "starting", "scanning" or "refining"; a static string; empty for a value that
+///         is no enumerator.
+std::string_view name_of(scan_phase phase) noexcept;
+
+/// Gives an outcome's name, as the web layer's state prints it.
+/// @param outcome [in] the outcome, one of the enumerators.
+/// @return "none", "refined", "unfinished" or "discarded"; a static string; empty for a value that
+///         is no enumerator.
+std::string_view name_of(scan_outcome outcome) noexcept;
 
 /// The scan interface's state: a value, copied out as a snapshot.
 struct scan_state

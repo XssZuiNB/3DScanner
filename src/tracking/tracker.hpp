@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include <Eigen/Geometry>
 
@@ -75,6 +76,18 @@ enum class check_outcome
     inlier_rmse,      ///< the inlier RMSE lay above e_track
     step,             ///< the step's turn or shift lay beyond what a hand makes in Δt
 };
+
+/// Gives a tracking state's name, as the replay's time lines and the web layer's state print it.
+/// @param state [in] the state, one of the enumerators.
+/// @return "tracking", "lost" or "failed"; a static string; empty for a value that is no
+///         enumerator.
+std::string_view name_of(tracking_state state) noexcept;
+
+/// Gives a check's outcome's name, as the web layer's state prints it.
+/// @param outcome [in] the outcome, one of the enumerators.
+/// @return "passed", "registration_end", "fitness", "inlier_rmse" or "step"; a static string;
+///         empty for a value that is no enumerator.
+std::string_view name_of(check_outcome outcome) noexcept;
 
 /// The step of a registration's transform T, the frame's camera frame into the camera frame at the
 /// last tracked pose (docs/methods/tracking.md, "The step a hand can make").

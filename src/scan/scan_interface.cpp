@@ -43,25 +43,6 @@ utc_time now_utc() noexcept
     return std::chrono::floor<std::chrono::microseconds>(std::chrono::system_clock::now());
 }
 
-/// Names a phase for a refusal.
-/// @param phase [in] the phase.
-/// @return its name.
-const char *phase_name(scan_phase phase) noexcept
-{
-    switch (phase)
-    {
-    case scan_phase::idle:
-        return "idle";
-    case scan_phase::starting:
-        return "starting";
-    case scan_phase::scanning:
-        return "scanning";
-    case scan_phase::refining:
-        return "refining";
-    }
-    return "unknown";
-}
-
 /// Gives why a scan ended when its source gave no frame.
 /// @param status [in] the source's status, not a frame.
 /// @return source_timeout, source_failure or source_end.
@@ -80,6 +61,38 @@ scan_end end_of(next_status status) noexcept
     return scan_end::source_failure;
 }
 } // namespace
+
+std::string_view name_of(scan_phase phase) noexcept
+{
+    switch (phase)
+    {
+    case scan_phase::idle:
+        return "idle";
+    case scan_phase::starting:
+        return "starting";
+    case scan_phase::scanning:
+        return "scanning";
+    case scan_phase::refining:
+        return "refining";
+    }
+    return {};
+}
+
+std::string_view name_of(scan_outcome outcome) noexcept
+{
+    switch (outcome)
+    {
+    case scan_outcome::none:
+        return "none";
+    case scan_outcome::refined:
+        return "refined";
+    case scan_outcome::unfinished:
+        return "unfinished";
+    case scan_outcome::discarded:
+        return "discarded";
+    }
+    return {};
+}
 
 bool too_close(const frame &frame, double threshold_m) noexcept
 {
@@ -230,7 +243,7 @@ void scan_interface::answer_commands(scan_phase during, scan_requests &requests)
         command c = std::move(m_asked.front());
         m_asked.pop_front();
         if (c.kind == command_kind::start)
-            refuse(c, std::string("a scan is in progress (") + phase_name(during) + ")");
+            refuse(c, "a scan is in progress (" + std::string(name_of(during)) + ")");
         else if (c.kind == command_kind::stop && during == scan_phase::refining)
             refuse(c, "the scan is refining: a stop is for a scan that scans");
         else

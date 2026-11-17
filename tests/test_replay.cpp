@@ -38,7 +38,7 @@
 #include "scan/object_class.hpp"
 #include "scan/parameters_file.hpp"
 #include "scan/scan_interface.hpp"
-#include "sparse_tsdf_helpers.hpp"
+#include "scan_comparison.hpp"
 #include "sparse_tsdf_scenes.hpp"
 #include "stage_frames.hpp"
 #include "synthetic_source.hpp"
@@ -52,7 +52,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
-#include <future>
 #include <map>
 #include <optional>
 #include <regex>
@@ -66,8 +65,11 @@ namespace
 {
 using gca_test::check;
 using gca_test::check_refusal;
+using gca_test::names_in;
 using gca_test::run_program;
+using gca_test::scan_in_process;
 using gca_test::temporary_directory;
+using gca_test::the_scan;
 
 /// The sequence's frames: the walk's first 30 poses [?: a choice, a short scan].
 constexpr std::size_t sequence_frames = 30;
@@ -75,9 +77,6 @@ constexpr std::size_t sequence_frames = 30;
 /// The walk's poses the frames are taken from, 240 of tabletop_walk(), 1.5 degrees apart, as
 /// test_scan_interface.cpp's walk.
 constexpr std::size_t walk_poses = 240;
-
-/// The commit the in-process scan's parameters hold [?: a choice].
-const std::string in_process_commit = "in-process";
 
 /// The largest difference between a frame's time and the sum of its stages' times, in ms: what
 /// lies outside the stages, the state's publication and the commands, and the
@@ -133,66 +132,6 @@ void write_sequence(const std::filesystem::path &path)
     source.close();
     check(writer.close().written && written == sequence_frames,
           "test setup: the sequence written, every frame");
-}
-
-/// Makes the scan in process: the scan interface on the sequence, with a writer that waits for
-/// room, the set given, into a scans directory; waits until it is idle again with its outcome.
-/// @param sequence [in] the sequence's path.
-/// @param scans [in] the scans directory, which exists.
-/// @param set [in] the set.
-/// @return the state at the scan's end; a failed check when the start was refused.
-gca::scan_state scan_in_process(const std::filesystem::path &sequence,
-                                const std::filesystem::path &scans,
-                                const gca::object_class_parameters &set)
-{
-    gca::sequence_reader source(sequence);
-    gca::sequence_writer writer(gca::queue_full::wait);
-    std::promise<gca::scan_state> ended;
-    std::future<gca::scan_state> end = ended.get_future();
-    bool handed = false;
-    const gca::scan_options options = {.scans_directory = scans,
-                                       .stream_size = gca_test::small_description.size,
-                                       .commit = in_process_commit,
-                                       .on_state =
-                                           [&ended, &handed](const gca::scan_state &s) {
-                                               if (s.phase == gca::scan_phase::idle &&
-                                                   s.outcome != gca::scan_outcome::none && !handed)
-                                               {
-                                                   handed = true;
-                                                   ended.set_value(s);
-                                               }
-                                           },
-                                       .stage_times = nullptr};
-    gca::scan_interface scanner(options, source, writer);
-    const gca::command_reply started = scanner.start(gca::object_class::tabletop_object, set).get();
-    check(started.accepted, ("in process: the start; " + started.refusal).c_str());
-    if (!started.accepted)
-        return scanner.state();
-    return end.get();
-}
-
-/// Gives the one directory a scans directory holds, the scan's.
-/// @param scans [in] the scans directory.
-/// @return its one entry; a failed check and an empty path when it holds another count.
-std::filesystem::path the_scan(const std::filesystem::path &scans)
-{
-    std::vector<std::filesystem::path> entries;
-    for (const std::filesystem::directory_entry &e : std::filesystem::directory_iterator(scans))
-        entries.push_back(e.path());
-    check(entries.size() == 1, ("one scan in " + scans.string()).c_str());
-    return entries.size() == 1 ? entries[0] : std::filesystem::path();
-}
-
-/// Gives the names in a directory, sorted.
-/// @param directory [in] the directory.
-/// @return the names.
-std::vector<std::string> names_in(const std::filesystem::path &directory)
-{
-    std::vector<std::string> names;
-    for (const std::filesystem::directory_entry &e : std::filesystem::directory_iterator(directory))
-        names.push_back(e.path().filename().string());
-    std::sort(names.begin(), names.end());
-    return names;
 }
 
 /// Splits a text into its lines.
@@ -276,7 +215,8 @@ std::filesystem::path test_same_scan(const std::string &program,
     std::filesystem::create_directory(in_process_scans);
     std::filesystem::create_directory(program_scans);
 
-    const gca::scan_state in_process = scan_in_process(sequence, in_process_scans, test_set());
+    gca::sequence_reader source(sequence);
+    const gca::scan_state in_process = scan_in_process(source, in_process_scans, test_set());
     check(in_process.outcome == gca::scan_outcome::refined,
           ("in process: refined; " + in_process.outcome_message).c_str());
     const std::filesystem::path a = the_scan(in_process_scans);
@@ -289,13 +229,7 @@ std::filesystem::path test_same_scan(const std::string &program,
     if (a.empty() || b.empty())
         return a;
 
-    const std::vector<std::string> four = {"frames.sequence", "full.ply", "parameters.json",
-                                           "trajectory.txt"};
-    check(names_in(a) == four && names_in(b) == four, "same scan: the same four files");
-    check(gca_test::bytes_of(a / "frames.sequence") == gca_test::bytes_of(b / "frames.sequence"),
-          "same scan: the sequences are the same bytes");
-    check(gca_test::bytes_of(a / "trajectory.txt") == gca_test::bytes_of(b / "trajectory.txt"),
-          "same scan: the trajectories are the same bytes");
+    gca_test::check_same_scan(a, b, "same scan");
 
     const gca::read_result<gca::scan_parameters> pa = gca::read_parameters(a / "parameters.json");
     const gca::read_result<gca::scan_parameters> pb = gca::read_parameters(b / "parameters.json");
@@ -314,17 +248,6 @@ std::filesystem::path test_same_scan(const std::string &program,
         check(pa.value->frames.taken == sequence_frames && pa.value->frames.not_taken == 0 &&
                   pa.value->end == gca::scan_end::source_end,
               "same scan: every frame taken, to the sequence's end");
-    }
-    const gca::read_result<std::vector<gca::model_point>> ma = gca::read_model(a / "full.ply");
-    const gca::read_result<std::vector<gca::model_point>> mb = gca::read_model(b / "full.ply");
-    check(ma.value && mb.value, "same scan: both full models read");
-    if (ma.value && mb.value)
-    {
-        std::printf("same scan: full models of %zu and %zu points\n", ma.value->size(),
-                    mb.value->size());
-        check(!ma.value->empty() &&
-                  gca_test::sorted_keys(*ma.value) == gca_test::sorted_keys(*mb.value),
-              "same scan: the full models are the same points, bit for bit");
     }
 
     // The time lines and the last line.

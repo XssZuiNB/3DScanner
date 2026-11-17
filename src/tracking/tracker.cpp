@@ -12,6 +12,7 @@
 #include <cmath>
 #include <numbers>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace gca
@@ -49,6 +50,38 @@ camera_pose composed(const camera_pose &last, const Eigen::Isometry3d &transform
             (last.orientation * turn).normalized()};
 }
 } // namespace
+
+std::string_view name_of(tracking_state state) noexcept
+{
+    switch (state)
+    {
+    case tracking_state::tracking:
+        return "tracking";
+    case tracking_state::lost:
+        return "lost";
+    case tracking_state::failed:
+        return "failed";
+    }
+    return {};
+}
+
+std::string_view name_of(check_outcome outcome) noexcept
+{
+    switch (outcome)
+    {
+    case check_outcome::passed:
+        return "passed";
+    case check_outcome::registration_end:
+        return "registration_end";
+    case check_outcome::fitness:
+        return "fitness";
+    case check_outcome::inlier_rmse:
+        return "inlier_rmse";
+    case check_outcome::step:
+        return "step";
+    }
+    return {};
+}
 
 tracking_step step_of(const Eigen::Isometry3d &transform) noexcept
 {

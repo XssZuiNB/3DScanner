@@ -20,7 +20,9 @@ What the rewrite builds: an operator scans a tabletop object or a large object w
 hand-held camera and works the scan from a web page the Jetson serves (the terms: GLOSSARY.md;
 the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the libraries below and five
 programs, each with its offline tests, and the scan interface, which runs a whole scan offline
-(its test drives it with the synthetic source, the replay tool with a sequence); the web page and the service are not built yet. The tree began as CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to
+(its test drives it with the synthetic source, the replay tool with a sequence), and the web
+layer's HTTP routes over it (docs/ROUTES.md), which its test drives on the loopback interface; the
+WebSocket, the web page and the service are not built yet. The tree began as CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to
 build here and given the Orbbec camera: the rewrite's prototype, whose methods carry over. Its
 library was the test oracle of the organized points, the normals, the pyramid's intensity and the
 registration until each agreed with it, and is deleted; each method document keeps the agreement
@@ -46,6 +48,7 @@ scan's files link no CUDA. Each library links only libraries above it in this ta
 | `separation` | the proposal of the support plane and the box from a full model and its trajectory, the least-squares plane, on the host | `types` only, so that the scan can call it |
 | `scan` | the files a scan keeps, a scan's time in UTC, the parameters of each object class; host only, so that `box_fit` and the viewer's loop link no CUDA | `types`, `camera` for the POSIX file calls and the source's description |
 | `scan_interface` | the scan interface: its scan thread, commands and state, a scan's phases from its start to its refinement, the "too close" notice, the live model; and the stages' parameters of an object class's set, the one copy of each conversion | `scan`, `tracking`, `refinement` |
+| `web` | the web layer: the HTTP routes of the scan interface's commands and state and of the page's static files, on cpp-httplib, and the messages they answer with (docs/ROUTES.md) | `scan_interface` |
 
 The programs in `apps/` keep their command lines and their work (the viewer's loop, the three
 measurements) in libraries of their own, which the offline tests drive. `orbbec_viewer` runs its
@@ -281,6 +284,8 @@ checkers; these are the rules no checker holds.
    | the stages' parameters of an object class's set: tracking's, the registration's and the sparse TSDF's of the live or the full model, the one copy of each conversion | `src/scan/stage_parameters.*` |
    | the scan interface (the spec, "The scan interface"; docs/methods/tracking.md, "The scan's loop"): its commands and their answers, its state and its snapshots, the scan thread with its two locks, a scan's phases, its directory and files (docs/SCAN_FILES.md, "A scan's directory"), the frames counted as taken or not, the "too close" rule, the live model's pacing and publication | `src/scan/scan_interface.*` |
    | the live model (docs/methods/tracking.md, "The live model"): its value, the spacing's rule, the taking of it, every block or the blocks touched since the last, and the merge of their points on the host | `src/scan/live_model.*` |
+   | the web layer's routes (docs/ROUTES.md): the server on its address and port with its accepting thread and socket option, the routes of the commands and the state, the static route with its directory check and media types | `src/web/web_server.*` |
+   | the web layer's messages (docs/ROUTES.md, "Messages"): the state and a command's answer as JSON, the escape of a JSON string | `src/web/messages.*` |
    | the acceptance tool's box fit: the box's axes from the normals, its faces, their planes and spreads, its edges, its refusals and the lines the hardware acceptance reads | `apps/box_measure.*` |
    | `depth_noise`'s measurement of c (docs/methods/depth-noise.md): the sequence read twice, each pixel's sums, the pixels kept, the depth bins, the rounding's share, the drift between the halves, the spatial error from the plane, the fit of c, its refusals and the lines the measurement on the camera reads | `apps/depth_noise_measure.*` |
    | `orbbec_viewer`'s loop on a frame source: the first frame, its GPU path (a stream, the organized points, the snapshot's normals), the report line, the window, the snapshots as a model's PLY, the sequence it writes | `apps/viewer_loop.*` |
@@ -289,6 +294,7 @@ checkers; these are the rules no checker holds.
    | the tree's commit the programs are built from, for a scan's parameters, written at each build by `apps/build_commit.cmake` | `apps/build_commit.*` |
    | the tests' synthetic source of frames, their one renderer with its pinhole ray and first hit, the depth noise from a fixed seed, a run of frames without depth, the IMU's samples along its trajectory, a point's distance from a known surface, the trajectories it renders along, the Fibonacci lattice the tests sample a sphere on | `tests/synthetic_source.*` |
    | the tests' checks, counted into the program's summary line and exit status; their files (a temporary directory, a file's bytes, a limit that stands for a full disk); their GPU helpers (a stream, the pool's grant, CUDA's last error, a step's refusal, an image's download); their reader of a model's PLY, apart from the scanner's; their run of a program through the shell, for a program's exits | `tests/check.hpp`; `tests/test_files.hpp`; `tests/gpu_test_helpers.hpp`; `tests/ply_reader.hpp`; `tests/program_run.hpp` |
+   | the tests' scan made in process with a writer that waits for room, the one scan of a scans directory, a directory's names, and the check that two scans' directories hold the same scan but for the parameters | `tests/scan_comparison.hpp` |
    | the tests' copy of a frame, to check a source left it as it was; a frame given again under another index and timestamp; the comparisons of IMU samples and of poses bit for bit | `tests/frame_copy.hpp` |
    | the sparse TSDF tests' lookups of blocks, their readings of the usage, the method's starting truncation, a pose as the sparse TSDF takes it, a frame's buffers on the GPU, the extraction of the model's points with their download, and the points' bits as a sorted list, to compare two extractions or models as sets | `tests/sparse_tsdf_helpers.hpp` |
    | the sparse TSDF tests that fuse frames: a case's budget, an object class's model, the fusion of a frame, walls facing the camera, the scenes of a sphere on a plane with their walks, a point's nearest known surface | `tests/sparse_tsdf_scenes.hpp` |
@@ -321,6 +327,7 @@ checkers; these are the rules no checker holds.
 | `GLOSSARY.md`, `docs/adr/` | the scanner's terms; the decisions in force and why |
 | `docs/SCAN_FILES.md` | the formats of the files a scan keeps: the models (PLY), the trajectory, the parameters |
 | `docs/methods/` | each stage's method document, written before its code: its method, parameters and sources, and what it does not carry from the prototype; today `organized-points.md`, `normals.md`, `frame-pyramid.md`, `registration.md`, `sparse-tsdf.md`, `tracking.md` (with the stage clock and the replay tool's lines), `refinement.md`, `separation.md` and `imu-samples.md`, the IMU's samples with the frames; besides them the method of a tool's measurement, the depth noise's, `depth-noise.md` |
+| `docs/ROUTES.md` | the web layer's HTTP routes and the layout of every message, which the page, the service and the HTTP test follow; the page's static files, the threads |
 | `docs/SEQUENCE_FILE.md` | the format of a sequence: a scan's frames with their IMU samples and poses, which the viewer and the scan interface write, refinement and the replay tool read back |
 | `docs/agents/` | how the workflow skills in `.claude/skills/` find the tracker and the domain docs |
 

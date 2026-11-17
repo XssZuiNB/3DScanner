@@ -51,6 +51,7 @@
 #include "scan/scan_interface.hpp"
 #include "scan/trajectory_file.hpp"
 #include "scan/utc_time.hpp"
+#include "scan_comparison.hpp"
 #include "sparse_tsdf_scenes.hpp"
 #include "stage_checks.hpp"
 #include "stage_frames.hpp"
@@ -88,6 +89,7 @@ namespace
 {
 using gca_test::check;
 using gca_test::check_within;
+using gca_test::names_in;
 using gca_test::small_description;
 using gca_test::temporary_directory;
 
@@ -420,19 +422,6 @@ gca::scan_state wait_for_idle(const gca::scan_interface &scanner, std::uint64_t 
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-}
-
-/// Lists a directory's entries' names.
-/// @param directory [in] the directory.
-/// @return the names, sorted; none when it does not exist.
-std::vector<std::string> names_in(const std::filesystem::path &directory)
-{
-    std::vector<std::string> names;
-    std::error_code error;
-    for (const auto &entry : std::filesystem::directory_iterator(directory, error))
-        names.push_back(entry.path().filename().string());
-    std::sort(names.begin(), names.end());
-    return names;
 }
 
 /// Prints a case's end and outcome.

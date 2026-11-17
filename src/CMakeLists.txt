@@ -15,6 +15,7 @@
 #   types <- camera <- scan (Eigen, OpenCV's core)
 #   scan, tracking, refinement <- scan_interface (the scan interface with its scan thread, the
 #                                  stages' parameters of an object class's set)
+#   scan_interface <- web (the web layer's routes and messages; cpp-httplib, threads)
 # Every library includes from src/ ("gpu/gpu_pool.hpp"); types carries that directory.
 
 # ---------------------------------------------------------------- types (header only)
@@ -228,6 +229,21 @@ add_library(
 # tracking's, registration's and fusion's parameters; refinement fuses the sequence; the thread
 # library for the scan thread.
 target_link_libraries(scan_interface PUBLIC scan tracking refinement Threads::Threads)
+
+# ---------------------------------------------------------------- web
+# The web layer (docs/ROUTES.md): the routes over the scan interface on cpp-httplib's server
+# (web/web_server.hpp), which keeps the library out of its header, and the messages they answer
+# with (web/messages.hpp). PUBLIC: the header holds the scan interface and an object class's set;
+# PRIVATE: the library's header and the thread library of its accepting thread and its workers.
+add_library(
+    web
+    STATIC
+    web/messages.cpp
+    web/messages.hpp
+    web/web_server.cpp
+    web/web_server.hpp
+)
+target_link_libraries(web PUBLIC scan_interface PRIVATE httplib::httplib Threads::Threads)
 
 # Separable compilation stays off: no device function or variable is used outside the
 # translation unit that defines it, so nothing needs a device link [M 2026-11-13: every test
