@@ -189,6 +189,22 @@ body:
 A link that stays inside the directory is followed; the page's files are copied into the
 directory, not linked from outside it.
 
+The tree's page is `src/web/page/`. Each build copies it, with four files of three.js 0.187.0
+(README.md, "License"), into `<build>/page/`, the directory the service is given
+(`src/CMakeLists.txt`, "The page"):
+
+| file | what |
+|---|---|
+| `index.html` | the page: its parts and words, and the import map that gives three.js's bare name `three` as `./three/three.module.js` |
+| `page.css` | its look, usable at the width of a phone |
+| `scan_page.js` | the WebSocket `/api/live`, which it opens again after it closes; the state shown by phase; the commands `/api/start?object_class=`, `/api/stop`, `/api/discard`, each refusal from the command's answer |
+| `live_view.js` | the 3D view of the live model, read from its binary message |
+| `three/three.module.js`, `three/three.core.js`, `three/OrbitControls.js`, `three/LICENSE` | three.js's module, the core it imports, its orbit controls and its MIT notice |
+
+The page reads the state and the live model from the WebSocket alone, not from `GET /api/state`.
+ctest `http_routes` fetches `<build>/page/` through a web layer: `/`, then every file the page
+names, through the modules' static imports, each served and not empty, none of another host.
+
 | extension | media type |
 |---|---|
 | `.html` | `text/html; charset=utf-8` |

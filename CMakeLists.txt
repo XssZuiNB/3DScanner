@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: 0BSD
 #
 # CMakeLists.txt - the tree's build: the C++20 dialect for C++ and CUDA, the build type and
-# CUDA architecture, the warning set, the dependencies (CUDA, Eigen, cpp-httplib, OpenCV,
-# OrbbecSDK), then the libraries (src/), the programs (apps/) and the tests (tests/).
+# CUDA architecture, the warning set, the dependencies (CUDA, Eigen, cpp-httplib, three.js, OpenCV,
+# OrbbecSDK), then the libraries and the page (src/), the programs (apps/) and the tests (tests/).
 
 # 3.25.2 is the first CMake that knows the CUDA dialect C++20 with nvcc 12 (CODING_STANDARDS.md,
 # "What the guides leave to this tree", C++20).
@@ -103,6 +103,20 @@ if(NOT EXISTS "${GCA_HTTPLIB_DIR}/httplib.h")
 endif()
 add_library(httplib::httplib INTERFACE IMPORTED)
 set_target_properties(httplib::httplib PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${GCA_HTTPLIB_DIR}")
+
+# ---------------------------------------------------------------- three.js (the page's)
+# The page's 3D view (src/web/page/live_view.js): three.js 0.187.0, the user's choice (README.md,
+# "License"), npm's package from tools/fetch_deps.sh. The build copies four of its files into the
+# page's directory (src/CMakeLists.txt, "The page"); nothing of it is compiled.
+set(GCA_THREE_DIR "${GCA_DEPS_DIR}/three-0.187.0" CACHE PATH "three.js package dir")
+if(NOT EXISTS "${GCA_THREE_DIR}/build/three.module.js")
+    message(FATAL_ERROR "three.js 0.187.0 not found in ${GCA_THREE_DIR}. Run "
+        "tools/fetch_deps.sh or set GCA_THREE_DIR.")
+endif()
+
+# The page's directory in the build: the page's files and three.js's, which the web layer serves
+# (docs/ROUTES.md, "The page's files") and the HTTP test fetches.
+set(GCA_PAGE_DIRECTORY "${CMAKE_BINARY_DIR}/page")
 
 # ---------------------------------------------------------------- OpenCV
 # The Orbbec camera library (orbbec_camera) and the viewer decode, save and show images with it;

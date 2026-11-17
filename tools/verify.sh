@@ -207,7 +207,8 @@ require_tools() {
 }
 
 #######################################
-# Runs the checkers: clang-format on the C++ and CUDA files, shellcheck on the
+# Runs the checkers: clang-format on the C++ and CUDA files and on the page's
+# JavaScript (its format only; src/web/page/.clang-format), shellcheck on the
 # shell scripts. find, not git ls-files: there may be no .git.
 # Globals:
 #   CLANG_FORMAT, SHELLCHECK: the checkers (read).
@@ -219,11 +220,11 @@ require_tools() {
 #   0.
 #######################################
 run_checkers() {
-  local -a cxx_files sh_files
-  mapfile -t cxx_files < <(find src apps tests -type f \( -name '*.cpp' \
-    -o -name '*.hpp' -o -name '*.cu' -o -name '*.cuh' \) | sort)
+  local -a format_files sh_files
+  mapfile -t format_files < <(find src apps tests -type f \( -name '*.cpp' \
+    -o -name '*.hpp' -o -name '*.cu' -o -name '*.cuh' -o -name '*.js' \) | sort)
   mapfile -t sh_files < <(find tools -type f -name '*.sh' | sort)
-  "${CLANG_FORMAT}" --dry-run --Werror --style=file "${cxx_files[@]}" \
+  "${CLANG_FORMAT}" --dry-run --Werror --style=file "${format_files[@]}" \
     || fail "clang-format"
   "${SHELLCHECK}" "${sh_files[@]}" || fail "shellcheck"
 }

@@ -1,0 +1,5 @@
+# src/web/page/.clang-format - the format of the page's JavaScript: Google's, as the Google
+# JavaScript Style Guide gives it (CODING_STANDARDS.md); tools/verify.sh checks it.
+---
+Language: JavaScript
+BasedOnStyle: Google

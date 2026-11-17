@@ -226,11 +226,13 @@ add_test(NAME replay COMMAND test_replay $<TARGET_FILE:replay>)
 
 # The web layer's routes, the spec's HTTP test: a whole scan through them on a free port of the
 # loopback interface, over the scan interface on the synthetic source, with cpp-httplib's client
-# and OpenCV's JSON reader for the messages; the scan against the same scan made in process. The
-# web tests share web_test_helpers.hpp, header only.
+# and OpenCV's JSON reader for the messages; the scan against the same scan made in process; the
+# page the build copies (src/CMakeLists.txt, "The page"), each file it names fetched. The web tests
+# share web_test_helpers.hpp, header only.
 add_executable(test_http_routes test_http_routes.cpp)
 target_link_libraries(test_http_routes PRIVATE web synthetic_source httplib::httplib opencv_core)
-add_test(NAME http_routes COMMAND test_http_routes)
+add_dependencies(test_http_routes page)
+add_test(NAME http_routes COMMAND test_http_routes "${GCA_PAGE_DIRECTORY}")
 
 # The web layer's WebSocket: the live model's layout read back; two scans on a free port of the
 # loopback interface with cpp-httplib's WebSocket clients as browsers, two that read, one that

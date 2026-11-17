@@ -1,0 +1,110 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: 0BSD -->
+<!--
+  index.html - the page on which an operator makes a scan (docs/ROUTES.md; the spec, "The web
+  layer and the page"): the object class and the start, the live model in a 3D view, the tracking
+  state, the "too close" notice, the stop, the discard and the refinement that runs. What it does
+  is scan_page.js's, its 3D view live_view.js's, its look page.css's.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>3D scanner</title>
+  <link rel="stylesheet" href="page.css">
+  <!-- Inline, as a browser takes no import map from a file of its own: OrbitControls.js imports
+       the bare name 'three', which this maps to three.js's module on the board. -->
+  <script type="importmap">
+    {"imports": {"three": "./three/three.module.js"}}
+  </script>
+  <script type="module" src="scan_page.js"></script>
+</head>
+<body data-view="off">
+  <p class="connection" id="connection" role="status">Connecting to the scanner…</p>
+  <p class="tracking" id="tracking" role="status" hidden>
+    <strong class="tracking-word" id="tracking-word"></strong>
+    <span class="tracking-detail" id="tracking-detail"></span>
+  </p>
+  <div class="stage">
+    <div class="view" id="view"></div>
+    <p class="too-close" id="too-close" role="alert" hidden>
+      Too close: move the camera back
+    </p>
+    <button class="follow" id="follow" type="button" hidden>Follow the camera</button>
+    <p class="view-failure" id="view-failure" hidden></p>
+  </div>
+  <main class="panel">
+    <section class="phase" data-phase="idle" hidden>
+      <h1>3D scanner</h1>
+      <p class="purpose">
+        It scans one rigid, opaque object that is not mirror-like and stands still. It scans no
+        people.
+      </p>
+      <p class="last-scan" id="last-scan" hidden></p>
+      <!-- The sizes are GLOSSARY.md's, "Tabletop object" and "Large object" [?: a choice of the
+           user, 2026-11-13]. -->
+      <fieldset class="classes">
+        <legend>Object class</legend>
+        <label class="class-choice">
+          <input type="radio" name="object-class" value="tabletop_object">
+          <span>
+            <strong>Tabletop object</strong>
+            one thing of 10 cm to 50 cm that stands on a table
+          </span>
+        </label>
+        <label class="class-choice">
+          <input type="radio" name="object-class" value="large_object">
+          <span>
+            <strong>Large object</strong>
+            one thing of 0.5 m to 2 m that stands on the floor
+          </span>
+        </label>
+      </fieldset>
+      <p class="next">
+        Next: choose the object class and start the scan, then move the camera slowly around the
+        object.
+      </p>
+    </section>
+    <section class="phase" data-phase="starting" hidden>
+      <h2>Starting the scan</h2>
+      <p>The camera opens and the scanner sets aside the model's memory.</p>
+      <p class="next">Next: wait, with the camera pointed at the object.</p>
+    </section>
+    <section class="phase" data-phase="scanning" hidden>
+      <p class="counts" id="counts"></p>
+      <p class="next">
+        Next: move the camera slowly around the object until every side is in the live model,
+        then stop the scan. Discard it to keep nothing.
+      </p>
+    </section>
+    <section class="phase" data-phase="refining" hidden>
+      <h2>Refining</h2>
+      <!-- Up to 10 minutes is R12's bound [?: a requirement, unmeasured until
+           memory-budget-and-refinement-time-measured]; its progress comes with
+           refinement-optimizes-the-trajectory. -->
+      <p>
+        Refinement makes the full model from the scan's frames. It may take up to 10 minutes.
+      </p>
+      <progress class="refining-bar"></progress>
+      <p class="ended" id="refining-end" hidden></p>
+      <p class="next">Next: wait until refinement ends, or discard the scan to keep nothing.</p>
+    </section>
+    <p class="warning" id="live-model-failure" hidden></p>
+    <p class="refusal" id="refusal" role="alert" hidden></p>
+    <div class="actions">
+      <button class="primary" id="start" type="button" hidden>Start the scan</button>
+      <button class="primary" id="stop" type="button" hidden>Stop and refine</button>
+      <button class="danger" id="discard" type="button" hidden>Discard</button>
+    </div>
+  </main>
+  <dialog class="confirm" id="discard-dialog">
+    <form method="dialog">
+      <p>Discard this scan? Nothing of it stays on disk.</p>
+      <div class="actions">
+        <button value="keep">Keep the scan</button>
+        <button class="danger" value="discard">Discard</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

@@ -10,9 +10,13 @@ and output): AGENTS.md §7 rules 1 and 2.
 |---|---|
 | C++ | [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html) |
 | shell | [Google Shell Style Guide](https://google.github.io/styleguide/shellguide.html) |
+| JavaScript | [Google JavaScript Style Guide](https://google.github.io/styleguide/jsguide.html) |
+| HTML, CSS | [Google HTML/CSS Style Guide](https://google.github.io/styleguide/htmlcssguide.html) |
 
 CUDA (`.cu`, `.cuh`) follows the C++ guide. Formatting and naming follow CUDA_3D's style
-instead of the guide's ([ADR-0001](docs/adr/0001-keep-cuda3d-code-style.md)).
+instead of the guide's ([ADR-0001](docs/adr/0001-keep-cuda3d-code-style.md)); ADR-0001 covers
+C++ and CUDA only, so the page's JavaScript, HTML and CSS (`src/web/page/`) take their guides'
+formatting and naming, file names snake_case as the JavaScript guide allows.
 
 A deviation from a guide needs an ADR in `docs/adr/`; a rule stricter than a guide is not a
 deviation. This document adds what the guides leave to the project.
@@ -75,6 +79,11 @@ deviation. This document adds what the guides leave to the project.
 - **Include order:** the file's own header, then this tree's headers (`"camera/..."`, from
   `src/`), then the system and library headers, each group sorted.
 - **File names:** snake_case; `.cpp`/`.hpp` for host code, `.cu`/`.cuh` for CUDA.
+- **The page** loads nothing from outside the board: its own files and three.js's, which the
+  build copies into the page's directory (docs/ROUTES.md, "The page's files"); an address with
+  `://` stands in none of its own files (ctest `http_routes`). It is English only (R5) and works
+  at the width of a phone. Its code runs only in a browser, so what it does is checked on
+  devices (`check-the-page-on-devices`), not offline.
 
 ## The rewrite's code
 
@@ -123,11 +132,14 @@ These rules hold for every file of the tree.
 
 ## Tools
 
-`tools/verify.sh` runs each of these, so a point they enforce is no review finding.
+`tools/verify.sh` runs each of these, so a point they enforce is no review finding. No
+JavaScript linter and no HTML or CSS checker runs here: each needs a tool the tree does not have
+(eslint and node, for one), a new dependency and so the user's decision; review holds the page's
+code to its guides.
 
 | tool | checks | configuration |
 |---|---|---|
-| clang-format 18.1.8 | formatting of `src/`, `apps/`, `tests/` | `.clang-format` |
+| clang-format 18.1.8 | formatting of `src/`, `apps/`, `tests/`; of the page's JavaScript too, its format only | `.clang-format`; `src/web/page/.clang-format` (Google's JavaScript style) |
 | shellcheck 0.10.0 | `tools/*.sh` | defaults |
 | ctest | `tests/` | `tests/CMakeLists.txt` |
 

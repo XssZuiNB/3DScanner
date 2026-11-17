@@ -248,6 +248,40 @@ add_library(
 )
 target_link_libraries(web PUBLIC scan_interface PRIVATE httplib::httplib Threads::Threads)
 
+# ---------------------------------------------------------------- The page
+# The page's files (web/page/; docs/ROUTES.md, "The page's files") and three.js's, copied into
+# GCA_PAGE_DIRECTORY at each build in which one changed: the web layer serves only the files that
+# lie inside its directory and refuses a link that leads out, so they are copied, not linked.
+# three.js's module imports its core from beside it, and OrbitControls.js imports the bare name
+# 'three', which index.html's import map gives as three/three.module.js; LICENSE is three.js's MIT
+# notice, which goes with its copy. web/page/.clang-format stays in the tree.
+set(_gca_page_copies
+    "${CMAKE_CURRENT_SOURCE_DIR}/web/page/index.html" "index.html"
+    "${CMAKE_CURRENT_SOURCE_DIR}/web/page/page.css" "page.css"
+    "${CMAKE_CURRENT_SOURCE_DIR}/web/page/scan_page.js" "scan_page.js"
+    "${CMAKE_CURRENT_SOURCE_DIR}/web/page/live_view.js" "live_view.js"
+    "${GCA_THREE_DIR}/build/three.module.js" "three/three.module.js"
+    "${GCA_THREE_DIR}/build/three.core.js" "three/three.core.js"
+    "${GCA_THREE_DIR}/examples/jsm/controls/OrbitControls.js" "three/OrbitControls.js"
+    "${GCA_THREE_DIR}/LICENSE" "three/LICENSE"
+)
+set(_gca_page_files)
+while(_gca_page_copies)
+    list(POP_FRONT _gca_page_copies _gca_source _gca_name)
+    set(_gca_copy "${GCA_PAGE_DIRECTORY}/${_gca_name}")
+    get_filename_component(_gca_copy_directory "${_gca_copy}" DIRECTORY)
+    add_custom_command(
+        OUTPUT "${_gca_copy}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_gca_copy_directory}"
+        COMMAND "${CMAKE_COMMAND}" -E copy "${_gca_source}" "${_gca_copy}"
+        DEPENDS "${_gca_source}"
+        COMMENT "Copying ${_gca_name} into the page's directory"
+        VERBATIM
+    )
+    list(APPEND _gca_page_files "${_gca_copy}")
+endwhile()
+add_custom_target(page ALL DEPENDS ${_gca_page_files})
+
 # Separable compilation stays off: no device function or variable is used outside the
 # translation unit that defines it, so nothing needs a device link [M 2026-11-13: every test
 # passes; the prototype's colored-ICP test, deleted since, printed one rotation error of 0.000224

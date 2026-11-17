@@ -26,6 +26,13 @@
 ///   set (tests/scan_comparison.hpp): the same files, the parameters but for start, stop and end.
 /// - A second web layer on the same port, and one whose page directory does not exist: refused
 ///   at their start with the reason. Once the web layer is gone, nothing answers on its port.
+/// - The page the build copies (src/CMakeLists.txt, "The page"), served by a web layer of its
+///   own: index.html for "/", then every file it names, followed through the files they name (a
+///   src or href attribute, the import map, a module's static import or export), each served with
+///   200, not empty, a module with a JavaScript media type; every name a file of the page, none of
+///   another host, a bare module only through the import map; the page's own files, those outside
+///   three/, name no address with "://". The walk reaches three.js's core, which only its module
+///   names, so that it reads the modules' imports.
 /// The test prints its time; a scan-level test ends within 60 s on the board (the stage brief).
 
 #include "camera/sequence_writer.hpp"
@@ -44,11 +51,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <optional>
+#include <regex>
+#include <set>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -480,6 +493,197 @@ void check_same_as_in_process(const scan_made &made, const std::filesystem::path
           "routes, at the source's end in process");
 }
 
+/// Gives the module a line of JavaScript imports or exports from: a static import or export on a
+/// line that starts with import, export or "}" (the end of a list over several lines), with the
+/// module in quotes after from, or after import alone. A comment's line, which starts otherwise,
+/// and a dynamic import() are not read.
+/// @param line [in] the line.
+/// @return the module as written; nothing for a line that names none.
+std::optional<std::string> module_of(std::string_view line)
+{
+    const std::size_t first = line.find_first_not_of(" \t");
+    if (first == std::string_view::npos)
+        return std::nullopt;
+    line.remove_prefix(first);
+    const bool import = line.starts_with("import");
+    if (!import && !line.starts_with("export") && !line.starts_with("}"))
+        return std::nullopt;
+    // The text in the quotes that open the rest after spaces; nothing when no quote opens it.
+    const auto quoted = [](std::string_view rest) -> std::optional<std::string> {
+        const std::size_t at = rest.find_first_not_of(" \t");
+        if (at == std::string_view::npos || (rest[at] != '\'' && rest[at] != '"'))
+            return std::nullopt;
+        const std::size_t end = rest.find(rest[at], at + 1);
+        if (end == std::string_view::npos)
+            return std::nullopt;
+        return std::string(rest.substr(at + 1, end - at - 1));
+    };
+    if (import)
+        if (const std::optional<std::string> alone = quoted(line.substr(6)))
+            return alone;
+    const std::size_t from = line.rfind("from");
+    return from == std::string_view::npos ? std::nullopt : quoted(line.substr(from + 4));
+}
+
+/// What a file of the page names.
+struct page_names
+{
+    std::vector<std::string> files; ///< the files it loads, as written
+    /// Its import map: a bare module's name and the file it stands for, as written.
+    std::map<std::string, std::string> import_map;
+};
+
+/// Gives the names an HTML file of the page names: each src and href attribute in double quotes,
+/// and each entry of its import map, "name": "file".
+/// @param html [in] the file.
+/// @return the names.
+page_names names_in_html(const std::string &html)
+{
+    page_names names;
+    static const std::regex attribute(R"re(\b(?:src|href)="([^"]*)")re");
+    for (std::sregex_iterator i(html.begin(), html.end(), attribute), end; i != end; ++i)
+        names.files.push_back((*i)[1]);
+    const std::string map_start = "<script type=\"importmap\">";
+    const std::size_t begin = html.find(map_start);
+    if (begin == std::string::npos)
+        return names;
+    const std::size_t end = html.find("</script>", begin);
+    const std::string map = html.substr(
+        begin + map_start.size(), end == std::string::npos ? end : end - begin - map_start.size());
+    static const std::regex entry(R"re("([^"]+)"\s*:\s*"([^"]+)")re");
+    for (std::sregex_iterator i(map.begin(), map.end(), entry), last; i != last; ++i)
+    {
+        names.import_map[(*i)[1]] = (*i)[2];
+        names.files.push_back((*i)[2]);
+    }
+    return names;
+}
+
+/// Gives the names a JavaScript module of the page names: the module of each static import and
+/// export (module_of()).
+/// @param module [in] the module.
+/// @return the modules, as written.
+std::vector<std::string> names_in_module(const std::string &module)
+{
+    std::vector<std::string> names;
+    std::istringstream lines(module);
+    for (std::string line; std::getline(lines, line);)
+        if (std::optional<std::string> name = module_of(line))
+            names.push_back(std::move(*name));
+    return names;
+}
+
+/// Gives the path from the page's root that a name of a file of the page leads to.
+/// @param from [in] the target of the file that names it, "/three/three.module.js" for one.
+/// @param name [in] the name as written: a relative URL; for a module, one that starts with "./",
+///        "../" or "/", or a bare name the import map holds, relative to the page's root then.
+/// @param module [in] whether the name is a module's import, which a bare name is not.
+/// @param import_map [in] the page's import map.
+/// @return the path, "/three/three.core.js" for one; nothing for a name of another host (with
+///         "://" or starting with "//"), one that leads above the page's root, or a bare module the
+///         import map does not hold.
+std::optional<std::string> path_of(std::string from, std::string name, bool module,
+                                   const std::map<std::string, std::string> &import_map)
+{
+    if (name.find("://") != std::string::npos || name.starts_with("//"))
+        return std::nullopt;
+    if (module && !name.starts_with("./") && !name.starts_with("../") && !name.starts_with("/"))
+    {
+        const auto mapped = import_map.find(name);
+        if (mapped == import_map.end())
+            return std::nullopt;
+        name = mapped->second;
+        from = "/";
+    }
+    std::vector<std::string> segments;
+    if (!name.starts_with("/"))
+    {
+        std::istringstream directory(from.substr(0, from.rfind('/')));
+        for (std::string segment; std::getline(directory, segment, '/');)
+            if (!segment.empty())
+                segments.push_back(segment);
+    }
+    std::istringstream parts(name);
+    for (std::string part; std::getline(parts, part, '/');)
+    {
+        if (part.empty() || part == ".")
+            continue;
+        if (part == "..")
+        {
+            if (segments.empty())
+                return std::nullopt;
+            segments.pop_back();
+            continue;
+        }
+        segments.push_back(part);
+    }
+    std::string path;
+    for (const std::string &segment : segments)
+        path += "/" + segment;
+    return path.empty() ? std::string("/") : path;
+}
+
+/// The page the build copies, served by a web layer of its own: index.html, then every file it
+/// names and every file those name, each fetched once.
+/// @param scanner [in,out] the scan interface the web layer is built over.
+/// @param news [in] its news.
+/// @param page [in] the page's directory the build copies, GCA_PAGE_DIRECTORY.
+void check_built_page(gca::scan_interface &scanner, const gca::scan_news &news,
+                      const std::filesystem::path &page)
+{
+    gca::web_server server(
+        scanner, news,
+        {.address = "127.0.0.1", .port = 0, .page_directory = page, .set_of = test_set});
+    const gca::web_start_result started = server.start();
+    check(started.started,
+          ("the built page: a web layer over " + page.string() + "; " + started.reason).c_str());
+    if (!started.started)
+        return;
+    client c(started.port);
+    std::map<std::string, std::string> import_map;
+    std::set<std::string> named = {"/"};
+    std::deque<std::string> waiting = {"/"};
+    while (!waiting.empty())
+    {
+        const std::string target = waiting.front();
+        waiting.pop_front();
+        const httplib::Result r = c.get(target);
+        const std::string type = r ? r->get_header_value("Content-Type") : std::string();
+        const bool html = type.starts_with("text/html");
+        const bool module = type.starts_with("text/javascript");
+        std::printf("the built page: %s: %d, %zu bytes, %s\n", target.c_str(), r ? r->status : 0,
+                    r ? r->body.size() : 0, type.c_str());
+        check(r && r->status == 200 && !r->body.empty() && (module || !target.ends_with(".js")),
+              ("the built page: " + target + " served, not empty, a module as JavaScript").c_str());
+        if (!r || r->status != 200)
+            continue;
+        if (!target.starts_with("/three/"))
+            check(r->body.find("://") == std::string::npos,
+                  ("the built page: " + target + " names no address of another host").c_str());
+        std::vector<std::string> names;
+        if (html)
+        {
+            page_names in_html = names_in_html(r->body);
+            import_map.merge(in_html.import_map);
+            names = std::move(in_html.files);
+        }
+        else if (module)
+            names = names_in_module(r->body);
+        for (const std::string &name : names)
+        {
+            const std::optional<std::string> path = path_of(target, name, module, import_map);
+            check(path.has_value(),
+                  ("the built page: " + target + " names \"" + name + "\", a file of the page")
+                      .c_str());
+            if (path && named.insert(*path).second)
+                waiting.push_back(*path);
+        }
+    }
+    check(named.contains("/three/three.module.js") && named.contains("/three/three.core.js") &&
+              named.contains("/three/OrbitControls.js"),
+          "the built page: the walk reaches three.js's module, its core and its orbit controls");
+}
+
 /// The refusals of a web layer's start: a port in use, and a page directory that does not exist.
 /// @param scanner [in,out] the scan interface the other web layers are built over.
 /// @param news [in] its news, which the other web layers are given too.
@@ -513,8 +717,10 @@ void check_start_refusals(gca::scan_interface &scanner, const gca::scan_news &ne
 
 /// Runs the test's web layer over the scan interface, the cases through its routes, then ends it.
 /// @param directory [in] the test's directory, with the page written.
+/// @param built_page [in] the page's directory the build copies.
 /// @return the scan made through the routes.
-scan_made run_routes(const std::filesystem::path &directory)
+scan_made run_routes(const std::filesystem::path &directory,
+                     const std::filesystem::path &built_page)
 {
     const std::filesystem::path scans = directory / "scans";
     std::filesystem::create_directory(scans);
@@ -562,6 +768,7 @@ scan_made run_routes(const std::filesystem::path &directory)
         made = check_whole_scan(c, hold, scans);
         check_discarded_scan(c, scans, made.directory);
         check_start_refusals(scanner, news, port, directory);
+        check_built_page(scanner, news, built_page);
     }
     client after(port);
     const httplib::Result r = after.get("/api/state");
@@ -570,12 +777,23 @@ scan_made run_routes(const std::filesystem::path &directory)
 }
 } // namespace
 
-int main()
+/// Runs the routes' cases, the page's and the comparison with the scan made in process, and prints
+/// their lines and the summary line.
+/// @param argc [in] the argument count, 2.
+/// @param argv [in] the arguments: argv[1] the page's directory the build copies (ctest gives
+///        GCA_PAGE_DIRECTORY).
+/// @return 0 when every check passed, 1 otherwise.
+int main(int argc, char *argv[])
 {
+    if (argc != 2)
+    {
+        std::fprintf(stderr, "usage: test_http_routes PAGE_DIRECTORY\n");
+        return 1;
+    }
     const auto begin = std::chrono::steady_clock::now();
     const temporary_directory directory("test_http_routes");
     write_page(directory.path());
-    const scan_made made = run_routes(directory.path());
+    const scan_made made = run_routes(directory.path(), argv[1]);
     check(!made.directory.empty(), "a scan refined through the routes");
     if (!made.directory.empty())
         check_same_as_in_process(made, directory.path());

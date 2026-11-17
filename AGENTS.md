@@ -21,8 +21,9 @@ hand-held camera and works the scan from a web page the Jetson serves (the terms
 the decisions: docs/adr/; the next step: ROADMAP.md). Built so far: the libraries below and five
 programs, each with its offline tests, and the scan interface, which runs a whole scan offline
 (its test drives it with the synthetic source, the replay tool with a sequence), and the web
-layer's HTTP routes over it (docs/ROUTES.md), which its test drives on the loopback interface; the
-WebSocket, the web page and the service are not built yet. The tree began as CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to
+layer's HTTP routes and WebSocket over it (docs/ROUTES.md), which their tests drive on the loopback
+interface, and the page an operator makes a scan on (`src/web/page/`), whose code runs only in a
+browser; the service is not built yet. The tree began as CUDA_3D cleaned up (dead code, RealSense and PCL removed), made to
 build here and given the Orbbec camera: the rewrite's prototype, whose methods carry over. Its
 library was the test oracle of the organized points, the normals, the pyramid's intensity and the
 registration until each agreed with it, and is deleted; each method document keeps the agreement
@@ -232,6 +233,9 @@ checkers; these are the rules no checker holds.
 
 1. **A file starts with SPDX, then its name and an overview of what its module does**, and
    nothing else; a module is one source file and its header. C and C++: `/// @file <name>`.
+   JavaScript: `// SPDX-License-Identifier: 0BSD`, then `/** @fileoverview <name> - <overview> */`;
+   HTML: `<!doctype html>` first (Google's HTML/CSS guide), then the SPDX line and
+   `<name> - <overview>` in comments; CSS: both in `/* */` comments.
    A script puts its SPDX line under the shebang, then `# <name> - <overview>`; a CMake file
    starts with its SPDX line, then `# <path> - <overview>`, the path from the tree's root.
    A trap, an ownership rule or a cache note goes into the comment of the function it
@@ -240,7 +244,8 @@ checkers; these are the rules no checker holds.
    a public function in its header above its declaration, a file-local one above its
    definition. C and C++: a `///` comment whose first sentence is the purpose, one `@param`
    for each parameter, even one whose name looks obvious, and `@return` for every function
-   that returns a value. Shell: the Google Shell Style Guide's function comment. Python: the
+   that returns a value. Shell: the Google Shell Style Guide's function comment. JavaScript: the
+   Google JavaScript Style Guide's JSDoc, `@param {type} name` and `@return {type}`. Python: the
    Google Python Style Guide's docstring. A fact in a comment carries the same tags as the
    documents. A kernel and a device function are functions like any other.
 
@@ -286,6 +291,7 @@ checkers; these are the rules no checker holds.
    | the live model (docs/methods/tracking.md, "The live model"): its value, the spacing's rule, the taking of it, every block or the blocks touched since the last, and the merge of their points on the host | `src/scan/live_model.*` |
    | the web layer's routes and WebSocket (docs/ROUTES.md): the server on its address and port with its accepting thread and socket option, the routes of the commands and the state, the static route with its directory check and media types; the counts of the scan interface's news (`scan_news`), the newest messages laid out once for every browser, each browser's loop with its poll and the pings it may miss | `src/web/web_server.*` |
    | the web layer's messages (docs/ROUTES.md, "Messages"): the state and a command's answer as JSON, the escape of a JSON string, the live model's binary layout | `src/web/messages.*` |
+   | the page an operator makes a scan on (docs/ROUTES.md, "The page's files"): its parts and their words (`index.html`), its look (`page.css`); the WebSocket with its reconnection, the state shown by phase, the commands with their refusals, the discard's confirmation, the "too close" notice's smoothing (`scan_page.js`); the 3D view of the live model, the message read, following the camera and turning (`live_view.js`); the copy into the build's page directory with three.js's files (`src/CMakeLists.txt`, "The page") | `src/web/page/*` |
    | the acceptance tool's box fit: the box's axes from the normals, its faces, their planes and spreads, its edges, its refusals and the lines the hardware acceptance reads | `apps/box_measure.*` |
    | `depth_noise`'s measurement of c (docs/methods/depth-noise.md): the sequence read twice, each pixel's sums, the pixels kept, the depth bins, the rounding's share, the drift between the halves, the spatial error from the plane, the fit of c, its refusals and the lines the measurement on the camera reads | `apps/depth_noise_measure.*` |
    | `orbbec_viewer`'s loop on a frame source: the first frame, its GPU path (a stream, the organized points, the snapshot's normals), the report line, the window, the snapshots as a model's PLY, the sequence it writes | `apps/viewer_loop.*` |
