@@ -17,36 +17,43 @@ reads first. What outlives them is in GLOSSARY.md, docs/adr/ 0002 to 0004 and
 CODING_STANDARDS.md, "The rewrite's code".
 
 The user agreed on 2026-11-14 to the choices the spec marks (spec) and to the breakdown into
-tickets, asked for `ray-cast-faster-by-measurement` on 2026-11-15 and, after an experiment that
-measured it, for `ray-cast-normal-reads-once`. 38 of 64 tickets are done (git log,
-`Ticket ...`), 19 are `ready-for-agent` and 7 `ready-for-human` [M 2026-11-16: a script over the
-tickets' Status and Blocked-by lines]. Built in the run of 2026-11-16: a scan's parameters file
-in full, refinement's fusion of a scan's sequence, the scan interface with its first whole scan,
-and the replay tool (`replay`, its time per stage on request). The frontier, the open tickets
-with no open blocker:
+tickets; later decisions are in `.scratch/rewrite/brief.md`, §7. 46 of 76 tickets are done (git
+log, `Ticket ...`), 23 are `ready-for-agent` and 7 `ready-for-human` [M 2026-11-17: a script over
+the tickets' Status and Blocked-by lines]. Built in the run of 2026-11-16 to 17: the extraction's
+coalesced sweep, the web chain (HTTP routes, the WebSocket, the page's first half,
+`scanner_service`), separation's up from gravity, and the live view: the TSDF's ray cast in color
+for every tracked frame. The user's first scans with `scanner_service` (2026-11-17) found the
+point-cloud live model unusable and a loss right after a scan's start; they led to the live view,
+to the page as an app in Rust and egui (.scratch/rewrite/page-app-requirements.md), to a start
+that waits for the camera to be still, the gyroscope's prior and relocalization (brief §7, 46 to
+54). The frontier, the open tickets with no open blocker, in the order to take them:
 
-* `live-model-snapshots` (agent): the scan interface gives the live model while a scan runs,
-  the first of the web chain (brief §7, 33).
-* `http-routes-for-a-scan` (agent): a whole scan worked over HTTP; by decision 33
-  after `live-model-snapshots`, then `websocket-pushes-state-and-live-model`, `page-for-a-scan`
-  and `scanner-service-program`.
-* `relocalize-from-keyframes` (agent): the keyframes as further candidates for a lost frame.
-* `separation-up-from-gravity` (agent): separation's up from the IMU's gravity; a scan without
-  IMU samples gets no proposal, with the reason (brief §7, 40).
-* `kernels-under-compute-sanitizer` (agent, parked in its worktree): goes on as its
-  implementer proposed, after `separation-up-from-gravity` and rebased first (brief §7, 39).
+* **The workstation as a second platform** (brief §7, 55): `workstation-as-a-second-platform`
+  (agent: the ADR, which the user confirms), then `builds-and-verifies-on-the-workstation`
+  (agent, on the workstation); `build-runs-two-jobs` after it measures the Jetson's cold build
+  at 2 jobs (agent, on the Jetson).
+* `page-shows-the-live-view` (agent): the live view on the WebSocket, one client at a time, the
+  state's object class, the point-cloud live model taken out.
+* `page-app-first-step` (agent; the user confirms its crates), then `page-app-scan-screen` and
+  `page-app-replaces-the-javascript-page`.
+* `imu-clock-offset-from-the-scan` (agent), then `scan-starts-when-the-camera-is-still` and
+  `gyroscope-prior-for-tracking`.
+* `relocalize-from-keyframes` (agent; its plan accepted, the color condition added, its worktree
+  rebased onto main first), then `refinement-optimizes-the-trajectory`.
+* `kernels-under-compute-sanitizer` (agent, parked in its worktree, rebased first; brief §7, 39).
+* `scans-list-delete-and-unfinished`, `scan-ends-on-budget-and-disk`, `install-the-user-service`
+  (agent).
 * `measure-aligned-frame-distortion` (hardware: the checkerboard of step 2 and the user's go).
 * `measure-depth-noise-on-the-camera` (hardware: still sequences for the `depth_noise` tool).
 
-The other tickets wait on one of these or on a ticket after it. The list of scans, the budget's
-end, refinement and separation each add their routes and part of the page after the web chain.
-The checkerboard's measurement leads to the hardware check of the camera on the seam, whose
-sequences the replay's measurements need (`per-stage-times-from-replay`,
-`tracking-thresholds-from-real-sequences`, `memory-budget-and-refinement-time-measured`,
-`sequence-compression-by-measurement`). The stream size and the GPU's clock during a scan are
-decided on real sequences. The hash's design is compared later on real scans of objects (brief
-§7, 22); no ticket holds it yet. Tickets run one at a time (brief §7, 36). Done when
-`accept-the-colored-model` is done.
+The other tickets wait on one of these. The checkerboard's measurement leads to the hardware
+check of the camera on the seam, whose sequences the replay's measurements need
+(`per-stage-times-from-replay`, `tracking-thresholds-from-real-sequences`,
+`memory-budget-and-refinement-time-measured`, `sequence-compression-by-measurement`). The stream
+size and the GPU's clock during a scan are decided on real sequences, each platform its own. The
+hash's design is compared later on real scans of objects (brief §7, 22); no ticket holds it yet.
+Tickets run one at a time on the Jetson (brief §7, 36). Done when `accept-the-colored-model` is
+done.
 
 ## 2. What the first phase needs from the user (hardware, decision)
 
@@ -88,8 +95,10 @@ named holds the reason.
   which the user asked about on 2026-11-14 (`.scratch/rewrite/brief.md`, §8).
 * The frames between two keyframes following an interpolation of their corrections
   (docs/methods/refinement.md, "How the other frames follow their keyframes").
-* The gyroscope as tracking's prior, once the sequences hold the IMU's samples
-  (`.scratch/rewrite/brief.md`, §7, 13).
+* Each block's neighbours looked up once in the extraction, in place of a hash lookup for each
+  edge's neighbour (docs/methods/sparse-tsdf.md, the extraction: "found through the hash").
+* A reader thread beside each WebSocket's loop, so that a browser's frame split across the
+  loop's 20 ms read keeps the connection (docs/ROUTES.md: the library then closes it).
 * The hash's design against the bucketed hash of Nießner et al. 2013, compared on real scans of
   objects (`.scratch/rewrite/brief.md`, §7, 22 and §8).
 * The GPU's clock held at its highest during a scan (a root setting, the user's) against the
